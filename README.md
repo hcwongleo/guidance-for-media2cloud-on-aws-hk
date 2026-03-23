@@ -264,27 +264,36 @@ This fork includes specific customizations for Hong Kong customers:
   },
   ```
 
-### ExifTool Package
+### Pre-built Lambda Layer Packages
 
-The build process has been **modified to automatically download the official AWS ExifTool package** instead of building from Docker.
+The build process has been **modified to automatically download official AWS pre-built packages** instead of building from Docker.
+
+#### ExifTool Package (Image Processing)
 
 - **Package source**: AWS S3 bucket `s3://awsi-megs-guidances-us-east-1/media2cloud/v4.0.9/`
 - **Package file**: `image-process-lib-v4.0.9.zip`
 - **Modified file**: `deployment/build-s3-dist.sh` (function `build_image_process_layer`)
 
+#### PDF Library Package (Document Processing)
+
+- **Package source**: AWS S3 bucket `s3://awsi-megs-guidances-us-east-1/media2cloud/v4.0.9/`
+- **Package file**: `pdf-lib-v4.0.9.zip`
+- **Modified file**: `deployment/build-s3-dist.sh` (function `build_pdf_layer`)
+
 #### How it works
 
 The build script automatically:
-1. Downloads the official AWS ExifTool package from `s3://awsi-megs-guidances-us-east-1/media2cloud/v4.0.9/image-process-lib-v4.0.9.zip`
-2. Skips the time-consuming Docker build process
-3. Falls back to Docker build only if the download fails
+1. Downloads the official AWS packages from AWS Solutions S3 bucket
+2. Skips the time-consuming Docker build process for both layers
+3. Falls back to Docker build only if downloads fail
 
 **Benefits**:
-- Significantly reduced build time (no Docker build required)
-- Uses the official, tested AWS package
-- No manual intervention needed
+- **Significantly reduced build time** (no Docker builds required)
+- **Uses official, tested AWS packages** with correct native dependencies
+- **Fixes canvas.node errors** in document processing
+- **No manual intervention needed**
 
-**Note**: If you prefer to manually download the package beforehand, you can place it in `source/layers/image-process-lib/dist/` directory before running the build script.
+**Note**: These pre-built packages include properly compiled native modules (ExifTool, Canvas) that are compatible with AWS Lambda runtime.
 
 __
 

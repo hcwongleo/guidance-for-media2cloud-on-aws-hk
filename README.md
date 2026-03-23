@@ -301,23 +301,56 @@ __
 
 ## Updating an Existing Stack
 
-If you have already deployed Media2Cloud and want to update it with new features, bug fixes, or customizations, please refer to the **[UPDATE.md](./UPDATE.md)** guide.
+To update your deployed Media2Cloud stack with new features or bug fixes:
 
-The update guide covers:
-- Complete development workflow
-- Building and deploying updates
-- Updating CloudFormation stack (preserving your data)
-- Version management best practices
-- Troubleshooting common issues
-- Post-update validation steps
+### Step 1: Build New Version
 
-**Quick Update Summary:**
-1. Build new version: `bash build-s3-dist.sh --bucket YOUR-BUCKET --version v4.0.11 --single-region`
-2. Deploy to S3: `bash deploy-s3-dist.sh --bucket YOUR-BUCKET --version v4.0.11 --single-region`
-3. Update stack via CloudFormation Console with new template URL
-4. Your existing data (S3 files, DynamoDB, OpenSearch) remains intact
+```sh
+cd deployment
 
-For detailed step-by-step instructions, see **[UPDATE.md](./UPDATE.md)**.
+# Increment version number (e.g., v4.0.10 → v4.0.11)
+bash build-s3-dist.sh \
+  --bucket YOUR-BUCKET-NAME \
+  --version v4.0.11 \
+  --single-region
+```
+
+### Step 2: Deploy to S3
+
+```sh
+bash deploy-s3-dist.sh \
+  --bucket YOUR-BUCKET-NAME \
+  --version v4.0.11 \
+  --single-region
+```
+
+### Step 3: Update CloudFormation Stack
+
+**Option A - AWS Console (Recommended):**
+1. Go to [CloudFormation Console](https://console.aws.amazon.com/cloudformation/)
+2. Select your stack → Click **Update**
+3. Choose **Replace current template**
+4. Enter the new template URL from deploy output
+5. Keep all existing parameters (do not change)
+6. Submit and wait for `UPDATE_COMPLETE` (10-20 minutes)
+
+**Option B - AWS CLI:**
+```sh
+aws cloudformation update-stack \
+  --stack-name media2cloudv4 \
+  --template-url https://YOUR-BUCKET.s3.amazonaws.com/media2cloud/v4.0.11/media2cloud.template \
+  --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND \
+  --parameters \
+    ParameterKey=Email,UsePreviousValue=true \
+    ParameterKey=DefaultAIOptions,UsePreviousValue=true \
+    ParameterKey=PriceClass,UsePreviousValue=true \
+    ParameterKey=StartOnObjectCreation,UsePreviousValue=true \
+    ParameterKey=OpenSearchCluster,UsePreviousValue=true \
+    ParameterKey=BedrockSecondaryRegionAccess,UsePreviousValue=true \
+    ParameterKey=BedrockModel,UsePreviousValue=true
+```
+
+**Important:** Stack updates modify Lambda code and infrastructure, but **preserve all your data** (S3 files, DynamoDB tables, OpenSearch indices, user accounts).
 
 __
 

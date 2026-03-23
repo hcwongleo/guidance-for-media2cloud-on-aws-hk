@@ -7,6 +7,8 @@
 - [Introduction](#introduction)
 - [Installation](#installation)
 - [Building and Customizing the Solution](#building-and-customizing-the-solution)
+- [Customizations for Hong Kong Customers](#customizations-for-hong-kong-customers)
+- [Updating an Existing Stack](#updating-an-existing-stack)
 - [Deep dive into Media2Cloud V4](#deep-dive-into-media2cloud-v4)
 - [V4 Demo Video Gallery](#v4-demo-video-gallery)
 - [LICENSE](#license)
@@ -294,6 +296,28 @@ The build script automatically:
 - **No manual intervention needed**
 
 **Note**: These pre-built packages include properly compiled native modules (ExifTool, Canvas) that are compatible with AWS Lambda runtime.
+
+__
+
+## Updating an Existing Stack
+
+If you have already deployed Media2Cloud and want to update it with new features, bug fixes, or customizations, please refer to the **[UPDATE.md](./UPDATE.md)** guide.
+
+The update guide covers:
+- Complete development workflow
+- Building and deploying updates
+- Updating CloudFormation stack (preserving your data)
+- Version management best practices
+- Troubleshooting common issues
+- Post-update validation steps
+
+**Quick Update Summary:**
+1. Build new version: `bash build-s3-dist.sh --bucket YOUR-BUCKET --version v4.0.11 --single-region`
+2. Deploy to S3: `bash deploy-s3-dist.sh --bucket YOUR-BUCKET --version v4.0.11 --single-region`
+3. Update stack via CloudFormation Console with new template URL
+4. Your existing data (S3 files, DynamoDB, OpenSearch) remains intact
+
+For detailed step-by-step instructions, see **[UPDATE.md](./UPDATE.md)**.
 
 __
 

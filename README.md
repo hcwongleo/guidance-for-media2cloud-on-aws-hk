@@ -247,6 +247,47 @@ Once the artefacts are uploaded to yourname-artefact-bucket, you can use the HTT
 
 __
 
+## Customizations for Hong Kong Customers
+
+This fork includes specific customizations for Hong Kong customers:
+
+### Added Language Support
+
+**Chinese, Hong Kong (zh-HK)** language code has been added to the language selection options.
+
+- **File modified**: `source/webapp/src/lib/js/app/shared/languageCodes.js`
+- **Change**: Added zh-HK language code after line 24 (after zh-TW):
+  ```javascript
+  {
+    name: 'Chinese, Hong Kong',
+    value: 'zh-HK',
+  },
+  ```
+
+### ExifTool Package
+
+The build process has been **modified to automatically download the official AWS ExifTool package** instead of building from Docker.
+
+- **Package source**: AWS S3 bucket `s3://awsi-megs-guidances-us-east-1/media2cloud/v4.0.9/`
+- **Package file**: `image-process-lib-v4.0.9.zip`
+- **Modified file**: `deployment/build-s3-dist.sh` (function `build_image_process_layer`)
+
+#### How it works
+
+The build script automatically:
+1. Downloads the official AWS ExifTool package from `s3://awsi-megs-guidances-us-east-1/media2cloud/v4.0.9/image-process-lib-v4.0.9.zip`
+2. Skips the time-consuming Docker build process
+3. Falls back to Docker build only if the download fails
+
+**Benefits**:
+- Significantly reduced build time (no Docker build required)
+- Uses the official, tested AWS package
+- No manual intervention needed
+
+**Note**: If you prefer to manually download the package beforehand, you can place it in `source/layers/image-process-lib/dist/` directory before running the build script.
+
+__
+
 ## Deep dive into Media2Cloud V4
 
 #### _Resource naming convention_

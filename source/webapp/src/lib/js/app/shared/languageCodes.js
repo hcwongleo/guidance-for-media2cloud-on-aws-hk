@@ -23,6 +23,10 @@ const LanguageCodes = [
     value: 'zh-TW',
   },
   {
+    name: 'Chinese, Hong Kong',
+    value: 'zh-HK',
+  },
+  {
     name: 'Danish',
     value: 'da-DK',
   },

@@ -351,19 +351,22 @@ function build_image_process_layer() {
   LAYER_IMAGE_PROCESS="${package}-${VERSION}.zip"
   pushd "$SOURCE_DIR/layers/${package}"
 
-  mkdir ./dist
+  mkdir -p ./dist
 
-  # If a pre-built package matched the version, skip building
-  local latestVersion=$(cat package.json | jq .version | tr -d \")
-  local bucket=$BUCKET_NAME
-  local key="${SOLUTION}/prebuilt/layers/${package}/${latestVersion}.zip"
+  # Download official AWS ExifTool package from AWS Solutions S3 bucket
+  echo "=== Downloading official AWS ExifTool package from AWS Solutions ==="
+  local aws_package_url="s3://awsi-megs-guidances-us-east-1/media2cloud/v4.0.9/image-process-lib-v4.0.9.zip"
 
-  local response=$(aws s3 cp s3://${bucket}/${key} $BUILD_DIST_DIR/${LAYER_IMAGE_PROCESS})
-  if [ "$response" != "" ] && [ -f $BUILD_DIST_DIR/${LAYER_IMAGE_PROCESS} ]; then
-    echo "=== Using Prebuilt package (${latestVersion}.zip) for \"${package}\" ==="
+  aws s3 cp ${aws_package_url} "./dist/${LAYER_IMAGE_PROCESS}" --no-sign-request
+  if [ $? -eq 0 ] && [ -f "./dist/${LAYER_IMAGE_PROCESS}" ]; then
+    echo "=== Successfully downloaded official AWS ExifTool package ==="
+    echo "=== Skipping Docker build ==="
+    cp -v "./dist/${LAYER_IMAGE_PROCESS}" "$BUILD_DIST_DIR"
     popd
     return 0
   fi
+
+  echo "=== Failed to download official package, falling back to Docker build ==="
 
   # docker builds Perl5 runtime and exiftool, then package to package.zip
   docker build -t ${package} .
@@ -378,13 +381,6 @@ function build_image_process_layer() {
 
   # remove image
   docker rmi ${package}
-
-  # copy the prebuilt package to s3 bucket
-  aws s3api put-object \
-  --bucket ${bucket} \
-  --key ${key} \
-  --body "./dist/${LAYER_IMAGE_PROCESS}" \
-  --expected-bucket-owner ${ACCOUNTID}
 
   mv -v "./dist/${LAYER_IMAGE_PROCESS}" "$BUILD_DIST_DIR"
 

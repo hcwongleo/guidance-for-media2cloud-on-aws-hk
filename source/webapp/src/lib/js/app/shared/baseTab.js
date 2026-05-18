@@ -119,6 +119,9 @@ export default class BaseTab {
   }
 
   async show(hashtag) {
+    if (this.initialized && !this.tabLink.children('a').hasClass('active')) {
+      return;
+    }
     this.initialized = true;
 
     this.tabLink

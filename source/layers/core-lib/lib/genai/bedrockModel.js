@@ -101,7 +101,7 @@ function _buildConverseInput(task, inputParams) {
   } = inputParams;
 
   const inferenceConfig = {
-    maxTokens: 4096 * 4,
+    maxTokens: 4096,
     temperature: 0.2,
   };
 

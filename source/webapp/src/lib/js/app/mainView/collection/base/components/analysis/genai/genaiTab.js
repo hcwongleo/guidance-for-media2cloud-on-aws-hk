@@ -301,10 +301,6 @@ export default class GenAITab extends BaseAnalysisTab {
     const promptGroup = this.createPromptGroup();
     form.append(promptGroup);
 
-    // save prompt button + user templates
-    const saveRow = this.createSavePromptRow();
-    form.append(saveRow);
-
     // MaxLength
     const maxLengthGroup = this.createMaxLengthGroup();
     form.append(maxLengthGroup);
@@ -508,84 +504,7 @@ export default class GenAITab extends BaseAnalysisTab {
     }
   }
 
-  createSavePromptRow() {
-    const row = $('<div/>')
-      .addClass('form-group col-12 px-0 mt-1 mb-2');
 
-    const btn = $('<button/>')
-      .addClass('btn btn-sm btn-outline-secondary ml-2')
-      .attr('type', 'button')
-      .html('Save as...');
-
-    btn.on('click', async () => {
-      const promptInput = this.tabContent.find(`input#prompt-${this.id}`);
-      const text = promptInput.val();
-      if (!text) return;
-
-      const name = window.prompt('Save prompt as:');
-      if (!name) return;
-
-      const store = GetSettingStore();
-      const templates = (await store.getItem('genai.prompts')) || {};
-      templates[name] = {
-        text,
-        task: this.promptTemplate || 'custom',
-      };
-      await store.putItem('genai.prompts', templates);
-      this.refreshUserTemplates();
-    });
-
-    row.append(btn);
-
-    const templatesContainer = $('<div/>')
-      .addClass('user-templates-group mt-2');
-    row.append(templatesContainer);
-
-    this.refreshUserTemplates();
-
-    return row;
-  }
-
-  async refreshUserTemplates() {
-    const container = this.tabContent.find('.user-templates-group');
-    if (!container.length) return;
-
-    const store = GetSettingStore();
-    const templates = (await store.getItem('genai.prompts')) || {};
-    container.empty();
-
-    const names = Object.keys(templates);
-    if (names.length === 0) return;
-
-    const header = $('<small/>').addClass('text-muted').html('My templates:');
-    container.append(header);
-
-    names.forEach((name) => {
-      const row = $('<div/>').addClass('d-flex align-items-center mb-1 ml-2');
-      const link = $('<a/>')
-        .addClass('mr-2 lead-xs')
-        .attr('href', '#')
-        .html(name)
-        .on('click', (e) => {
-          e.preventDefault();
-          const promptInput = this.tabContent.find(`input#prompt-${this.id}`);
-          promptInput.val(templates[name].text);
-          this.prompt = templates[name].text;
-          this.promptTemplate = templates[name].task;
-        });
-      const del = $('<button/>')
-        .addClass('btn btn-sm btn-link text-danger p-0')
-        .attr('type', 'button')
-        .html('&times;')
-        .on('click', async () => {
-          delete templates[name];
-          await store.putItem('genai.prompts', templates);
-          this.refreshUserTemplates();
-        });
-      row.append(link, del);
-      container.append(row);
-    });
-  }
 
   createPromptTemplate() {
     const promptGroup = $('<div/>')

@@ -34,6 +34,7 @@ const CommonUtils = require('./lib/commonUtils');
 const ValidationHelper = require('./lib/validationHelper');
 const MimeTypeHelper = require('./lib/mimeTypeHelper');
 const WebVttHelper = require('./lib/webVttHelper');
+const SrtHelper = require('./lib/srtHelper');
 const xraysdkHelper = require('./lib/xraysdkHelper');
 const retryStrategyHelper = require('./lib/retryStrategyHelper');
 const GraphDefs = require('./lib/graphDefs');
@@ -80,6 +81,7 @@ module.exports = {
   ValidationHelper,
   MimeTypeHelper,
   WebVttHelper,
+  SrtHelper,
   xraysdkHelper,
   retryStrategyHelper,
   GraphDefs,

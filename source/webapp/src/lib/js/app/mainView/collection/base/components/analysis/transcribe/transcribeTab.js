@@ -6,7 +6,10 @@ import mxAlert from '../../../../../../mixins/mxAlert.js';
 import Localization from '../../../../../../shared/localization.js';
 import VideoPreview from '../../../../../../shared/media/preview/videoPreview.js';
 import Spinner from '../../../../../../shared/spinner.js';
+import ApiHelper from '../../../../../../shared/apiHelper.js';
 import BaseAnalysisTab from '../base/baseAnalysisTab.js';
+
+const DEFAULT_AI_PROMPT = '將以下字幕轉換為書面語繁體中文。要求：1. 保留所有時間碼，不可改動 2. 保留 SRT 編號格式 3. 將口語廣東話轉換為正式書面語繁體中文 4. 保留專有名詞 5. 只輸出有效的 SRT 格式，不要額外說明';
 
 const {
   FoundationModels = [],
@@ -60,6 +63,10 @@ export default class TranscribeTab extends mxAlert(BaseAnalysisTab) {
     const subtitleSwitch = this.createSubtitleSwitch();
     container.append(subtitleSwitch);
 
+    // SRT export + AI editing
+    const subtitleTools = this.createSubtitleTools();
+    container.append(subtitleTools);
+
     // Transcript
     const transcriptView = this.createTranscriptView();
     container.append(transcriptView);
@@ -107,6 +114,170 @@ export default class TranscribeTab extends mxAlert(BaseAnalysisTab) {
     });
 
     return formGroup;
+  }
+
+  createSubtitleTools() {
+    const container = $('<div/>')
+      .addClass('form-group px-0 mt-2 mb-3 col-12');
+
+    const heading = $('<p/>')
+      .addClass('lead-s mb-2')
+      .html('Subtitles (SRT)');
+    container.append(heading);
+
+    // row 1: download SRT button
+    const downloadRow = $('<div/>')
+      .addClass('d-flex align-items-center mb-2');
+
+    const downloadBtn = $('<button/>')
+      .addClass('btn btn-sm btn-primary mr-2')
+      .attr('type', 'button')
+      .html('Download SRT');
+
+    const downloadStatus = $('<span/>')
+      .addClass('lead-xs text-muted ml-2');
+
+    downloadRow.append(downloadBtn, downloadStatus);
+    container.append(downloadRow);
+
+    downloadBtn.on('click', async () => {
+      const uuid = this.media.uuid;
+      try {
+        downloadBtn.prop('disabled', true);
+        downloadStatus.html('Generating...');
+        const res = await ApiHelper.generateSrt(uuid);
+        if (res && res.url) {
+          window.open(res.url, '_blank');
+          downloadStatus.html('SRT ready');
+        } else {
+          downloadStatus.html('Failed');
+        }
+      } catch (e) {
+        console.error(e);
+        downloadStatus.html(`Error: ${e.message}`);
+      } finally {
+        downloadBtn.prop('disabled', false);
+      }
+    });
+
+    // row 2: AI edit toggle + form
+    const editToggleRow = $('<div/>')
+      .addClass('d-flex align-items-center mb-2');
+
+    const editToggleBtn = $('<button/>')
+      .addClass('btn btn-sm btn-outline-primary')
+      .attr('type', 'button')
+      .html('AI Edit Subtitles ▾');
+    editToggleRow.append(editToggleBtn);
+    container.append(editToggleRow);
+
+    // collapsible AI edit form
+    const editForm = $('<div/>')
+      .addClass('border rounded p-3 mb-2')
+      .css('display', 'none');
+    container.append(editForm);
+
+    // model selector
+    const modelLabel = $('<label/>')
+      .addClass('lead-xs mb-1')
+      .html('Model');
+    editForm.append(modelLabel);
+
+    const modelSelect = $('<select/>')
+      .addClass('custom-select custom-select-sm mb-2');
+    editForm.append(modelSelect);
+
+    // prompt textarea
+    const promptLabel = $('<label/>')
+      .addClass('lead-xs mb-1 mt-2')
+      .html('Prompt');
+    editForm.append(promptLabel);
+
+    const promptInput = $('<textarea/>')
+      .addClass('form-control form-control-sm')
+      .attr('rows', 4)
+      .val(DEFAULT_AI_PROMPT);
+    editForm.append(promptInput);
+
+    // action row
+    const actionRow = $('<div/>')
+      .addClass('d-flex align-items-center mt-2');
+
+    const runBtn = $('<button/>')
+      .addClass('btn btn-sm btn-success mr-2')
+      .attr('type', 'button')
+      .html('Run AI Edit');
+
+    const editStatus = $('<span/>')
+      .addClass('lead-xs text-muted ml-2');
+
+    actionRow.append(runBtn, editStatus);
+    editForm.append(actionRow);
+
+    editToggleBtn.on('click', async () => {
+      const isHidden = editForm.css('display') === 'none';
+      editForm.css('display', isHidden ? 'block' : 'none');
+      editToggleBtn.html(isHidden ? 'AI Edit Subtitles ▴' : 'AI Edit Subtitles ▾');
+
+      // populate model list on first open
+      if (isHidden && modelSelect.children().length === 0) {
+        try {
+          const models = await ApiHelper.getModels();
+          const providers = (models || {}).providers || {};
+          Object.keys(providers).forEach((provider) => {
+            const group = $('<optgroup/>').attr('label', provider);
+            providers[provider].forEach((m) => {
+              const opt = $('<option/>').attr('value', m.id).text(m.name);
+              group.append(opt);
+            });
+            modelSelect.append(group);
+          });
+
+          // load saved prompt
+          const uuid = this.media.uuid;
+          const saved = await ApiHelper.getSubtitlePrompt(uuid).catch(() => undefined);
+          if (saved && saved.prompt) {
+            promptInput.val(saved.prompt);
+          }
+        } catch (e) {
+          console.error(e);
+        }
+      }
+    });
+
+    runBtn.on('click', async () => {
+      const uuid = this.media.uuid;
+      const model = modelSelect.val();
+      const prompt = promptInput.val();
+      if (!model) {
+        editStatus.html('Please select a model');
+        return;
+      }
+      try {
+        runBtn.prop('disabled', true);
+        editStatus.html('Editing... this may take a minute');
+        Spinner.loading();
+
+        // save the prompt for future use
+        await ApiHelper.saveSubtitlePrompt(uuid, prompt).catch(() => undefined);
+
+        const res = await ApiHelper.aiEditSubtitle(uuid, { model, prompt });
+        if (res && res.url) {
+          window.open(res.url, '_blank');
+          editStatus.html(`Done (${res.cueCount} cues)`);
+        } else {
+          editStatus.html('Failed');
+        }
+      } catch (e) {
+        console.error(e);
+        editStatus.html(`Error: ${e.message}`);
+      } finally {
+        runBtn.prop('disabled', false);
+        Spinner.loading(false);
+      }
+    });
+
+    return container;
   }
 
   createTranscriptView() {

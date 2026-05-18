@@ -38,6 +38,7 @@ const ENDPOINTS = {
   Taxonomy: `${ApiEndpoint}/${ApiOps.Taxonomy}`,
   Custom: `${ApiEndpoint}/${ApiOps.Custom}`,
   Models: `${ApiEndpoint}/models`,
+  Subtitle: `${ApiEndpoint}/subtitle`,
   Workflow: `${ApiEndpoint}/${ApiOps.Execution}`,
 };
 
@@ -503,6 +504,46 @@ export default class ApiHelper {
       'GET',
       ENDPOINTS.Workflow,
       query
+    );
+  }
+
+  // Subtitle (Sub-Project C)
+  static async generateSrt(uuid) {
+    return _authHttpRequest.send(
+      'POST',
+      `${ENDPOINTS.Subtitle}/${uuid}/srt`
+    );
+  }
+
+  static async getSrt(uuid) {
+    return _authHttpRequest.send(
+      'GET',
+      `${ENDPOINTS.Subtitle}/${uuid}/srt`
+    );
+  }
+
+  static async aiEditSubtitle(uuid, options) {
+    return _authHttpRequest.send(
+      'POST',
+      `${ENDPOINTS.Subtitle}/${uuid}/ai-edit`,
+      undefined,
+      options
+    );
+  }
+
+  static async getSubtitlePrompt(uuid) {
+    return _authHttpRequest.send(
+      'GET',
+      `${ENDPOINTS.Subtitle}/${uuid}/prompt`
+    );
+  }
+
+  static async saveSubtitlePrompt(uuid, prompt) {
+    return _authHttpRequest.send(
+      'POST',
+      `${ENDPOINTS.Subtitle}/${uuid}/prompt`,
+      undefined,
+      { prompt }
     );
   }
 }

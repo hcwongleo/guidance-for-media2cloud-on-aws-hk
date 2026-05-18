@@ -137,4 +137,12 @@ module.exports = {
    * method: GET, POST
    */
   FaceIndexer: 'faceindexer',
+
+  /**
+   * @description Subtitle export and AI editing
+   * /subtitle/{uuid}/srt
+   * /subtitle/{uuid}/ai-edit
+   * method: GET, POST
+   */
+  Subtitle: 'subtitle',
 };

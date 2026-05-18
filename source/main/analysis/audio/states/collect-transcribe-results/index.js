@@ -31,7 +31,7 @@ const MIN_TO_ENABLE_CHUNKING = 20 * 60;
 const MODEL_REGION = process.env.ENV_BEDROCK_REGION;
 const MODEL_ID = process.env.ENV_BEDROCK_MODEL_ID;
 const MODEL_ERROR_EXCEPTION = 'ModelErrorException';
-const SYSTEM = 'You are a media operation assistant that can analyze movie transcripts in WebVTT format and suggest chapter points based on the topic changes in the conversations. It is important to read the entire transcripts. Respond with only a JSON object. No markdown, no commentary.';
+const SYSTEM = 'You are a media operation assistant that can analyze movie transcripts in WebVTT format and suggest chapter points based on the topic changes in the conversations. It is important to read the entire transcripts. The "reason" field MUST be written in Traditional Chinese (繁體中文). Respond with only a JSON object. No markdown, no commentary.';
 
 let FilterSettings = {
   analyseConversation: true,
@@ -282,7 +282,7 @@ async function _invokeChapterModel(modelId, vtt) {
       {
         start: '00:00:10.000',
         end: '00:00:32.000',
-        reason: 'It appears the chapter talks about...',
+        reason: '此章節討論...',
       },
     ],
   };
@@ -307,7 +307,7 @@ async function _invokeChapterModel(modelId, vtt) {
     modelId,
     system: [{ text: SYSTEM }],
     messages,
-    inferenceConfig: { maxTokens: 4096 * 4, temperature: 0.2 },
+    inferenceConfig: { maxTokens: 4096, temperature: 0.2 },
   })).catch((e) => {
     let exception;
     if (e.name === MODEL_ERROR_EXCEPTION) {

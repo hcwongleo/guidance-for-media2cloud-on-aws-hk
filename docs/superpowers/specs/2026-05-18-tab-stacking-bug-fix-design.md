@@ -3,55 +3,66 @@
 **Date:** 2026-05-18
 **Branch:** `short-form-video`
 **Sub-project:** A (of 6 in the new-product roadmap)
-**Status:** Design — awaiting user review
+**Status:** Implemented and verified live on dev environment.
 
 ## Problem
 
-When the user clicks a top-level tab (e.g. Settings) and, before its content finishes loading, clicks a different tab (e.g. Collection), the screen renders both tabs' content stacked on top of each other.
+When the user clicks a top-level tab (e.g. Settings) and, before its content finishes loading, clicks a different tab (e.g. Upload), the screen renders both tabs' content stacked on top of each other.
 
 ## Root cause
 
 `source/webapp/src/lib/js/app/shared/baseTab.js`:
 
 - Each `BaseTab` binds its anchor to Bootstrap's `shown.bs.tab` event (line 45) and runs `await this.show()`.
-- `BaseTab.show()` ends with `this.tabContent.tab('show')` (line 128), which tells Bootstrap to mark *this* pane as `.active.show`.
-- If `show()` is mid-`await` when the user clicks a different tab, Bootstrap correctly switches to the new pane. But when the in-flight `show()` later resolves and runs `tab('show')`, it **re-asserts the old pane as active** without deactivating the new one. Both panes end up with `.active.show` → stacking.
+- `BaseTab.show()` ends with `this.tabContent.tab('show')` (line 128 of the original file), which tells Bootstrap to mark *this* pane as `.active.show`.
+- If the **subclass** `show()` is mid-`await` when the user clicks a different tab, Bootstrap correctly switches to the new pane. But when the in-flight `show()` later resolves and chains into `super.show()`, the `tab('show')` call **re-asserts the old pane as active** without deactivating the new one. Both panes end up with `.active.show` → stacking.
 
-Subclass overrides (`collectionTab.js`, `statsTab.js`, etc.) follow the same pattern: they `await` heavy work and then call `super.show()`. Same race exists.
+Subclass overrides (`uploadTab.js`, `mxAnalysisSettings.js` for SettingsTab, etc.) all follow the same pattern: heavy `await` inside the subclass, then `return super.show(hashtag)` at the end. Same race in every one of them.
 
-## Approach (chosen): one-line class-membership gate in `BaseTab.show()`
+## Approach (chosen): sibling-active gate at the top of `BaseTab.show()`
 
-Bootstrap's tab plugin already manages the `active` class on the nav-link `<a>` — it sets the class on the newly clicked tab and clears it from the previously active one, before firing `shown.bs.tab`. We can use that as the "am I still the target tab?" check, free of charge.
+Bootstrap's tab plugin manages the `.active` class on every nav-link. When the user clicks a new tab, Bootstrap **adds** `.active` to the new tab's nav-link and **removes** it from the previously active sibling — before firing `shown.bs.tab` on the new one. We use that as the "has someone else taken over while I was awaiting?" signal.
 
-Add a single early-return at the top of `BaseTab.show()`:
+Add an early-return at the top of `BaseTab.show()`:
 
 ```js
-if (this.initialized && !this.tabLink.children('a').hasClass('active')) return;
+async show(hashtag) {
+  const ourLink = this.tabLink.children('a');
+  const siblingActive = this.tabLink.parent()
+    .siblings()
+    .children('.nav-link.active')
+    .length > 0;
+  if (siblingActive && !ourLink.hasClass('active')) {
+    return;
+  }
+  this.initialized = true;
+  this.tabLink.children('a').addClass('show active');
+  this.tabContent.tab('show');
+  return this.tabContent;
+}
 ```
-
-That's it. No new fields, no new event listeners.
 
 ### How it covers every scenario
 
-| Scenario | `initialized` | `hasClass('active')` | Behavior |
+| Scenario | Sibling has `.active`? | Our nav-link has `.active`? | Behavior |
 | --- | --- | --- | --- |
-| Boot via `mainView._show()` (the one direct programmatic call site, at app start) | `false` | n/a — short-circuit | proceeds → first render |
-| User clicks a tab (Bootstrap-driven) | `true` or `false` | `true` (Bootstrap just set it) | proceeds |
-| **The bug:** stale `show()` resumes after user switched to a different tab | `true` | `false` (Bootstrap removed it when the other tab was clicked) | bails — `tab('show')` is **not** called → no re-assertion → no stacking |
-| Re-clicking A after going to B and back | `true` | `true` (Bootstrap re-set it on click) | proceeds |
+| Boot via `mainView._show()` (called once at app start, before any user interaction) | No (no tab is active yet) | No | Proceeds → first render |
+| User clicks a tab; Bootstrap-driven `show()` runs | No (Bootstrap removed `.active` from the previous active sibling) | Yes (Bootstrap just set it) | Proceeds |
+| **The bug:** subclass `show()` resumes a stale `await` after the user clicked away | Yes (the new tab is now active) | No (Bootstrap removed it) | **Bails** — `tab('show')` is not called → stale render is silently dropped → no stacking |
+| User clicks A → B → A | When A's show runs the second time, Bootstrap has already activated A and deactivated B | Yes | Proceeds |
 
-The only programmatic invocation of a tab's `show()` outside Bootstrap's flow is `mainView.js:171` at app boot, when `initialized` is still `false` — so the gate skips and the first render happens normally.
+The boot path is correct because at app start, no nav-link has `.active` yet — so `siblingActive` is `false` and the gate proceeds. The check uses two pieces of information (sibling state + own state) instead of an `initialized` flag, which is what an earlier version of this fix used incorrectly (see "What we learned" below).
 
 ### Approaches considered and rejected
 
 - **`AbortController` per fetch.** Cancels network too, but the webapp's API helpers don't currently accept a `signal` — bigger surgery for marginal benefit. Can layer in later.
 - **Block tab clicks while loading.** Disabling nav until the current load finishes feels sluggish; user explicitly preferred immediate switching.
 - **Render-epoch counter.** With single-file scope, the capture-then-check pattern is a no-op (no awaits inside `BaseTab.show()` itself). Only earns its keep with subclass cooperation, which is out of scope.
-- **`isActive` boolean toggled by `shown.bs.tab` / `hide.bs.tab`.** Functionally equivalent to the chosen approach but adds an extra field and an extra event binding for no gain — Bootstrap's `active` class already encodes the same state.
+- **`isActive` boolean toggled by `shown.bs.tab` / `hide.bs.tab`.** Functionally equivalent to the sibling-active check but adds an extra field and an extra event binding — Bootstrap's `.active` class already encodes the same state, so the dedicated boolean is duplicative.
 
 ## Scope (chosen)
 
-**Single file, single line:** `source/webapp/src/lib/js/app/shared/baseTab.js`.
+**Single file:** `source/webapp/src/lib/js/app/shared/baseTab.js`. Five lines added.
 
 The base-class change is load-bearing — gating `tab('show')` is what stops Bootstrap from re-asserting the stale pane. Subclasses that also append DOM after a long `await` may briefly flush stale content into a hidden pane, but this only manifests as stale content the *next* time the tab is opened, not as visible stacking. Acceptable trade-off; revisit if a regression is reported.
 
@@ -64,46 +75,53 @@ Out of scope:
 
 ## Implementation
 
-### `source/webapp/src/lib/js/app/shared/baseTab.js`, `show(hashtag)` (line 121)
+`source/webapp/src/lib/js/app/shared/baseTab.js`, `show(hashtag)`:
 
-Add one line immediately after the function signature:
-
-```js
-async show(hashtag) {
-  if (this.initialized && !this.tabLink.children('a').hasClass('active')) return;   // NEW
-  this.initialized = true;
-  this.tabLink.children('a').addClass('show active');
-  this.tabContent.tab('show');
-  return this.tabContent;
-}
+```diff
+   async show(hashtag) {
++    const ourLink = this.tabLink.children('a');
++    const siblingActive = this.tabLink.parent()
++      .siblings()
++      .children('.nav-link.active')
++      .length > 0;
++    if (siblingActive && !ourLink.hasClass('active')) {
++      return;
++    }
+     this.initialized = true;
+     this.tabLink.children('a').addClass('show active');
+     this.tabContent.tab('show');
+     return this.tabContent;
+   }
 ```
 
-Nothing else changes in the file. The `shown.bs.tab` handler stays as-is. `hide()` stays as-is. No new event bindings.
+Nothing else changes in the file.
 
-## Verification (manual)
+## Verification (manual, performed against deployed dev environment)
 
-No automated test framework on the webapp today; defer that to its own sub-project.
+Verified on `https://d3tpjxm36qno39.cloudfront.net` with Chrome DevTools network throttled to Slow 3G. The CloudFront-served bundle was rebuilt via `node post-build.js rollup` and the integrity hash on `index.html`'s `<script src="./app.min.js">` was patched in place; CloudFront cache invalidated for `/app.min.js`, `/index.html`, `/`.
 
-1. `cd source/webapp && npm run build` — confirms no syntax error (the "build" is a copy step).
-2. Serve `dist/` locally or deploy to a dev S3.
-3. Chrome DevTools → Network → Slow 3G throttling.
-4. **Repro before fix.** Click Settings → immediately click Collection. Confirm two panes stack.
-5. **Verify after fix.** Same click sequence. Exactly one pane visible.
-6. **Other top-level pairs.** Repeat for every adjacent pair (Collection↔Settings, Collection↔Stats, Stats↔Upload, Upload↔Settings, Settings↔Face Collection, etc.).
-7. **No regression on slow nav.** Click Collection slowly, wait for full load. Sub-tabs (Video / Photo / Document) load and switch normally.
-8. **No regression on hashtag deep-link.** Reload the app at `#settings/...` (or another deep-link path) and confirm the deep-linked tab still renders correctly.
-9. **No regression on re-entry.** Click A → wait for full load → click B → click A again. A renders correctly the second time.
+1. Settings → click Upload mid-load: only Upload renders. ✅
+2. Other adjacent pairs: ✅
+3. Re-entry (A → B → A): ✅
+4. Slow nav, sub-tabs: ✅
+5. Deep-link reload: ✅
 
-Pass: every scenario shows exactly one top-level pane; no stacking; sub-tab navigation unchanged; deep-links and re-entry still work.
+## What we learned (correction)
+
+An initial version of this fix used `if (this.initialized && !ourLink.hasClass('active')) return;`. The `initialized && ...` short-circuit was meant to allow boot, but it also disabled the gate on **every first-time stale render** — `initialized` is still `false` when the subclass resumes its `await` and chains into `super.show()` for the first time, so the short-circuit let `tab('show')` re-assert the stale pane. The bug reproduced even after the fix shipped.
+
+The corrected fix replaces the `initialized` short-circuit with a check on the **sibling nav-links**: at boot, no sibling is active (so the gate is a no-op); at stale-resume time, Bootstrap has already moved `.active` to the new tab's nav-link (so the gate fires). This handles both first-time and re-entry cases without any new state.
+
+Lesson: when a gate uses two conditions joined by `&&`, work through every state-pair (`initialized × hasClass`) before declaring victory. Boot and first-time-stale-render share the same `initialized=false` state — they cannot be distinguished by `initialized` alone.
 
 ## Risks
 
-- **Other places that re-assert pane visibility.** If something outside `BaseTab.show()` calls `tab('show')` on a stale pane, the stacking can recur. During implementation: grep for `.tab('show')` in the webapp and confirm `baseTab.js:128` is the only call site.
-- **Bootstrap class behavior assumption.** This fix relies on Bootstrap's tab plugin removing the `active` class from the previously-active nav-link before firing `shown.bs.tab` on the new one — which it does in Bootstrap 4. A future Bootstrap upgrade should re-validate this assumption.
+- **Other places that re-assert pane visibility.** Audited at implementation time: `.tab('show')` is called in two places in the webapp source — `baseTab.js:128` (the call this gate protects) and `mainView/upload/finalizeSlideComponent.js:791` (an internal upload-progress slide tab list, event-driven, not subject to this race). Re-audit if a future PR adds another call site.
+- **Bootstrap class behavior assumption.** This fix relies on Bootstrap's tab plugin (a) adding `.active` to the newly clicked nav-link and (b) removing `.active` from the previously active sibling — both before firing `shown.bs.tab` on the new tab. Bootstrap 4 does this. A future Bootstrap upgrade should re-validate this assumption.
 - **Stale content in hidden pane.** A subclass `show()` whose `await` resolves after the user has switched away will still append content to its (now hidden) `tabContent`. Next time that tab is opened, the user may briefly see old data flushed in. Not blocking — flagged for follow-up if observed.
 
 ## Out of scope / follow-ups
 
-- Subclass `show()` updates (collectionTab, statsTab, uploadTab, userManagementTab, faceCollectionTab, processingTab, mxAnalysisSettings) to also bail post-await — adds belt-and-suspenders against stale-content. User opted out for now.
+- Subclass `show()` updates (collectionTab, statsTab, uploadTab, userManagementTab, faceCollectionTab, processingTab, mxAnalysisSettings) to also bail post-await — adds belt-and-suspenders against stale-content.
 - AbortController wiring through API helpers.
 - Playwright e2e harness for regression coverage.

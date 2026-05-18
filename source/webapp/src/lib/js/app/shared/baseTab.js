@@ -119,7 +119,12 @@ export default class BaseTab {
   }
 
   async show(hashtag) {
-    if (this.initialized && !this.tabLink.children('a').hasClass('active')) {
+    const ourLink = this.tabLink.children('a');
+    const siblingActive = this.tabLink.parent()
+      .siblings()
+      .children('.nav-link.active')
+      .length > 0;
+    if (siblingActive && !ourLink.hasClass('active')) {
       return;
     }
     this.initialized = true;

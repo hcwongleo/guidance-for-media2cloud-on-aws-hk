@@ -160,7 +160,6 @@ class SolutionManifest extends mxBaseResponse(class {}) {
 
     // update fields
     const {
-      FoundationModels = '',
       S3: {
         UseAccelerateEndpoint,
       },
@@ -176,23 +175,8 @@ class SolutionManifest extends mxBaseResponse(class {}) {
     // create face collection if specified
     await _createFaceCollection(aiml.faceCollectionId);
 
-    // parse FoundationModels
-    const foundationModels = [];
-    try {
-      FoundationModels
-        .split(';')
-        .filter((x) => x)
-        .forEach((x) => {
-          const [name, value] = x.split('=');
-          foundationModels.push({
-            name,
-            value,
-          });
-        });
-    } catch (e) {
-      // do nothing
-    }
-    manifest.FoundationModels = foundationModels;
+    // FoundationModels no longer baked — fetched dynamically via GET /models
+    manifest.FoundationModels = [];
 
     // parse S3 accelerated endpoint
     const useAccelerateEndpoint = (UseAccelerateEndpoint === 'true');

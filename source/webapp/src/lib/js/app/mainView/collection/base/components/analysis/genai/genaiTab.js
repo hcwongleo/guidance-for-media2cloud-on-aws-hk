@@ -7,12 +7,12 @@ import ApiHelper from '../../../../../../shared/apiHelper.js';
 import Spinner from '../../../../../../shared/spinner.js';
 import BaseAnalysisTab from '../base/baseAnalysisTab.js';
 import mxAlert from '../../../../../../mixins/mxAlert.js';
+import { GetSettingStore } from '../../../../../../shared/localCache/settingStore.js';
 
 class AlertHelper extends mxAlert(class {}) {}
 const _alertAgent = new AlertHelper();
 
 const {
-  FoundationModels = [],
   ApiOps: {
     Genre,
     Sentiment,
@@ -62,8 +62,7 @@ const TASK_THEME = Theme.split('/')[1];
 const TASK_TAXONOMY = Taxonomy.split('/')[1];
 const TASK_CUSTOM = Custom.split('/')[1];
 
-// disble text input by default
-const ENABLE_TEXT_INPUT = false;
+const ENABLE_TEXT_INPUT = true;
 
 const DEFAULT_PROMPTS = [
   {
@@ -173,7 +172,7 @@ export default class GenAITab extends BaseAnalysisTab {
   }
 
   static canSupport() {
-    return FoundationModels.length > 0;
+    return true;
   }
 
   get modelParameters() {
@@ -301,6 +300,10 @@ export default class GenAITab extends BaseAnalysisTab {
     // prompt
     const promptGroup = this.createPromptGroup();
     form.append(promptGroup);
+
+    // save prompt button + user templates
+    const saveRow = this.createSavePromptRow();
+    form.append(saveRow);
 
     // MaxLength
     const maxLengthGroup = this.createMaxLengthGroup();
@@ -461,27 +464,127 @@ export default class GenAITab extends BaseAnalysisTab {
       .append(MSG_SELECT_MODEL);
     select.append(option);
 
-    const options = FoundationModels.map((model) => {
-      option = $('<option/>')
-        .attr('value', model.value)
-        .append(model.name);
-      return option;
-    });
-    select.append(options);
+    this.loadModels(select);
 
-    // update model name on change event
     select.on('change', () => {
       const val = select.val();
       if (val === 'undefined') {
         this.modelName = undefined;
+        return;
       }
       this.modelName = val;
+      const store = GetSettingStore();
+      store.putItem('genai.lastModel', val);
     });
 
     return [
       label,
       select,
     ];
+  }
+
+  async loadModels(select) {
+    try {
+      const response = await ApiHelper.getModels();
+      const { providers = {} } = response;
+      Object.keys(providers).sort().forEach((provider) => {
+        const optgroup = $('<optgroup/>').attr('label', provider);
+        providers[provider].forEach((m) => {
+          const opt = $('<option/>')
+            .attr('value', m.id)
+            .append(m.name);
+          optgroup.append(opt);
+        });
+        select.append(optgroup);
+      });
+      const store = GetSettingStore();
+      const lastModel = await store.getItem('genai.lastModel');
+      if (lastModel) {
+        select.val(lastModel);
+        this.modelName = lastModel;
+      }
+    } catch (e) {
+      console.error('Failed to load models:', e);
+    }
+  }
+
+  createSavePromptRow() {
+    const row = $('<div/>')
+      .addClass('form-group col-12 px-0 mt-1 mb-2');
+
+    const btn = $('<button/>')
+      .addClass('btn btn-sm btn-outline-secondary ml-2')
+      .attr('type', 'button')
+      .html('Save as...');
+
+    btn.on('click', async () => {
+      const promptInput = this.tabContent.find(`input#prompt-${this.id}`);
+      const text = promptInput.val();
+      if (!text) return;
+
+      const name = window.prompt('Save prompt as:');
+      if (!name) return;
+
+      const store = GetSettingStore();
+      const templates = (await store.getItem('genai.prompts')) || {};
+      templates[name] = {
+        text,
+        task: this.promptTemplate || 'custom',
+      };
+      await store.putItem('genai.prompts', templates);
+      this.refreshUserTemplates();
+    });
+
+    row.append(btn);
+
+    const templatesContainer = $('<div/>')
+      .addClass('user-templates-group mt-2');
+    row.append(templatesContainer);
+
+    this.refreshUserTemplates();
+
+    return row;
+  }
+
+  async refreshUserTemplates() {
+    const container = this.tabContent.find('.user-templates-group');
+    if (!container.length) return;
+
+    const store = GetSettingStore();
+    const templates = (await store.getItem('genai.prompts')) || {};
+    container.empty();
+
+    const names = Object.keys(templates);
+    if (names.length === 0) return;
+
+    const header = $('<small/>').addClass('text-muted').html('My templates:');
+    container.append(header);
+
+    names.forEach((name) => {
+      const row = $('<div/>').addClass('d-flex align-items-center mb-1 ml-2');
+      const link = $('<a/>')
+        .addClass('mr-2 lead-xs')
+        .attr('href', '#')
+        .html(name)
+        .on('click', (e) => {
+          e.preventDefault();
+          const promptInput = this.tabContent.find(`input#prompt-${this.id}`);
+          promptInput.val(templates[name].text);
+          this.prompt = templates[name].text;
+          this.promptTemplate = templates[name].task;
+        });
+      const del = $('<button/>')
+        .addClass('btn btn-sm btn-link text-danger p-0')
+        .attr('type', 'button')
+        .html('&times;')
+        .on('click', async () => {
+          delete templates[name];
+          await store.putItem('genai.prompts', templates);
+          this.refreshUserTemplates();
+        });
+      row.append(link, del);
+      container.append(row);
+    });
   }
 
   createPromptTemplate() {

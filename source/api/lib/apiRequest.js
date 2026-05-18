@@ -18,6 +18,7 @@ const StatsOp = require('./operations/statsOp');
 const UsersOp = require('./operations/usersOp');
 const SettingsOp = require('./operations/settingsOp');
 const GenAIOp = require('./operations/genaiOp');
+const ModelsOp = require('./operations/modelsOp');
 const FaceIndexerOp = require('./operations/faceIndexerOp');
 
 const OP_REKOGNITION = 'rekognition';
@@ -25,6 +26,7 @@ const OP_TRANSCRIBE = 'transcribe';
 const OP_COMPREHEND = 'comprehend';
 const OP_SETTINGS = ApiOps.AIOptionsSettings.split('/')[0];
 const OP_GENAI = 'genai';
+const OP_MODELS = 'models';
 
 class ApiRequest {
   constructor(event, context) {
@@ -132,6 +134,9 @@ class ApiRequest {
     }
     if (op === OP_GENAI) {
       return new GenAIOp(this);
+    }
+    if (op === OP_MODELS) {
+      return new ModelsOp(this);
     }
     if (op === ApiOps.FaceIndexer) {
       return new FaceIndexerOp(this);

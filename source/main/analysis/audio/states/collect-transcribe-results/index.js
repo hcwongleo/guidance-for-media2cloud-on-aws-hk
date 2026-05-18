@@ -9,23 +9,14 @@ const {
 } = require('@aws-sdk/client-transcribe');
 const {
   BedrockRuntimeClient,
-  InvokeModelCommand,
+  ConverseCommand,
 } = require('@aws-sdk/client-bedrock-runtime');
 const {
   StateData,
-  Environment: {
-    Solution: {
-      Metrics: {
-        CustomUserAgent,
-      },
-    },
-  },
   AnalysisTypes: {
     Transcribe,
   },
   CommonUtils,
-  xraysdkHelper,
-  retryStrategyHelper,
   M2CException,
   WebVttHelper,
 } = require('core-lib');
@@ -37,38 +28,10 @@ const MIN_CONVERSATION_DURATION = 40;
 const CUES_CHUNK_SIZE_INSEC = 15 * 60;
 const MIN_TO_ENABLE_CHUNKING = 20 * 60;
 
-// Claude
 const MODEL_REGION = process.env.ENV_BEDROCK_REGION;
 const MODEL_ID = process.env.ENV_BEDROCK_MODEL_ID;
-const MODEL_VERSION = process.env.ENV_BEDROCK_MODEL_VER;
-const MODEL_PRICING = (MODEL_ID.indexOf('sonnet') > 0)
-  ? {
-    InputTokens: 0.00300,
-    OutputTokens: 0.01500,
-  }
-  : {
-    InputTokens: 0.00025,
-    OutputTokens: 0.00125,
-  };
 const MODEL_ERROR_EXCEPTION = 'ModelErrorException';
-const SYSTEM = 'You are a media operation assistant that can analyze movie transcripts in WebVTT format and suggest chapter points based on the topic changes in the conversations. It is important to read the entire transcripts.';
-const MODEL_PARAMS = {
-  anthropic_version: MODEL_VERSION,
-  max_tokens: 4096 * 4,
-  temperature: 0.2,
-  stop_sequences: ['\n\nHuman:'],
-  system: SYSTEM,
-};
-const ASSISTANT = {
-  OutputFormat: {
-    role: 'assistant',
-    content: 'OK. I got the transcript. What output format?',
-  },
-  Prefill: {
-    role: 'assistant',
-    content: '{',
-  },
-};
+const SYSTEM = 'You are a media operation assistant that can analyze movie transcripts in WebVTT format and suggest chapter points based on the topic changes in the conversations. It is important to read the entire transcripts. Respond with only a JSON object. No markdown, no commentary.';
 
 let FilterSettings = {
   analyseConversation: true,
@@ -258,11 +221,7 @@ async function _analyseConversation(bucket, key) {
       cues: sliced,
     });
 
-    const modelParams = _prepareModelParams(sliced);
-
-    const response = await _invokeEndpoint(modelId, modelParams)
-      .then((res) =>
-        _parseResponse(res))
+    const response = await _invokeChapterModel(modelId, sliced)
       .catch(() =>
         undefined);
 
@@ -297,12 +256,7 @@ async function _analyseConversation(bucket, key) {
     },
   } = result;
 
-  const estimatedCost = ((
-    (inputTokens * MODEL_PRICING.InputTokens) +
-    (outputTokens * MODEL_PRICING.OutputTokens)
-  ) / 1000).toFixed(4);
-
-  console.log(`inputTokens = ${inputTokens}, outputTokens = ${outputTokens}, estimatedCost = $${estimatedCost}`);
+  console.log(`inputTokens = ${inputTokens}, outputTokens = ${outputTokens}`);
   console.log(JSON.stringify(chapters, null, 2));
   console.log(`Total chapters = ${chapters.length}`);
 
@@ -322,7 +276,7 @@ async function _analyseConversation(bucket, key) {
   return outKey;
 }
 
-function _prepareModelParams(vtt) {
+async function _invokeChapterModel(modelId, vtt) {
   const example = {
     chapters: [
       {
@@ -333,108 +287,54 @@ function _prepareModelParams(vtt) {
     ],
   };
 
-  const messages = [];
-
-  // user
-  messages.push({
-    role: 'user',
-    content: `Here is the transcripts in <transcript> tag:\n<transcript>${vtt}\n</transcript>\n`,
-  });
-
-  // assistent
-  messages.push(ASSISTANT.OutputFormat);
-
-  // user
-  messages.push({
-    role: 'user',
-    content: `Return JSON format. An example of the output:\n${JSON.stringify(example)}\n`,
-  });
-
-  // assistant
-  messages.push(ASSISTANT.Prefill);
-
-  const system = SYSTEM;
-  console.log('SYSTEM PROMPT: ', system);
-
-  const modelParams = {
-    ...MODEL_PARAMS,
-    system,
-    messages,
-  };
-
-  return modelParams;
-}
-
-async function _invokeEndpoint(modelId, modelParams) {
-  const runtimeClient = new BedrockRuntimeClient({
-    region: MODEL_REGION,
-  });
-
-  const params = {
-    modelId,
-    contentType: 'application/json',
-    accept: 'application/json',
-    body: JSON.stringify(modelParams),
-  };
-
-  const command = new InvokeModelCommand(params);
-
-  let response = await runtimeClient.send(command)
-    .catch((e) => {
-      let exception;
-      if (e.code === 'ENOTFOUND') {
-        exception = new Error(`Bedrock not supported in the region (${e.code})`);
-        exception.name = 'ServiceUnavailableException';
-      } else if (e.name === MODEL_ERROR_EXCEPTION) {
-        exception = new Error(`Model inference quota reached. Retry again. (${e.name})`);
-        exception.name = MODEL_ERROR_EXCEPTION;
-      } else if (e.name === 'ResourceNotFoundException') {
-        exception = new Error(`Make sure to request access to the model in the region (${e.name})`);
-        exception.name = 'ResourceNotFoundException';
-      } else if (e.name === 'AccessDeniedException') {
-        exception = new Error(`Not allow to access to the model in the region (${e.name})`);
-        exception.name = 'AccessDeniedException';
-      } else {
-        exception = new Error(e.message);
-        exception.name = e.name || e.code || 'UnknownException';
-      }
-
-      console.log(`[ERR]: InvokeModelCommand: ${exception.name} - ${exception.message}`);
-      throw exception;
-    });
-
-  response = new TextDecoder().decode(response.body);
-  response = JSON.parse(response);
-
-  return response;
-}
-
-function _parseResponse(response) {
-  if (response === undefined) {
-    return undefined;
-  }
-
-  const {
-    usage: {
-      input_tokens: inputTokens,
-      output_tokens: outputTokens,
+  const messages = [
+    {
+      role: 'user',
+      content: [{ text: `Here is the transcripts in <transcript> tag:\n<transcript>${vtt}\n</transcript>\n` }],
     },
-    content = [],
-  } = response;
+    {
+      role: 'assistant',
+      content: [{ text: 'OK. I got the transcript. What output format?' }],
+    },
+    {
+      role: 'user',
+      content: [{ text: `Return JSON format. An example of the output:\n${JSON.stringify(example)}\n` }],
+    },
+  ];
+
+  const client = new BedrockRuntimeClient({ region: MODEL_REGION });
+  const response = await client.send(new ConverseCommand({
+    modelId,
+    system: [{ text: SYSTEM }],
+    messages,
+    inferenceConfig: { maxTokens: 4096 * 4, temperature: 0.2 },
+  })).catch((e) => {
+    let exception;
+    if (e.name === MODEL_ERROR_EXCEPTION) {
+      exception = new Error(`Model inference quota reached. Retry again. (${e.name})`);
+      exception.name = MODEL_ERROR_EXCEPTION;
+    } else {
+      exception = new Error(e.message);
+      exception.name = e.name || e.code || 'UnknownException';
+    }
+    console.log(`[ERR]: ConverseCommand: ${exception.name} - ${exception.message}`);
+    throw exception;
+  });
+
+  const outputText = (response.output.message.content[0] || {}).text || '';
+  const contentOutput = _parseOutputContent(outputText);
 
   const result = {
     usage: {
-      inputTokens,
-      outputTokens,
+      inputTokens: response.usage.inputTokens,
+      outputTokens: response.usage.outputTokens,
     },
     chapters: [],
   };
 
-  const contentOutput = _parseOutputContent((content[0] || {}).text);
-
   if (contentOutput === undefined) {
-    console.log('WARNING!!! Fail to parse content output?', content[0].text);
-    result.rawText = content[0].text;
+    console.log('WARNING!!! Fail to parse content output?', outputText);
+    result.rawText = outputText;
     return result;
   }
 
@@ -450,10 +350,6 @@ function _parseOutputContent(text) {
   }
 
   let jsonstring = text.trim();
-  if (jsonstring[0] !== '{') {
-    jsonstring = `{${jsonstring}`;
-  }
-
   let data;
 
   try {
@@ -463,7 +359,6 @@ function _parseOutputContent(text) {
     // do nothing
   }
 
-  // find '{' and '}' boundary to parse again.
   let idx = jsonstring.indexOf('{');
   if (idx < 0) {
     return undefined;

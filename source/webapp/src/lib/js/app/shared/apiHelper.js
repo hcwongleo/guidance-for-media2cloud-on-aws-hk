@@ -37,6 +37,7 @@ const ENDPOINTS = {
   Theme: `${ApiEndpoint}/${ApiOps.Theme}`,
   Taxonomy: `${ApiEndpoint}/${ApiOps.Taxonomy}`,
   Custom: `${ApiEndpoint}/${ApiOps.Custom}`,
+  Models: `${ApiEndpoint}/models`,
   Workflow: `${ApiEndpoint}/${ApiOps.Execution}`,
 };
 
@@ -422,6 +423,16 @@ export default class ApiHelper {
     return ApiHelper.genaiPrompt(
       ENDPOINTS.Custom,
       options
+    );
+  }
+
+  static async getModels(capability) {
+    const qs = capability ? `?capability=${capability}` : '';
+    return _authHttpRequest.send(
+      'GET',
+      `${ENDPOINTS.Models}${qs}`,
+      undefined,
+      undefined
     );
   }
 

@@ -4,7 +4,7 @@
 const PATH = require('node:path');
 const {
   BedrockRuntimeClient,
-  InvokeModelCommand,
+  ConverseCommand,
 } = require('@aws-sdk/client-bedrock-runtime');
 const {
   RekognitionClient,
@@ -50,39 +50,9 @@ const {
 } = require('core-lib');
 
 const MODEL_REGION = process.env.ENV_BEDROCK_REGION;
-const MODEL_ID = process.env.ENV_BEDROCK_MODEL_ID;
-const MODEL_VERSION = process.env.ENV_BEDROCK_MODEL_VER;
-const MODEL_PRICING = (MODEL_ID.indexOf('sonnet') > 0)
-  ? {
-    InputTokens: 0.00300,
-    OutputTokens: 0.01500,
-  }
-  : {
-    InputTokens: 0.00025,
-    OutputTokens: 0.00125,
-  };
+const MODEL_ID = process.env.ENV_BEDROCK_VISION_MODEL_ID || process.env.ENV_BEDROCK_MODEL_ID;
 const MODEL_ERROR_EXCEPTION = 'ModelErrorException';
-const SYSTEM = 'You are a journalist responsible for reviewing photos and provide detail information of the photos. You may optionally be provided with additional information such as known people, texts, and GPS longitude and latitude. Your task is to write a detail description of the photo, provide a one line ATL-TEXT for SEO purpose, suggest a descriptive file name for the photo, and top 5 tags or keywords of the photo for search purpose. Use the additional information where possilbe. Also provide a confidence score from 0 to 100. The output should be in JSON format. Skip any explanation in the output.';
-const ASSISTANT = {
-  GotPhotoOtherInfo: {
-    role: 'assistant',
-    content: 'Got the photo. Other information you would like to provide?',
-  },
-  OutputFormat: {
-    role: 'assistant',
-    content: 'OK. What output format?',
-  },
-  Prefill: {
-    role: 'assistant',
-    content: '{',
-  },
-};
-const MODEL_PARAMS = {
-  anthropic_version: MODEL_VERSION,
-  max_tokens: 4096 * 4,
-  temperature: 0.2,
-  stop_sequences: ['\n\nHuman:'],
-};
+const SYSTEM = 'You are a journalist responsible for reviewing photos and provide detail information of the photos. You may optionally be provided with additional information such as known people, texts, and GPS longitude and latitude. Your task is to write a detail description of the photo, provide a one line ATL-TEXT for SEO purpose, suggest a descriptive file name for the photo, and top 5 tags or keywords of the photo for search purpose. Use the additional information where possible. Also provide a confidence score from 0 to 100. Respond with only a JSON object. No markdown, no commentary.';
 
 const MAX_W = 960;
 const MAX_H = MAX_W;
@@ -571,31 +541,27 @@ class StateStartImageAnalysis {
       image = image.scale(factor);
     }
     image = image.quality(80);
-    image = await image.getBase64Async(MIME_JPEG);
-    image = image.split(',')[1];
+    const imageBuffer = await image.getBufferAsync(MIME_JPEG);
 
-    // prepare model parameter
-    const params = _prepareModelParams(
-      image,
+    const messages = _prepareModelMessages(
+      imageBuffer,
       knownFaces,
       texts,
       [latitude, longitude]
     );
 
-    const response = await _invokeEndpoint(params)
+    const response = await _invokeEndpoint(SYSTEM, messages)
       .catch(() => undefined);
 
     if (response === undefined) {
       return response;
     }
 
+    const outputText = (response.output.message.content[0] || {}).text || '';
     const {
-      usage: {
-        input_tokens: inputTokens,
-        output_tokens: outputTokens,
-      },
-      content = [],
-    } = response;
+      inputTokens,
+      outputTokens,
+    } = response.usage;
 
     let result = {
       usage: {
@@ -604,20 +570,15 @@ class StateStartImageAnalysis {
       },
     };
 
-    if ((content[0] || {}).text) {
-      const parsed = _parseOutputContent(content[0].text);
-
+    if (outputText) {
+      const parsed = _parseOutputContent(outputText);
       result = {
         ...result,
         ...parsed,
       };
     }
 
-    const estimatedCost = ((
-      (inputTokens * MODEL_PRICING.InputTokens) +
-      (outputTokens * MODEL_PRICING.OutputTokens)
-    ) / 1000).toFixed(4);
-    console.log(`inputTokens = ${inputTokens}, outputTokens = ${outputTokens}, estimatedCost = $${estimatedCost}`);
+    console.log(`inputTokens = ${inputTokens}, outputTokens = ${outputTokens}`);
     console.log(JSON.stringify(result, null, 2));
 
     const prefix = this.makeOutputPrefix(CAPTION);
@@ -640,178 +601,106 @@ class StateStartImageAnalysis {
   }
 }
 
-function _prepareModelParams(
-  image,
+function _prepareModelMessages(
+  imageBuffer,
   knownFaces,
   texts,
   gps
 ) {
-  const system = SYSTEM;
-
   const messages = [];
 
-  // image content
-  const imageContent = [];
-  imageContent.push({
-    type: 'text',
-    text: 'Here is a photo to analyze.',
-  });
-  imageContent.push({
-    type: 'image',
-    source: {
-      type: 'base64',
-      media_type: 'image/jpeg',
-      data: image,
-    },
-  });
   messages.push({
     role: 'user',
-    content: imageContent,
+    content: [
+      { text: 'Here is a photo to analyze.' },
+      { image: { format: 'jpeg', source: { bytes: imageBuffer } } },
+    ],
   });
 
-  messages.push(ASSISTANT.GotPhotoOtherInfo);
+  messages.push({
+    role: 'assistant',
+    content: [{ text: 'Got the photo. Other information you would like to provide?' }],
+  });
 
-  const additionalContent = [];
+  const additionalParts = [];
   if (knownFaces.length) {
-    const persons = [
-      '<people>',
-      ...knownFaces,
-      '</people>',
-    ];
-
-    additionalContent.push({
-      type: 'text',
-      text: `Here is a list of known people appeared in the photo. Use their names in <people> tag where possible. People:\n${persons.join('\n')}\n`,
-    });
+    const persons = ['<people>', ...knownFaces, '</people>'];
+    additionalParts.push(`Here is a list of known people appeared in the photo. Use their names in <people> tag where possible. People:\n${persons.join('\n')}\n`);
   }
 
   if (texts.length) {
-    const words = [
-      '<text>',
-      ...texts,
-      '</text>',
-    ];
-
-    additionalContent.push({
-      type: 'text',
-      text: `Here is a list of texts appeared on the photo. Use the texts in <text> tag where possible. Texts:\n${words.join('\n')}\n`,
-    });
+    const words = ['<text>', ...texts, '</text>'];
+    additionalParts.push(`Here is a list of texts appeared on the photo. Use the texts in <text> tag where possible. Texts:\n${words.join('\n')}\n`);
   }
 
   const [latitude, longitude] = gps;
   if (latitude && longitude) {
-    const location = [
-      '<longitude>',
-      longitude,
-      '</longitude>',
-      '<latitude>',
-      latitude,
-      '</latitude>',
-    ];
-    additionalContent.push({
-      type: 'text',
-      text: `Here is the GPS location where the photo is taken in <longitude> and <latitude> tags:\n${location.join('\n')}\n. Identify the location in the photo. Skip any explanation.`,
-    });
+    const location = ['<longitude>', longitude, '</longitude>', '<latitude>', latitude, '</latitude>'];
+    additionalParts.push(`Here is the GPS location where the photo is taken in <longitude> and <latitude> tags:\n${location.join('\n')}\n. Identify the location in the photo.`);
   }
 
-  if (additionalContent.length > 0) {
+  if (additionalParts.length > 0) {
     messages.push({
       role: 'user',
-      content: additionalContent,
+      content: [{ text: additionalParts.join('\n\n') }],
     });
   } else {
     messages.push({
       role: 'user',
-      content: 'No, I don\'t have additional information to provide.',
+      content: [{ text: 'No, I don\'t have additional information to provide.' }],
     });
   }
 
-  messages.push(ASSISTANT.OutputFormat);
-
-  const example = {
-    description: {
-      text: 'The photo describes...',
-      score: 98,
-    },
-    altText: {
-      text: 'One line ALT-TEXT',
-      score: 90,
-    },
-    fileName: {
-      text: 'photo-of-someone-doing-something',
-      score: 90,
-    },
-    location: {
-      text: 'Madrid, Spain',
-      score: 80,
-    },
-    tags: [
-      {
-        text: 'Night club',
-        score: 90,
-      },
-    ],
-  };
-
-  const output = `Return JSON format. An example of the output:\n${JSON.stringify(example)}\n.`;
   messages.push({
-    role: 'user',
-    content: output,
+    role: 'assistant',
+    content: [{ text: 'OK. What output format?' }],
   });
 
-  messages.push(ASSISTANT.Prefill);
-
-  const params = {
-    ...MODEL_PARAMS,
-    system,
-    messages,
+  const example = {
+    description: { text: 'The photo describes...', score: 98 },
+    altText: { text: 'One line ALT-TEXT', score: 90 },
+    fileName: { text: 'photo-of-someone-doing-something', score: 90 },
+    location: { text: 'Madrid, Spain', score: 80 },
+    tags: [{ text: 'Night club', score: 90 }],
   };
 
-  return params;
+  messages.push({
+    role: 'user',
+    content: [{ text: `Return JSON format. An example of the output:\n${JSON.stringify(example)}\n.` }],
+  });
+
+  return messages;
 }
 
-async function _invokeEndpoint(modelParams, modelId = MODEL_ID) {
-  const runtimeClient = xraysdkHelper(new BedrockRuntimeClient({
-    region: MODEL_REGION,
-    customUserAgent: CustomUserAgent,
-    retryStrategy: retryStrategyHelper(4),
-  }));
+async function _invokeEndpoint(system, messages, modelId = MODEL_ID) {
+  const client = new BedrockRuntimeClient({ region: MODEL_REGION });
 
-  const params = {
+  const response = await client.send(new ConverseCommand({
     modelId,
-    contentType: 'application/json',
-    accept: 'application/json',
-    body: JSON.stringify(modelParams),
-  };
-
-  const command = new InvokeModelCommand(params);
-
-  let response = await runtimeClient.send(command)
-    .catch((e) => {
-      let exception;
-      if (e.code === 'ENOTFOUND') {
-        exception = new Error(`Bedrock not supported in the region (${e.code})`);
-        exception.name = 'ServiceUnavailableException';
-      } else if (e.name === MODEL_ERROR_EXCEPTION) {
-        exception = new Error(`Model inference quota reached. Retry again. (${e.name})`);
-        exception.name = MODEL_ERROR_EXCEPTION;
-      } else if (e.name === 'ResourceNotFoundException') {
-        exception = new Error(`Make sure to request access to the model in the region (${e.name})`);
-        exception.name = 'ResourceNotFoundException';
-      } else if (e.name === 'AccessDeniedException') {
-        exception = new Error(`Not allow to access to the model in the region (${e.name})`);
-        exception.name = 'AccessDeniedException';
-      } else {
-        exception = new Error(e.message);
-        exception.name = e.name || e.code || 'UnknownException';
-      }
-
-      console.log(`[ERR]: InvokeModelCommand: ${exception.name} - ${exception.message}`);
-      throw exception;
-    });
-
-  response = new TextDecoder().decode(response.body);
-  response = JSON.parse(response);
+    system: [{ text: system }],
+    messages,
+    inferenceConfig: { maxTokens: 4096 * 4, temperature: 0.2 },
+  })).catch((e) => {
+    let exception;
+    if (e.code === 'ENOTFOUND') {
+      exception = new Error(`Bedrock not supported in the region (${e.code})`);
+      exception.name = 'ServiceUnavailableException';
+    } else if (e.name === MODEL_ERROR_EXCEPTION) {
+      exception = new Error(`Model inference quota reached. Retry again. (${e.name})`);
+      exception.name = MODEL_ERROR_EXCEPTION;
+    } else if (e.name === 'ResourceNotFoundException') {
+      exception = new Error(`Make sure to request access to the model in the region (${e.name})`);
+      exception.name = 'ResourceNotFoundException';
+    } else if (e.name === 'AccessDeniedException') {
+      exception = new Error(`Not allow to access to the model in the region (${e.name})`);
+      exception.name = 'AccessDeniedException';
+    } else {
+      exception = new Error(e.message);
+      exception.name = e.name || e.code || 'UnknownException';
+    }
+    console.log(`[ERR]: ConverseCommand: ${exception.name} - ${exception.message}`);
+    throw exception;
+  });
 
   return response;
 }
@@ -821,11 +710,7 @@ function _parseOutputContent(text) {
     return undefined;
   }
 
-  let jsonstring = text;
-  if (jsonstring[0] !== '{') {
-    jsonstring = `{${jsonstring}`;
-  }
-
+  let jsonstring = text.trim();
   let data;
 
   try {
@@ -835,7 +720,6 @@ function _parseOutputContent(text) {
     // do nothing
   }
 
-  // find '{' and '}' boundary to parse again.
   let idx = jsonstring.indexOf('{');
   if (idx < 0) {
     return undefined;

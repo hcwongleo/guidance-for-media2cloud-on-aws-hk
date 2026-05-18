@@ -7,9 +7,9 @@ const {
     Tokenize,
   },
   M2CException,
+  BedrockModel,
 } = require('core-lib');
 const BaseOp = require('./baseOp');
-const Claude = require('./genai/claude');
 
 const SUBOP_TOKENIZE = Tokenize.split('/')[1];
 
@@ -40,17 +40,15 @@ class GenAIOp extends BaseOp {
       throw new M2CException('text input is missing');
     }
 
-    let model;
-
-    if (Claude.canSupport(params.model)) {
-      model = new Claude();
+    if (!BedrockModel.canSupport()) {
+      throw new M2CException('Bedrock region not configured');
     }
 
-    if (!model) {
-      throw new M2CException('invalid model name');
-    }
-
-    const response = await model.inference(op, params);
+    const model = new BedrockModel();
+    const response = await model.inference(op, {
+      ...params,
+      modelId: params.model,
+    });
 
     return super.onPOST(response);
   }

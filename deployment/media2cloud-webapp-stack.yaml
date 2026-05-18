@@ -318,19 +318,41 @@ Resources:
             PolicyDocument:
                 Version: "2012-10-17"
                 Statement:
-                    # Bedrock
+                    # Bedrock List Models
                     -
                         Effect: Allow
                         Action: bedrock:ListFoundationModels
                         Resource: "*"
-                    # Bedrock models: Anthropic Claude (global inference profile)
+                    # Bedrock Converse + InvokeModel for all whitelisted providers
                     -
                         Effect: Allow
-                        Action: bedrock:InvokeModel
+                        Action:
+                            - bedrock:InvokeModel
+                            - bedrock:Converse
                         Resource:
-                            # Anthropic Claude family
+                            # Anthropic Claude family (defense-in-depth)
                             - arn:aws:bedrock:*::foundation-model/anthropic.claude-*
                             - !Sub arn:aws:bedrock:*:${AWS::AccountId}:inference-profile/*.anthropic.claude-*
+                            # Amazon Nova
+                            - arn:aws:bedrock:*::foundation-model/amazon.*
+                            - !Sub arn:aws:bedrock:*:${AWS::AccountId}:inference-profile/*.amazon.*
+                            # DeepSeek
+                            - arn:aws:bedrock:*::foundation-model/deepseek.*
+                            - !Sub arn:aws:bedrock:*:${AWS::AccountId}:inference-profile/*.deepseek.*
+                            # MiniMax
+                            - arn:aws:bedrock:*::foundation-model/minimax.*
+                            - !Sub arn:aws:bedrock:*:${AWS::AccountId}:inference-profile/*.minimax.*
+                            # Moonshot AI
+                            - arn:aws:bedrock:*::foundation-model/moonshotai.*
+                            - !Sub arn:aws:bedrock:*:${AWS::AccountId}:inference-profile/*.moonshotai.*
+                            - arn:aws:bedrock:*::foundation-model/moonshot.*
+                            - !Sub arn:aws:bedrock:*:${AWS::AccountId}:inference-profile/*.moonshot.*
+                            # Qwen
+                            - arn:aws:bedrock:*::foundation-model/qwen.*
+                            - !Sub arn:aws:bedrock:*:${AWS::AccountId}:inference-profile/*.qwen.*
+                            # Z.AI
+                            - arn:aws:bedrock:*::foundation-model/zai.*
+                            - !Sub arn:aws:bedrock:*:${AWS::AccountId}:inference-profile/*.zai.*
 
     ApiLambda:
         Type: AWS::Lambda::Function

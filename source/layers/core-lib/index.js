@@ -41,6 +41,7 @@ const FaceIndexer = require('./lib/faceIndexer');
 const FaceIndexerDefs = require('./lib/faceIndexer/defs');
 const IABTaxonomy = require('./lib/iabTaxonomyV3');
 const JimpHelper = require('./lib/jimpHelper');
+const BedrockModel = require('./lib/genai/bedrockModel');
 
 const MapDataVersion = 2;
 
@@ -86,4 +87,5 @@ module.exports = {
   FaceIndexerDefs,
   IABTaxonomy,
   JimpHelper,
+  BedrockModel,
 };

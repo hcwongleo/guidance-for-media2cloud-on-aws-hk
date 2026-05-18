@@ -4,16 +4,9 @@ const FS = require('node:fs');
 const PATH = require('node:path');
 const {
   BedrockRuntimeClient,
-  InvokeModelCommand,
+  ConverseCommand,
 } = require('@aws-sdk/client-bedrock-runtime');
 const {
-  Environment: {
-    Solution: {
-      Metrics: {
-        CustomUserAgent,
-      },
-    },
-  },
   AnalysisTypes: {
     Scene,
   },
@@ -25,8 +18,6 @@ const {
   },
   CommonUtils,
   IABTaxonomy,
-  xraysdkHelper,
-  retryStrategyHelper,
   WebVttHelper,
   JimpHelper: {
     MIME_JPEG,
@@ -38,35 +29,9 @@ const BaseState = require('../shared/base');
 
 const MODEL_REGION = process.env.ENV_BEDROCK_REGION;
 const MODEL_ID = process.env.ENV_BEDROCK_MODEL_ID;
-const MODEL_VERSION = process.env.ENV_BEDROCK_MODEL_VER;
 const TASK_ALL = 'You are asked to provide the following information: a detail description to describe the scene, identify the most relevant IAB taxonomy, GARM, sentiment, and brands and logos that may appear in the scene, and five most relevant tags from the scene.';
 const TASK_IAB = 'You are asked to identify the most relevant IAB taxonomy.';
-const SYSTEM = 'You are a media operation engineer. Your job is to review a portion of a video content presented by a sequence of consecutive images. Each image also contains a sequence of frames presented in a 4x7 grid reading from left to right and then from top to bottom. You may also optionally be given the dialogues of the scene that helps you to understand the context. {{TASK}} It is important to return the results in JSON format and also includes a confidence score from 0 to 100. Skip any explanation.';
-const ASSISTANT = {
-  ProvideDialogues: {
-    role: 'assistant',
-    content: 'Got the images. Do you have the dialogues of the scene?',
-  },
-  OtherInfo: {
-    role: 'assistant',
-    content: 'OK. Do you have other information to provdie?',
-  },
-  OutputFormat: {
-    role: 'assistant',
-    content: 'OK. What output format?',
-  },
-  Prefill: {
-    role: 'assistant',
-    content: '{',
-  },
-};
-const MODEL_PARAMS = {
-  anthropic_version: MODEL_VERSION,
-  max_tokens: 4096 * 4,
-  temperature: 0.1,
-  stop_sequences: ['\n\nHuman:'],
-  // system: SYSTEM,
-};
+const SYSTEM = 'You are a media operation engineer. Your job is to review a portion of a video content presented by a sequence of consecutive images. Each image also contains a sequence of frames presented in a 4x7 grid reading from left to right and then from top to bottom. You may also optionally be given the dialogues of the scene that helps you to understand the context. {{TASK}} Respond with only a JSON object including a confidence score from 0 to 100. No markdown, no commentary.';
 
 const ENABLE_IMAGE_TILE = false;
 // can support upto 140 frames per scene
@@ -613,19 +578,16 @@ async function _inference(
   const t0 = Date.now();
 
   const modelId = MODEL_ID;
-  const version = MODEL_VERSION;
 
   const messages = [];
 
   const imageContents = [];
   if (images.length < 2) {
     imageContents.push({
-      type: 'text',
       text: 'Here is an image contains frame sequence that describes a scene.',
     });
   } else {
     imageContents.push({
-      type: 'text',
       text: `Here are the ${images.length} images containing frame sequence that describes a scene.`,
     });
   }
@@ -633,13 +595,11 @@ async function _inference(
   console.log(`Number of tiled images = ${images.length}`);
 
   for (let i = 0; i < images.length; i += 1) {
-    const image = await images[i].getBase64Async(MIME_JPEG);
+    const buf = await images[i].getBufferAsync(MIME_JPEG);
     imageContents.push({
-      type: 'image',
-      source: {
-        type: 'base64',
-        media_type: 'image/jpeg',
-        data: image.split(',')[1],
+      image: {
+        format: 'jpeg',
+        source: { bytes: buf },
       },
     });
   }
@@ -648,143 +608,90 @@ async function _inference(
     content: imageContents,
   });
 
-  // assistent
-  messages.push(ASSISTANT.ProvideDialogues);
+  messages.push({
+    role: 'assistant',
+    content: [{ text: 'Got the images. Do you have the dialogues of the scene?' }],
+  });
 
-  // dialogues
   let dialogueContent = 'No dialogue';
   if (dialogues.length > 0) {
     dialogueContent = `Here is the dialogues of the scene in <transcript> tag:\n<transcript>\n${dialogues.join('\n')}\n</transcript>\n`;
   }
   messages.push({
     role: 'user',
-    content: dialogueContent,
+    content: [{ text: dialogueContent }],
   });
 
-  // assistent
-  messages.push(ASSISTANT.OtherInfo);
+  messages.push({
+    role: 'assistant',
+    content: [{ text: 'OK. Do you have other information to provide?' }],
+  });
 
-  const additional = [];
-  // iab taxonomy list
   const taxonomies = TaxonomyTier1
     .map((x) =>
       x.Name);
   taxonomies.push('None');
-  additional.push({
-    type: 'text',
-    text: `Here is a list of IAB Taxonomies in <iab> tag:\n<iab>\n${taxonomies.join('\n')}\n</iab>\nOnly answer the IAB taxonomy from this list.`,
-  });
 
-  // garm taxonomy list
   const garms = GARM;
-  additional.push({
-    type: 'text',
-    text: `Here is a list of GARM Taxonomies in <garm> tag:\n<garm>\n${garms.join('\n')}\n</garm>\nOnly answer the GARM taxonomy from this list.`,
-  });
-
-  // sentiment
   const sentiments = ['Positive', 'Neutral', 'Negative', 'None'];
-  additional.push({
-    type: 'text',
-    text: `Here is a list of Sentiments in <sentiment> tag:\n<sentiment>\n${sentiments.join('\n')}\n</sentiment>\nOnly answer the Sentiment from this list.`,
-  });
 
-  // tags
-  additional.push({
-    type: 'text',
-    text: 'Also provide five most relevant tags of the scene.',
-  });
+  const additionalText = [
+    `Here is a list of IAB Taxonomies in <iab> tag:\n<iab>\n${taxonomies.join('\n')}\n</iab>\nOnly answer the IAB taxonomy from this list.`,
+    `Here is a list of GARM Taxonomies in <garm> tag:\n<garm>\n${garms.join('\n')}\n</garm>\nOnly answer the GARM taxonomy from this list.`,
+    `Here is a list of Sentiments in <sentiment> tag:\n<sentiment>\n${sentiments.join('\n')}\n</sentiment>\nOnly answer the Sentiment from this list.`,
+    'Also provide five most relevant tags of the scene.',
+  ].join('\n\n');
 
   messages.push({
     role: 'user',
-    content: additional,
+    content: [{ text: additionalText }],
   });
 
-  // assistant
-  messages.push(ASSISTANT.OutputFormat);
+  messages.push({
+    role: 'assistant',
+    content: [{ text: 'OK. What output format?' }],
+  });
 
   const example = {
-    description: {
-      text: 'The scene describes...',
-      score: 98,
-    },
-    sentiment: {
-      text: 'Positive',
-      score: 90,
-    },
-    garmTaxonomy: {
-      text: 'Online piracy',
-      score: 90,
-    },
-    iabTaxonomy: {
-      text: 'Station Wagon',
-      score: 80,
-    },
-    brandAndLogos: [
-      {
-        text: 'Amazon',
-        score: 98,
-      },
-      {
-        text: 'Nike',
-        score: 90,
-      },
-    ],
-    tags: [
-      {
-        text: 'BMW',
-        score: 90,
-      },
-    ],
+    description: { text: 'The scene describes...', score: 98 },
+    sentiment: { text: 'Positive', score: 90 },
+    garmTaxonomy: { text: 'Online piracy', score: 90 },
+    iabTaxonomy: { text: 'Station Wagon', score: 80 },
+    brandAndLogos: [{ text: 'Amazon', score: 98 }, { text: 'Nike', score: 90 }],
+    tags: [{ text: 'BMW', score: 90 }],
   };
 
-  const output = `Return JSON format. An example of the output:\n${JSON.stringify(example)}\n`;
   messages.push({
     role: 'user',
-    content: output,
+    content: [{ text: `Return JSON format. An example of the output:\n${JSON.stringify(example)}\n` }],
   });
 
-  // assistant
-  messages.push(ASSISTANT.Prefill);
-
   const system = SYSTEM.replace('{{TASK}}', TASK_ALL);
-  const modelParams = {
-    ...MODEL_PARAMS,
-    ...options,
-    messages,
-    system,
-  };
 
-  const response = await _invokeEndpoint(modelId, modelParams);
+  const response = await _invokeEndpoint(modelId, system, messages);
 
   if (response === undefined) {
     return response;
   }
 
-  const {
-    usage: {
-      input_tokens: inputTokens,
-      output_tokens: outputTokens,
-    },
-    content = [],
-  } = response;
+  const outputText = (response.output.message.content[0] || {}).text || '';
 
   let result = {
     usage: {
-      inputTokens,
-      outputTokens,
+      inputTokens: response.usage.inputTokens,
+      outputTokens: response.usage.outputTokens,
     },
   };
 
-  if (!(content[0] || {}).text) {
+  if (!outputText) {
     result.elapsed = Date.now() - t0;
     return result;
   }
 
-  const contentOutput = _parseOutputContent(content[0].text);
+  const contentOutput = _parseOutputContent(outputText);
 
   if (contentOutput === undefined) {
-    console.log('WARNING!!! Fail to parse content output?', content[0].text);
+    console.log('WARNING!!! Fail to parse content output?', outputText);
   }
 
   result = {
@@ -810,48 +717,35 @@ async function _inference(
   return result;
 }
 
-async function _invokeEndpoint(modelId, modelParams) {
-  const runtimeClient = xraysdkHelper(new BedrockRuntimeClient({
-    region: MODEL_REGION,
-    customUserAgent: CustomUserAgent,
-    retryStrategy: retryStrategyHelper(4),
-  }));
+async function _invokeEndpoint(modelId, system, messages) {
+  const client = new BedrockRuntimeClient({ region: MODEL_REGION });
 
-  const params = {
+  const response = await client.send(new ConverseCommand({
     modelId,
-    contentType: 'application/json',
-    accept: 'application/json',
-    body: JSON.stringify(modelParams),
-  };
-
-  const command = new InvokeModelCommand(params);
-
-  let response = await runtimeClient.send(command)
-    .catch((e) => {
-      let exception;
-      if (e.code === 'ENOTFOUND') {
-        exception = new Error(`Bedrock not supported in the region (${e.code})`);
-        exception.name = 'ServiceUnavailableException';
-      } else if (e.name === MODEL_ERROR_EXCEPTION) {
-        exception = new Error(`Model inference quota reached. Retry again. (${e.name})`);
-        exception.name = MODEL_ERROR_EXCEPTION;
-      } else if (e.name === 'ResourceNotFoundException') {
-        exception = new Error(`Make sure to request access to the model in the region (${e.name})`);
-        exception.name = 'ResourceNotFoundException';
-      } else if (e.name === 'AccessDeniedException') {
-        exception = new Error(`Not allow to access to the model in the region (${e.name})`);
-        exception.name = 'AccessDeniedException';
-      } else {
-        exception = new Error(e.message);
-        exception.name = e.name || e.code || 'UnknownException';
-      }
-
-      console.log(`[ERR]: InvokeModelCommand: ${exception.name} - ${exception.message}`);
-      throw exception;
-    });
-
-  response = new TextDecoder().decode(response.body);
-  response = JSON.parse(response);
+    system: [{ text: system }],
+    messages,
+    inferenceConfig: { maxTokens: 4096 * 4, temperature: 0.1 },
+  })).catch((e) => {
+    let exception;
+    if (e.code === 'ENOTFOUND') {
+      exception = new Error(`Bedrock not supported in the region (${e.code})`);
+      exception.name = 'ServiceUnavailableException';
+    } else if (e.name === MODEL_ERROR_EXCEPTION) {
+      exception = new Error(`Model inference quota reached. Retry again. (${e.name})`);
+      exception.name = MODEL_ERROR_EXCEPTION;
+    } else if (e.name === 'ResourceNotFoundException') {
+      exception = new Error(`Make sure to request access to the model in the region (${e.name})`);
+      exception.name = 'ResourceNotFoundException';
+    } else if (e.name === 'AccessDeniedException') {
+      exception = new Error(`Not allow to access to the model in the region (${e.name})`);
+      exception.name = 'AccessDeniedException';
+    } else {
+      exception = new Error(e.message);
+      exception.name = e.name || e.code || 'UnknownException';
+    }
+    console.log(`[ERR]: ConverseCommand: ${exception.name} - ${exception.message}`);
+    throw exception;
+  });
 
   return response;
 }
@@ -1054,69 +948,57 @@ async function _inferenceRefineIAB(
   };
   const responseFormat = `Return JSON format. An example of the output:\n${JSON.stringify(example)}\n. Skip any explanation.`;
 
-  // construct the message sequence
   const messages = [];
-  // images
   messages.push({
     role: 'user',
     content: imageContents,
   });
-  // has dialogues?
-  messages.push(ASSISTANT.ProvideDialogues);
-  // dialogues
+  messages.push({
+    role: 'assistant',
+    content: [{ text: 'Got the images. Do you have the dialogues of the scene?' }],
+  });
   messages.push({
     role: 'user',
-    content: dialogueContent,
+    content: [{ text: dialogueContent }],
   });
-  // other info?
-  messages.push(ASSISTANT.OtherInfo);
-  // lowerTierTaxonomy list of iab taxonomies
+  messages.push({
+    role: 'assistant',
+    content: [{ text: 'OK. Do you have other information to provide?' }],
+  });
   messages.push({
     role: 'user',
-    content: `Here is a list of IAB Taxonomies in <iab> tag:\n<iab>\n${taxonomies.join('\n')}\n</iab>\nOnly answer the IAB taxonomy from this list.`,
+    content: [{ text: `Here is a list of IAB Taxonomies in <iab> tag:\n<iab>\n${taxonomies.join('\n')}\n</iab>\nOnly answer the IAB taxonomy from this list.` }],
   });
-  // output format?
-  messages.push(ASSISTANT.OutputFormat);
-  // return format
+  messages.push({
+    role: 'assistant',
+    content: [{ text: 'OK. What output format?' }],
+  });
   messages.push({
     role: 'user',
-    content: responseFormat,
+    content: [{ text: responseFormat }],
   });
-  // guardrail to only return JSON
-  messages.push(ASSISTANT.Prefill);
 
   const system = SYSTEM.replace('{{TASK}}', TASK_IAB);
   const modelId = MODEL_ID;
-  const modelParams = {
-    ...MODEL_PARAMS,
-    system,
-    messages,
-  };
 
-  const response = await _invokeEndpoint(modelId, modelParams);
+  const response = await _invokeEndpoint(modelId, system, messages);
 
   if (response === undefined) {
     return lowerTierTaxonomy;
   }
 
-  const {
-    usage: {
-      input_tokens: inputTokens,
-      output_tokens: outputTokens,
-    },
-    content = [],
-  } = response;
+  const outputText = (response.output.message.content[0] || {}).text || '';
 
   lowerTierTaxonomy.usage = {
-    inputTokens,
-    outputTokens,
+    inputTokens: response.usage.inputTokens,
+    outputTokens: response.usage.outputTokens,
   };
 
-  if (!(content[0] || {}).text) {
+  if (!outputText) {
     return lowerTierTaxonomy;
   }
 
-  const contentOutput = _parseOutputContent(content[0].text);
+  const contentOutput = _parseOutputContent(outputText);
 
   if (!(contentOutput || {}).text) {
     return lowerTierTaxonomy;
@@ -1144,11 +1026,7 @@ function _parseOutputContent(text) {
     return undefined;
   }
 
-  let jsonstring = text;
-  if (jsonstring[0] !== '{') {
-    jsonstring = `{${jsonstring}`;
-  }
-
+  let jsonstring = text.trim();
   let data;
 
   try {
@@ -1158,7 +1036,6 @@ function _parseOutputContent(text) {
     // do nothing
   }
 
-  // find '{' and '}' boundary to parse again.
   let idx = jsonstring.indexOf('{');
   if (idx < 0) {
     return undefined;

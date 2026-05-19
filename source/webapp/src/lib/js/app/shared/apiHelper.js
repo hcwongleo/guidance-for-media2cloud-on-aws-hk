@@ -546,4 +546,20 @@ export default class ApiHelper {
       { prompt }
     );
   }
+
+  static async saveSrt(uuid, payload) {
+    return _authHttpRequest.send(
+      'POST',
+      `${ENDPOINTS.Subtitle}/${uuid}/save-srt`,
+      undefined,
+      payload
+    );
+  }
+
+  static async getAiEditStatus(uuid) {
+    return _authHttpRequest.send(
+      'GET',
+      `${ENDPOINTS.Subtitle}/${uuid}/ai-edit-status`
+    );
+  }
 }

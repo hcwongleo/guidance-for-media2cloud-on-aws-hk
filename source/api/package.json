@@ -14,6 +14,9 @@
     "zip": "cd dist && zip -rq"
   },
   "author": "aws-mediaent-solutions",
+  "dependencies": {
+    "@aws-sdk/client-lambda": "^3.1005.0"
+  },
   "devDependencies": {
     "@aws-sdk/client-cognito-identity-provider": "^3.1005.0",
     "@aws-sdk/client-comprehend": "^3.1005.0",

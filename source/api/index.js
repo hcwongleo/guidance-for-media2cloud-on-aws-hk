@@ -27,6 +27,15 @@ exports.handler = async (event, context) => {
       throw new M2CException(`missing enviroment variables, ${missing.join(', ')}`);
     }
 
+    // background self-invoke for long-running ops (no API Gateway in front)
+    if (event && event._asyncJob) {
+      const SubtitleOp = require('./lib/operations/subtitleOp');
+      if (event._asyncJob.type === 'aiEditSubtitle') {
+        return SubtitleOp.runAiEditAsync(event._asyncJob);
+      }
+      throw new M2CException(`unknown async job type: ${event._asyncJob.type}`);
+    }
+
     const request = new ApiRequest(event, context);
     const processor = request.getProcessor();
 

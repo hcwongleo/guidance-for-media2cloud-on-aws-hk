@@ -125,51 +125,42 @@ export default class TranscribeTab extends mxAlert(BaseAnalysisTab) {
       .html('Subtitles (SRT)');
     container.append(heading);
 
-    // row 1: download SRT button
-    const downloadRow = $('<div/>')
-      .addClass('d-flex align-items-center mb-2');
+    // toolbar: Load / Download / Save
+    const toolbar = $('<div/>')
+      .addClass('d-flex align-items-center mb-2 flex-wrap');
+
+    const loadBtn = $('<button/>')
+      .addClass('btn btn-sm btn-outline-primary mr-2 mb-1')
+      .attr('type', 'button')
+      .html('Load Subtitles');
 
     const downloadBtn = $('<button/>')
-      .addClass('btn btn-sm btn-primary mr-2')
+      .addClass('btn btn-sm btn-primary mr-2 mb-1')
       .attr('type', 'button')
       .html('Download SRT');
 
-    const downloadStatus = $('<span/>')
-      .addClass('lead-xs text-muted ml-2');
-
-    downloadRow.append(downloadBtn, downloadStatus);
-    container.append(downloadRow);
-
-    downloadBtn.on('click', async () => {
-      const uuid = this.media.uuid;
-      try {
-        downloadBtn.prop('disabled', true);
-        downloadStatus.html('Generating...');
-        const res = await ApiHelper.generateSrt(uuid);
-        if (res && res.url) {
-          window.open(res.url, '_blank');
-          downloadStatus.html('SRT ready');
-        } else {
-          downloadStatus.html('Failed');
-        }
-      } catch (e) {
-        console.error(e);
-        downloadStatus.html(`Error: ${e.message}`);
-      } finally {
-        downloadBtn.prop('disabled', false);
-      }
-    });
-
-    // row 2: AI edit toggle + form
-    const editToggleRow = $('<div/>')
-      .addClass('d-flex align-items-center mb-2');
-
-    const editToggleBtn = $('<button/>')
-      .addClass('btn btn-sm btn-outline-primary')
+    const saveBtn = $('<button/>')
+      .addClass('btn btn-sm btn-success mr-2 mb-1')
       .attr('type', 'button')
-      .html('AI Edit Subtitles ▾');
-    editToggleRow.append(editToggleBtn);
-    container.append(editToggleRow);
+      .prop('disabled', true)
+      .html('Save Edits');
+
+    const aiToggleBtn = $('<button/>')
+      .addClass('btn btn-sm btn-outline-primary mr-2 mb-1')
+      .attr('type', 'button')
+      .html('AI Edit ▾');
+
+    const applyAllBtn = $('<button/>')
+      .addClass('btn btn-sm btn-outline-success mr-2 mb-1')
+      .attr('type', 'button')
+      .css('display', 'none')
+      .html('Apply All AI →');
+
+    const status = $('<span/>')
+      .addClass('lead-xs text-muted ml-2 mb-1');
+
+    toolbar.append(loadBtn, downloadBtn, saveBtn, aiToggleBtn, applyAllBtn, status);
+    container.append(toolbar);
 
     // collapsible AI edit form
     const editForm = $('<div/>')
@@ -177,7 +168,6 @@ export default class TranscribeTab extends mxAlert(BaseAnalysisTab) {
       .css('display', 'none');
     container.append(editForm);
 
-    // model selector
     const modelLabel = $('<label/>')
       .addClass('lead-xs mb-1')
       .html('Model');
@@ -187,7 +177,6 @@ export default class TranscribeTab extends mxAlert(BaseAnalysisTab) {
       .addClass('custom-select custom-select-sm mb-2');
     editForm.append(modelSelect);
 
-    // prompt textarea
     const promptLabel = $('<label/>')
       .addClass('lead-xs mb-1 mt-2')
       .html('Prompt');
@@ -199,27 +188,273 @@ export default class TranscribeTab extends mxAlert(BaseAnalysisTab) {
       .val(DEFAULT_AI_PROMPT);
     editForm.append(promptInput);
 
-    // action row
-    const actionRow = $('<div/>')
-      .addClass('d-flex align-items-center mt-2');
-
     const runBtn = $('<button/>')
-      .addClass('btn btn-sm btn-success mr-2')
+      .addClass('btn btn-sm btn-success mt-2')
       .attr('type', 'button')
       .html('Run AI Edit');
+    editForm.append(runBtn);
 
-    const editStatus = $('<span/>')
-      .addClass('lead-xs text-muted ml-2');
+    // editor container (two-column table)
+    const editorWrap = $('<div/>')
+      .addClass('border rounded')
+      .css({
+        'max-height': '32rem',
+        overflow: 'auto',
+      });
+    container.append(editorWrap);
 
-    actionRow.append(runBtn, editStatus);
-    editForm.append(actionRow);
+    const editorTable = $('<table/>')
+      .addClass('table table-sm table-borderless mb-0 lead-xs');
+    editorWrap.append(editorTable);
 
-    editToggleBtn.on('click', async () => {
+    const thead = $('<thead/>')
+      .addClass('thead-light')
+      .css({ position: 'sticky', top: 0, 'z-index': 1 });
+    const trh = $('<tr/>');
+    const thAi = $('<th/>').addClass('align-middle ai-col').css('display', 'none').html('AI Suggestion');
+    trh.append(
+      $('<th/>').css('width', '4rem').addClass('align-middle').html('#'),
+      $('<th/>').css('width', '14rem').addClass('align-middle').html('Time'),
+      $('<th/>').addClass('align-middle').html('Subtitle'),
+      thAi
+    );
+    thead.append(trh);
+    editorTable.append(thead);
+
+    const tbody = $('<tbody/>');
+    editorTable.append(tbody);
+
+    const placeholder = $('<p/>')
+      .addClass('lead-xs text-muted px-3 py-3 mb-0')
+      .html('Click "Load Subtitles" to view and edit cues here.');
+    editorWrap.append(placeholder);
+
+    const state = { cues: [], dirty: false, hasAi: false };
+
+    const formatTimecode = (seconds) => {
+      const totalMs = Math.round(seconds * 1000);
+      const ms = totalMs % 1000;
+      const totalSec = Math.floor(totalMs / 1000);
+      const s = totalSec % 60;
+      const totalMin = Math.floor(totalSec / 60);
+      const m = totalMin % 60;
+      const h = Math.floor(totalMin / 60);
+      const pad = (n, w = 2) => String(n).padStart(w, '0');
+      return `${pad(h)}:${pad(m)}:${pad(s)},${pad(ms, 3)}`;
+    };
+
+    const parseTimecode = (text) => {
+      const m = String(text || '').trim().match(/^(\d{1,2}):(\d{2}):(\d{2})[,.](\d{1,3})$/);
+      if (!m) return null;
+      return (+m[1]) * 3600 + (+m[2]) * 60 + (+m[3]) + (+m[4]) / 1000;
+    };
+
+    const markDirty = () => {
+      state.dirty = true;
+      saveBtn.prop('disabled', false);
+      status.removeClass('text-success text-danger').addClass('text-muted').html('Unsaved changes');
+    };
+
+    const makeTimeInput = (idx, field, val) => {
+      const input = $('<input/>')
+        .attr('type', 'text')
+        .addClass('form-control form-control-sm lead-xxs')
+        .css({ 'font-family': 'monospace', padding: '0.1rem 0.25rem', height: 'auto' })
+        .val(formatTimecode(val));
+      input.on('input', () => {
+        const parsed = parseTimecode(input.val());
+        if (parsed === null) {
+          input.addClass('is-invalid');
+          return;
+        }
+        input.removeClass('is-invalid');
+        state.cues[idx][field] = parsed;
+        markDirty();
+      });
+      return input;
+    };
+
+    const renderCues = () => {
+      tbody.empty();
+      const cues = state.cues;
+      if (!cues || cues.length === 0) {
+        placeholder.show().html('No subtitle cues found.');
+        saveBtn.prop('disabled', true);
+        thAi.css('display', state.hasAi ? '' : 'none');
+        applyAllBtn.css('display', state.hasAi ? '' : 'none');
+        return;
+      }
+      placeholder.hide();
+      thAi.css('display', state.hasAi ? '' : 'none');
+      applyAllBtn.css('display', state.hasAi ? '' : 'none');
+
+      cues.forEach((cue, idx) => {
+        const tr = $('<tr/>');
+        tr.append($('<td/>').addClass('align-top text-muted').html(String(idx + 1)));
+
+        const timeCell = $('<td/>').addClass('align-top');
+        const startInput = makeTimeInput(idx, 'start', cue.start);
+        const endInput = makeTimeInput(idx, 'end', cue.end);
+        timeCell.append(startInput, $('<div/>').css('height', '2px'), endInput);
+        tr.append(timeCell);
+
+        const textArea = $('<textarea/>')
+          .addClass('form-control form-control-sm')
+          .attr('rows', Math.max(1, (cue.text || '').split('\n').length))
+          .val(cue.text || '');
+        textArea.on('input', () => {
+          state.cues[idx].text = textArea.val();
+          markDirty();
+        });
+        tr.append($('<td/>').addClass('align-top').append(textArea));
+
+        if (state.hasAi) {
+          const aiCell = $('<td/>').addClass('align-top ai-col');
+          const aiText = cue.aiText || '';
+          if (aiText) {
+            const aiArea = $('<textarea/>')
+              .addClass('form-control form-control-sm')
+              .css('background-color', '#f0fff4')
+              .attr('rows', Math.max(1, aiText.split('\n').length))
+              .val(aiText);
+            aiArea.on('input', () => {
+              state.cues[idx].aiText = aiArea.val();
+            });
+            const applyBtn = $('<button/>')
+              .addClass('btn btn-xs btn-outline-success mt-1')
+              .attr('type', 'button')
+              .html('← Apply')
+              .on('click', () => {
+                state.cues[idx].text = aiArea.val();
+                textArea.val(aiArea.val());
+                textArea.attr('rows', Math.max(1, aiArea.val().split('\n').length));
+                markDirty();
+              });
+            aiCell.append(aiArea, applyBtn);
+          } else {
+            aiCell.append($('<span/>').addClass('text-muted lead-xxs').html('—'));
+          }
+          tr.append(aiCell);
+        }
+
+        tbody.append(tr);
+      });
+      saveBtn.prop('disabled', !state.dirty);
+    };
+
+    const setCues = (cues, { dirty = false, keepAi = false } = {}) => {
+      state.cues = (cues || []).map((c, i) => {
+        const out = { start: c.start, end: c.end, text: c.text || '' };
+        if (keepAi && state.cues[i] && state.cues[i].aiText) {
+          out.aiText = state.cues[i].aiText;
+        }
+        return out;
+      });
+      state.dirty = dirty;
+      if (!keepAi) state.hasAi = false;
+      renderCues();
+    };
+
+    const applyAiCues = (aiCues) => {
+      const len = Math.min(state.cues.length, aiCues.length);
+      for (let i = 0; i < len; i += 1) {
+        state.cues[i].aiText = aiCues[i].text || '';
+      }
+      state.hasAi = true;
+      renderCues();
+    };
+
+    const loadCues = async () => {
+      const uuid = this.media.uuid;
+      try {
+        loadBtn.prop('disabled', true);
+        status.removeClass('text-danger text-success').addClass('text-muted').html('Loading...');
+        const res = await ApiHelper.getSrt(uuid);
+        if (res && Array.isArray(res.cues)) {
+          setCues(res.cues);
+          status.html(`Loaded ${res.cues.length} cues`);
+        } else {
+          status.html('No subtitles available');
+        }
+      } catch (e) {
+        console.error(e);
+        status.removeClass('text-muted text-success').addClass('text-danger').html(`Error: ${e.message}`);
+      } finally {
+        loadBtn.prop('disabled', false);
+      }
+    };
+
+    loadBtn.on('click', loadCues);
+
+    applyAllBtn.on('click', () => {
+      let applied = 0;
+      state.cues.forEach((c) => {
+        if (c.aiText && c.aiText !== c.text) {
+          c.text = c.aiText;
+          applied += 1;
+        }
+      });
+      if (applied > 0) {
+        markDirty();
+        renderCues();
+        status.removeClass('text-muted text-danger').addClass('text-success').html(`Applied ${applied} AI suggestions — review and Save`);
+      } else {
+        status.removeClass('text-success text-danger').addClass('text-muted').html('No AI changes to apply');
+      }
+    });
+
+    downloadBtn.on('click', async () => {
+      const uuid = this.media.uuid;
+      try {
+        downloadBtn.prop('disabled', true);
+        status.removeClass('text-danger text-success').addClass('text-muted').html('Preparing SRT...');
+        const res = await ApiHelper.getSrt(uuid);
+        if (res && res.url) {
+          const isEdited = (res.srtKey || '').endsWith('_edited.srt');
+          window.open(res.url, '_blank');
+          status.html(isEdited ? 'SRT ready (edited version)' : 'SRT ready');
+          if (Array.isArray(res.cues) && state.cues.length === 0) {
+            setCues(res.cues);
+          }
+        } else {
+          status.removeClass('text-muted text-success').addClass('text-danger').html('Failed');
+        }
+      } catch (e) {
+        console.error(e);
+        status.removeClass('text-muted text-success').addClass('text-danger').html(`Error: ${e.message}`);
+      } finally {
+        downloadBtn.prop('disabled', false);
+      }
+    });
+
+    saveBtn.on('click', async () => {
+      const uuid = this.media.uuid;
+      try {
+        saveBtn.prop('disabled', true);
+        status.removeClass('text-danger text-success').addClass('text-muted').html('Saving...');
+        const payload = {
+          cues: state.cues.map((c) => ({ start: c.start, end: c.end, text: c.text })),
+        };
+        const res = await ApiHelper.saveSrt(uuid, payload);
+        if (res && res.url) {
+          status.removeClass('text-muted text-danger').addClass('text-success').html(`Saved (${(res.cues || []).length} cues)`);
+          state.dirty = false;
+        } else {
+          status.removeClass('text-muted text-success').addClass('text-danger').html('Save failed');
+          saveBtn.prop('disabled', false);
+        }
+      } catch (e) {
+        console.error(e);
+        status.removeClass('text-muted text-success').addClass('text-danger').html(`Error: ${e.message}`);
+        saveBtn.prop('disabled', false);
+      }
+    });
+
+    aiToggleBtn.on('click', async () => {
       const isHidden = editForm.css('display') === 'none';
       editForm.css('display', isHidden ? 'block' : 'none');
-      editToggleBtn.html(isHidden ? 'AI Edit Subtitles ▴' : 'AI Edit Subtitles ▾');
+      aiToggleBtn.html(isHidden ? 'AI Edit ▴' : 'AI Edit ▾');
 
-      // populate model list on first open
       if (isHidden && modelSelect.children().length === 0) {
         try {
           const models = await ApiHelper.getModels();
@@ -232,45 +467,65 @@ export default class TranscribeTab extends mxAlert(BaseAnalysisTab) {
             });
             modelSelect.append(group);
           });
-
-          // load saved prompt
-          const uuid = this.media.uuid;
-          const saved = await ApiHelper.getSubtitlePrompt(uuid).catch(() => undefined);
-          if (saved && saved.prompt) {
-            promptInput.val(saved.prompt);
-          }
         } catch (e) {
           console.error(e);
         }
       }
     });
 
+    const pollAiEditStatus = async (uuid) => {
+      const POLL_INTERVAL_MS = 5000;
+      const MAX_POLLS = 120; // 10 minutes
+      for (let i = 0; i < MAX_POLLS; i += 1) {
+        await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+        let res;
+        try {
+          res = await ApiHelper.getAiEditStatus(uuid);
+        } catch (e) {
+          // network blip — keep polling
+          continue;
+        }
+        if (!res) continue;
+        if (res.status === 'completed') return res;
+        if (res.status === 'failed') throw new Error(res.error || 'AI edit failed');
+        if (res.progress) {
+          const { chunk, total, cuesProcessed, cueCount } = res.progress;
+          status.removeClass('text-danger text-success').addClass('text-muted')
+            .html(`Editing chunk ${chunk}/${total} (${cuesProcessed}/${cueCount} cues)...`);
+        }
+      }
+      throw new Error('AI edit timed out');
+    };
+
     runBtn.on('click', async () => {
       const uuid = this.media.uuid;
       const model = modelSelect.val();
       const prompt = promptInput.val();
       if (!model) {
-        editStatus.html('Please select a model');
+        status.removeClass('text-muted text-success').addClass('text-danger').html('Please select a model');
         return;
       }
       try {
         runBtn.prop('disabled', true);
-        editStatus.html('Editing... this may take a minute');
+        status.removeClass('text-danger text-success').addClass('text-muted').html('Starting AI edit...');
         Spinner.loading();
 
-        // save the prompt for future use
-        await ApiHelper.saveSubtitlePrompt(uuid, prompt).catch(() => undefined);
+        await ApiHelper.aiEditSubtitle(uuid, { model, prompt });
+        status.html('AI edit running in background...');
 
-        const res = await ApiHelper.aiEditSubtitle(uuid, { model, prompt });
-        if (res && res.url) {
-          window.open(res.url, '_blank');
-          editStatus.html(`Done (${res.cueCount} cues)`);
+        const res = await pollAiEditStatus(uuid);
+        if (res && Array.isArray(res.cues)) {
+          if (state.cues.length === 0) {
+            setCues(res.cues);
+          }
+          applyAiCues(res.cues);
+          status.removeClass('text-muted text-danger').addClass('text-success').html(`AI suggestions ready (${res.cues.length} cues) — review and Apply`);
         } else {
-          editStatus.html('Failed');
+          status.removeClass('text-muted text-success').addClass('text-danger').html('Failed');
         }
       } catch (e) {
         console.error(e);
-        editStatus.html(`Error: ${e.message}`);
+        status.removeClass('text-muted text-success').addClass('text-danger').html(`Error: ${e.message}`);
       } finally {
         runBtn.prop('disabled', false);
         Spinner.loading(false);

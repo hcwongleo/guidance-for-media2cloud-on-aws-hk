@@ -3,6 +3,14 @@
 
 const PATH = require('path');
 const {
+  LambdaClient,
+  InvokeCommand,
+} = require('@aws-sdk/client-lambda');
+const {
+  BedrockRuntimeClient,
+  ConverseCommand,
+} = require('@aws-sdk/client-bedrock-runtime');
+const {
   CommonUtils,
   DB,
   Environment: {
@@ -22,6 +30,13 @@ const {
   WebVttHelper,
   BedrockModel,
 } = require('core-lib');
+
+const BEDROCK_REGION = process.env.ENV_BEDROCK_REGION;
+const SUBTITLE_SYSTEM_PROMPT = 'You are a professional subtitle editor. Follow the user\'s instructions exactly. The user will provide an SRT chunk (sequence number, timecode, then subtitle text). Return ONLY a valid SRT chunk back, with the same number of cues, in the same order, and with the same sequence numbers and timecodes. Do not add code fences, commentary, or explanation.';
+
+const STATUS_FILE = 'aiedit_status.json';
+
+const EDITED_SUFFIX = '_edited.srt';
 const BaseOp = require('./baseOp');
 
 const SUBTITLE_PREFIX = 'transcode/subtitle';
@@ -37,6 +52,9 @@ class SubtitleOp extends BaseOp {
     if (subOp === 'prompt') {
       return super.onGET(await this._getPrompt(uuid));
     }
+    if (subOp === 'ai-edit-status') {
+      return super.onGET(await this._getAiEditStatus(uuid));
+    }
     throw new M2CException(`unsupported subtitle GET op: ${subOp}`);
   }
 
@@ -50,6 +68,9 @@ class SubtitleOp extends BaseOp {
     }
     if (subOp === 'prompt') {
       return super.onPOST(await this._savePrompt(uuid));
+    }
+    if (subOp === 'save-srt') {
+      return super.onPOST(await this._saveSrt(uuid));
     }
     throw new M2CException(`unsupported subtitle POST op: ${subOp}`);
   }
@@ -94,7 +115,8 @@ class SubtitleOp extends BaseOp {
       Key: srtKey,
     });
 
-    return { uuid, srtKey, url, content: srtContent };
+    const cues = SrtHelper.parseSrt(srtContent);
+    return { uuid, srtKey, url, content: srtContent, cues };
   }
 
   async _getSrt(uuid) {
@@ -113,7 +135,36 @@ class SubtitleOp extends BaseOp {
 
     const content = (await CommonUtils.download(ProxyBucket, key)).toString('utf8');
     const url = await CommonUtils.getSignedUrl({ Bucket: ProxyBucket, Key: key });
-    return { uuid, srtKey: key, url, content };
+    const cues = SrtHelper.parseSrt(content);
+    return { uuid, srtKey: key, url, content, cues };
+  }
+
+  async _saveSrt(uuid) {
+    const body = this.request.body || {};
+    const { cues, content } = body;
+    let srt;
+    if (typeof content === 'string' && content.trim().length > 0) {
+      srt = content;
+    } else if (Array.isArray(cues) && cues.length > 0) {
+      srt = SrtHelper.fromCues(cues.map((c) => ({
+        start: Number(c.start),
+        end: Number(c.end),
+        text: String(c.text || ''),
+      })));
+    } else {
+      throw new M2CException('cues or content is required');
+    }
+
+    const editedKey = `${uuid}/${SUBTITLE_PREFIX}/${uuid}${EDITED_SUFFIX}`;
+    await CommonUtils.uploadFile(
+      ProxyBucket,
+      PATH.dirname(editedKey),
+      PATH.basename(editedKey),
+      Buffer.from(srt, 'utf8')
+    );
+    const url = await CommonUtils.getSignedUrl({ Bucket: ProxyBucket, Key: editedKey });
+    const parsedCues = SrtHelper.parseSrt(srt);
+    return { uuid, srtKey: editedKey, url, content: srt, cues: parsedCues };
   }
 
   async _savePrompt(uuid) {
@@ -154,70 +205,164 @@ class SubtitleOp extends BaseOp {
       throw new M2CException('model is required');
     }
 
-    const vttKey = await this._loadVttPath(uuid);
-    const vttContent = (await CommonUtils.download(ProxyBucket, vttKey)).toString('utf8');
-    const parsed = WebVttHelper.parse(vttContent, { autoCorrect: true, stripLeadingDashes: true });
-    const cues = parsed.cues || [];
-    if (cues.length === 0) {
-      throw new M2CException('no cues in VTT');
-    }
+    const startedAt = Date.now();
+    await SubtitleOp._writeStatus(uuid, {
+      status: 'processing',
+      startedAt,
+      modelId,
+    });
 
-    const editedCues = await this._processCuesInChunks(cues, userPrompt, modelId);
-    const editedSrt = SrtHelper.fromCues(editedCues);
+    const fnName = process.env.AWS_LAMBDA_FUNCTION_NAME;
+    const client = new LambdaClient({});
+    await client.send(new InvokeCommand({
+      FunctionName: fnName,
+      InvocationType: 'Event',
+      Payload: Buffer.from(JSON.stringify({
+        _asyncJob: {
+          type: 'aiEditSubtitle',
+          uuid,
+          modelId,
+          prompt: userPrompt,
+          startedAt,
+        },
+      })),
+    }));
 
-    const editedKey = `${uuid}/${SUBTITLE_PREFIX}/${uuid}_edited.srt`;
-    await CommonUtils.uploadFile(
-      ProxyBucket,
-      PATH.dirname(editedKey),
-      PATH.basename(editedKey),
-      Buffer.from(editedSrt, 'utf8')
-    );
-
-    const url = await CommonUtils.getSignedUrl({ Bucket: ProxyBucket, Key: editedKey });
     return {
       uuid,
-      srtKey: editedKey,
-      url,
-      content: editedSrt,
-      cueCount: editedCues.length,
+      status: 'processing',
+      startedAt,
+      modelId,
     };
   }
 
-  async _processCuesInChunks(cues, userPrompt, modelId) {
-    const model = new BedrockModel();
-    const results = [];
+  async _getAiEditStatus(uuid) {
+    const key = `${uuid}/${SUBTITLE_PREFIX}/${STATUS_FILE}`;
+    const exists = await CommonUtils.headObject(ProxyBucket, key).catch(() => undefined);
+    if (!exists) {
+      return { uuid, status: 'idle' };
+    }
+    const data = JSON.parse((await CommonUtils.download(ProxyBucket, key)).toString('utf8'));
+    return { uuid, ...data };
+  }
 
-    for (let i = 0; i < cues.length; i += CHUNK_CUE_SIZE) {
+  static async _writeStatus(uuid, status) {
+    const key = `${uuid}/${SUBTITLE_PREFIX}/${STATUS_FILE}`;
+    await CommonUtils.uploadFile(
+      ProxyBucket,
+      PATH.dirname(key),
+      PATH.basename(key),
+      Buffer.from(JSON.stringify(status), 'utf8')
+    );
+  }
+
+  static async runAiEditAsync(job) {
+    const { uuid, modelId, prompt: userPrompt, startedAt } = job;
+    try {
+      const db = new DB({
+        Table: AnalysisTable,
+        PartitionKey: AnalysisPartitionKey,
+        SortKey: AnalysisSortKey,
+      });
+      const audio = await db.fetch(uuid, 'audio').catch(() => undefined);
+      if (!audio || !audio.transcribe || !audio.transcribe.vtt) {
+        throw new Error('VTT not found - run transcription first');
+      }
+      const vttKey = audio.transcribe.vtt;
+      const vttContent = (await CommonUtils.download(ProxyBucket, vttKey)).toString('utf8');
+      const parsed = WebVttHelper.parse(vttContent, { autoCorrect: true, stripLeadingDashes: true });
+      const cues = parsed.cues || [];
+      if (cues.length === 0) {
+        throw new Error('no cues in VTT');
+      }
+
+      const editedCues = await SubtitleOp._processCuesInChunksStatic(uuid, cues, userPrompt, modelId, startedAt);
+      const editedSrt = SrtHelper.fromCues(editedCues);
+
+      const editedKey = `${uuid}/${SUBTITLE_PREFIX}/${uuid}_edited.srt`;
+      await CommonUtils.uploadFile(
+        ProxyBucket,
+        PATH.dirname(editedKey),
+        PATH.basename(editedKey),
+        Buffer.from(editedSrt, 'utf8')
+      );
+
+      const url = await CommonUtils.getSignedUrl({ Bucket: ProxyBucket, Key: editedKey });
+
+      await SubtitleOp._writeStatus(uuid, {
+        status: 'completed',
+        startedAt,
+        completedAt: Date.now(),
+        modelId,
+        srtKey: editedKey,
+        url,
+        content: editedSrt,
+        cues: editedCues,
+        cueCount: editedCues.length,
+      });
+      return { ok: true };
+    } catch (e) {
+      console.error('runAiEditAsync error:', e);
+      await SubtitleOp._writeStatus(uuid, {
+        status: 'failed',
+        startedAt,
+        failedAt: Date.now(),
+        error: e.message || String(e),
+      }).catch(() => undefined);
+      return { ok: false, error: e.message };
+    }
+  }
+
+  static async _processCuesInChunksStatic(uuid, cues, userPrompt, modelId, startedAt) {
+    const client = new BedrockRuntimeClient({ region: BEDROCK_REGION });
+    const results = [];
+    const total = Math.ceil(cues.length / CHUNK_CUE_SIZE);
+
+    for (let i = 0, chunkIdx = 0; i < cues.length; i += CHUNK_CUE_SIZE, chunkIdx += 1) {
       const chunk = cues.slice(i, i + CHUNK_CUE_SIZE);
-      const chunkSrt = SrtHelper.fromCues(chunk.map((c, idx) => ({
-        ...c,
+      const chunkSrt = SrtHelper.fromCues(chunk.map((c) => ({
         start: c.start,
         end: c.end,
+        text: c.text,
       })));
 
-      const response = await model.inference('custom', {
+      const userMessage = `${userPrompt}\n\nSRT chunk to edit:\n${chunkSrt}`;
+      const command = new ConverseCommand({
         modelId,
-        prompt: userPrompt,
-        text_inputs: chunkSrt,
+        system: [{ text: SUBTITLE_SYSTEM_PROMPT }],
+        messages: [
+          { role: 'user', content: [{ text: userMessage }] },
+        ],
+        inferenceConfig: { temperature: 0.2, maxTokens: 8192 },
       });
 
-      const editedText = ((response.content || [])[0] || {}).text || '';
+      const response = await client.send(command);
+      const editedText = ((response.output.message.content || [])[0] || {}).text || '';
       const editedSrt = _extractSrtFromResponse(editedText);
       const editedCues = SrtHelper.parseSrt(editedSrt);
 
-      // Map edited text back to original timecodes (preserve them strictly)
+      console.log(`[ai-edit chunk ${chunkIdx + 1}/${total}] req=${chunk.length} got=${editedCues.length} preview=${(editedCues[0] || {}).text || '(empty)'}`);
+
       for (let j = 0; j < chunk.length; j += 1) {
         const orig = chunk[j];
         const edited = editedCues[j];
         results.push({
           start: orig.start,
           end: orig.end,
-          text: edited ? edited.text : orig.text,
+          text: edited && edited.text ? edited.text : orig.text,
         });
       }
+
+      await SubtitleOp._writeStatus(uuid, {
+        status: 'processing',
+        startedAt,
+        modelId,
+        progress: { chunk: chunkIdx + 1, total, cuesProcessed: results.length, cueCount: cues.length },
+      }).catch(() => undefined);
     }
     return results;
   }
+
 }
 
 function _extractSrtFromResponse(text) {

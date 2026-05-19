@@ -217,6 +217,9 @@ PKG_GRAPH_API=
 PKG_ANALYSIS_SHOPPABLE=
 PKG_SHOPPABLE_API=
 
+# Highlight clipping + editor
+PKG_DETECT_HIGHLIGHTS=
+
 ## anonymous data setting
 ANONYMOUS_DATA="Yes"
 [ "$BUILD_ENV" == "dev" ] && \
@@ -1305,6 +1308,34 @@ function build_analysis_shoppable_package() {
 
 #####################################################################
 #
+# Highlight Workflow packages (highlight clipping + editor)
+#
+#####################################################################
+function build_highlight_packages() {
+  echo "------------------------------------------------------------------------------"
+  echo "[Highlight] Building Highlight Workflow Packages"
+  echo "------------------------------------------------------------------------------"
+  build_detect_highlights_package
+}
+
+function build_detect_highlights_package() {
+  echo "------------------------------------------------------------------------------"
+  echo "[Highlight] Building detect-highlights lambda package"
+  echo "------------------------------------------------------------------------------"
+  local workflow="highlight"
+  local lambda="detect-highlights"
+  local package="${workflow}-${lambda}"
+  PKG_DETECT_HIGHLIGHTS="${package}-${VERSION}.zip"
+  pushd "$SOURCE_DIR/main/highlight/${lambda}"
+  npm install
+  npm run build
+  npm run zip -- "$PKG_DETECT_HIGHLIGHTS" .
+  cp -v "./dist/$PKG_DETECT_HIGHLIGHTS" "$BUILD_DIST_DIR"
+  popd
+}
+
+#####################################################################
+#
 # CloudFormation templates
 #
 #####################################################################
@@ -1519,6 +1550,10 @@ function build_cloudformation_templates() {
   echo "Updating %%PKG_SHOPPABLE_API%% param in cloudformation templates..."
   sed -i'.bak' -e "s|%%PKG_SHOPPABLE_API%%|${PKG_SHOPPABLE_API}|g" *.yaml || exit 1
 
+  ## Highlight Workflow
+  echo "Updating %%PKG_DETECT_HIGHLIGHTS%% param in cloudformation templates..."
+  sed -i'.bak' -e "s|%%PKG_DETECT_HIGHLIGHTS%%|${PKG_DETECT_HIGHLIGHTS}|g" *.yaml || exit 1
+
   #
   # DEMO Features
   #
@@ -1594,6 +1629,8 @@ function on_complete() {
   ## Shoppable Workflow ##
   echo "** PKG_ANALYSIS_SHOPPABLE=${PKG_ANALYSIS_SHOPPABLE} **"
   echo "** PKG_SHOPPABLE_API=${PKG_SHOPPABLE_API} **"
+  ## Highlight Workflow ##
+  echo "** PKG_DETECT_HIGHLIGHTS=${PKG_DETECT_HIGHLIGHTS} **"
 
   ## Misc. ##
   echo "** PKG_CUSTOM_RESOURCES=${PKG_CUSTOM_RESOURCES} **"
@@ -1629,6 +1666,8 @@ build_api_package
 build_graph_packages
 # shoppable components
 build_shoppable_packages
+# highlight workflow (clipping + editor)
+build_highlight_packages
 # webapp
 build_webapp_package
 # cloudformation

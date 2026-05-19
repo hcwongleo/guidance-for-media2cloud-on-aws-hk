@@ -3,6 +3,16 @@ AWSTemplateFormatVersion: "2010-09-09"
 Description: Media2Cloud Highlight Stack - DynamoDB tables backing the highlight clipping + video editor feature (HighlightSets, EditProjects, Renders, HighlightSettings). Version %%VERSION%%
 
 Mappings:
+    Workflow:
+        # Highlight detection state machine
+        HighlightDetection:
+            Name: highlight-detection
+        DetectHighlights:
+            Package: "%%PKG_DETECT_HIGHLIGHTS%%"
+            Name: detect-highlights
+    Node:
+        Runtime:
+            Version: nodejs20.x
     DynamoDB:
         # One row per highlight detection run.
         # PK: uuid (source video). SK: highlightSetId (ULID, multiple runs allowed).
@@ -30,9 +40,36 @@ Mappings:
             PartitionKey: ownerId
 
 Parameters:
+    S3Bucket:
+        Type: String
+        Description: S3Bucket
+    KeyPrefix:
+        Type: String
+        Description: KeyPrefix
+    SolutionId:
+        Type: String
+        Description: SolutionId
+    SolutionLowerCaseId:
+        Type: String
+        Description: SolutionLowerCaseId
+    SolutionUuid:
+        Type: String
+        Description: SolutionUuid
     ResourcePrefix:
         Type: String
         Description: ResourcePrefix
+    CustomUserAgent:
+        Type: String
+        Description: CustomUserAgent
+    AwsSdkLayer:
+        Type: String
+        Description: AwsSdkLayer
+    CoreLibLayer:
+        Type: String
+        Description: CoreLibLayer
+    ProxyBucket:
+        Type: String
+        Description: ProxyBucket
 
 Resources:
     ################################################################################
@@ -247,6 +284,285 @@ Resources:
             PointInTimeRecoverySpecification:
                 PointInTimeRecoveryEnabled: true
 
+    ################################################################################
+    #
+    # detect-highlights Lambda
+    # * Reads existing Transcribe output from ProxyBucket
+    # * Calls Bedrock (Converse API) — default amazon.nova-2-lite-v1:0
+    # * Anchors LLM-quoted spans to word-level Transcribe items (LCS similarity)
+    # * Writes a row to HighlightSetsTable
+    #
+    ################################################################################
+    DetectHighlightsLogGroup:
+        Type: AWS::Logs::LogGroup
+        Metadata:
+            cfn_nag:
+                rules_to_suppress:
+                    -
+                        id: W84
+                        reason: Use default encryption. Disable additional KMS encryption requirement. https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/encrypt-log-data-kms.html
+        Properties:
+            LogGroupName: !Sub
+                - /aws/lambda/${ResourcePrefix}-${name}
+                - name: !FindInMap
+                    - Workflow
+                    - DetectHighlights
+                    - Name
+            RetentionInDays: 7
+
+    DetectHighlightsRole:
+        Type: AWS::IAM::Role
+        Metadata:
+            cfn_nag:
+                rules_to_suppress:
+                    -
+                        id: W11
+                        reason: Wildcard character is prefixed and scoped with the ResourcePrefix
+        Properties:
+            AssumeRolePolicyDocument:
+                Version: "2012-10-17"
+                Statement:
+                    -
+                        Effect: Allow
+                        Action: sts:AssumeRole
+                        Principal:
+                            Service: lambda.amazonaws.com
+            Path: !Sub /${ResourcePrefix}/
+            ManagedPolicyArns:
+                - arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess
+            Policies:
+                -
+                    PolicyName: DetectHighlightsAccess
+                    PolicyDocument:
+                        Version: "2012-10-17"
+                        Statement:
+                            # CloudWatch Logs
+                            -
+                                Effect: Allow
+                                Action:
+                                    - logs:CreateLogGroup
+                                    - logs:CreateLogStream
+                                    - logs:PutLogEvents
+                                Resource:
+                                    - !GetAtt DetectHighlightsLogGroup.Arn
+                            # S3 - proxy bucket (transcript reads only for now)
+                            -
+                                Effect: Allow
+                                Action: s3:ListBucket
+                                Resource: !Sub arn:aws:s3:::${ProxyBucket}
+                            -
+                                Effect: Allow
+                                Action: s3:GetObject
+                                Resource: !Sub arn:aws:s3:::${ProxyBucket}/*
+                            # DynamoDB - HighlightSets row writes
+                            -
+                                Effect: Allow
+                                Action:
+                                    - dynamodb:PutItem
+                                    - dynamodb:UpdateItem
+                                Resource: !GetAtt HighlightSetsTable.Arn
+                            # Bedrock - 5 pinned models per spec §6
+                            -
+                                Effect: Allow
+                                Action: bedrock:InvokeModel
+                                Resource:
+                                    - arn:aws:bedrock:*::foundation-model/amazon.nova-2-lite-v1:0
+                                    - arn:aws:bedrock:*::foundation-model/amazon.nova-pro-v1:0
+                                    - arn:aws:bedrock:*::foundation-model/twelvelabs.pegasus-1-2-v1:0
+                                    - arn:aws:bedrock:*::foundation-model/qwen.qwen3-235b-a22b-2507-v1:0
+                                    - arn:aws:bedrock:*::foundation-model/deepseek.v3-2-v1:0
+                                    - !Sub arn:aws:bedrock:*:${AWS::AccountId}:inference-profile/*amazon.nova-2-lite*
+                                    - !Sub arn:aws:bedrock:*:${AWS::AccountId}:inference-profile/*amazon.nova-pro*
+
+    DetectHighlightsLambda:
+        Type: AWS::Lambda::Function
+        Metadata:
+            cfn_nag:
+                rules_to_suppress:
+                    -
+                        id: W89
+                        reason: Workflow not using VPC
+                    -
+                        id: W92
+                        reason: Workflow not limiting simultaneous executions
+        Properties:
+            FunctionName: !Sub
+                - ${ResourcePrefix}-${name}
+                - name: !FindInMap
+                    - Workflow
+                    - DetectHighlights
+                    - Name
+            Description: !Sub (${SolutionLowerCaseId}) Detect highlight segments via Bedrock LLM/VLM
+            Runtime: !FindInMap
+                - Node
+                - Runtime
+                - Version
+            MemorySize: 512
+            Timeout: 900
+            Handler: index.handler
+            Role: !GetAtt DetectHighlightsRole.Arn
+            Code:
+                S3Bucket: !Ref S3Bucket
+                S3Key: !Sub
+                    - ${KeyPrefix}/${package}
+                    - package: !FindInMap
+                        - Workflow
+                        - DetectHighlights
+                        - Package
+            Layers:
+                - !Ref CoreLibLayer
+                - !Ref AwsSdkLayer
+            TracingConfig:
+                Mode: Active
+            Environment:
+                Variables:
+                    ENV_EXPECTED_BUCKET_OWNER: !Ref AWS::AccountId
+                    ENV_CUSTOM_USER_AGENT: !Ref CustomUserAgent
+                    ENV_SOLUTION_UUID: !Ref SolutionUuid
+                    ENV_SOLUTION_ID: !Ref SolutionId
+                    ENV_RESOURCE_PREFIX: !Ref ResourcePrefix
+                    # Bedrock is fronted from us-west-2 in this deployment;
+                    # see CLAUDE.md memory `m2c-deployment-region`.
+                    ENV_BEDROCK_REGION: us-west-2
+                    ENV_PROXY_BUCKET: !Ref ProxyBucket
+                    ENV_HIGHLIGHT_SETS_TABLE: !Ref HighlightSetsTable
+
+    ################################################################################
+    #
+    # highlight-detection Step Function
+    # * Single Task state for now: detect-highlights (anchor-and-snap is folded
+    #   into the same Lambda since the LCS pass is sub-second)
+    # * pure-vlm strategy will add a parallel Map state in a follow-up commit
+    #
+    ################################################################################
+    HighlightDetectionStateMachineServiceRole:
+        Type: AWS::IAM::Role
+        Metadata:
+            cfn_nag:
+                rules_to_suppress:
+                    -
+                        id: W11
+                        reason: CloudWatch API actions, such as CreateLogDelivery and DescribeLogGroups, do not support Resource types defined by Amazon CloudWatch Logs. Refer to https://docs.aws.amazon.com/step-functions/latest/dg/cw-logs.html
+        Properties:
+            AssumeRolePolicyDocument:
+                Version: "2012-10-17"
+                Statement:
+                    -
+                        Effect: Allow
+                        Action: sts:AssumeRole
+                        Principal:
+                            Service: !Sub states.${AWS::Region}.amazonaws.com
+            Path: !Sub /${ResourcePrefix}/
+            ManagedPolicyArns:
+                - arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess
+            Policies:
+                -
+                    PolicyName: !Sub ${ResourcePrefix}HighlightDetection
+                    PolicyDocument:
+                        Version: "2012-10-17"
+                        Statement:
+                            -
+                                Effect: Allow
+                                Action: lambda:InvokeFunction
+                                Resource:
+                                    - !GetAtt DetectHighlightsLambda.Arn
+                            -
+                                Effect: Allow
+                                Action:
+                                    - logs:CreateLogDelivery
+                                    - logs:GetLogDelivery
+                                    - logs:UpdateLogDelivery
+                                    - logs:DeleteLogDelivery
+                                    - logs:ListLogDeliveries
+                                    - logs:PutResourcePolicy
+                                    - logs:DescribeResourcePolicies
+                                    - logs:DescribeLogGroups
+                                    - logs:CreateLogStream
+                                    - logs:PutLogEvents
+                                Resource: "*"
+
+    HighlightDetectionStateMachineLogGroup:
+        Type: AWS::Logs::LogGroup
+        Metadata:
+            cfn_nag:
+                rules_to_suppress:
+                    -
+                        id: W84
+                        reason: Use default encryption. Disable additional KMS encryption requirement. https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/encrypt-log-data-kms.html
+        Properties:
+            LogGroupName: !Sub
+                - /aws/stepfunctions/${ResourcePrefix}-${name}
+                - name: !FindInMap
+                    - Workflow
+                    - HighlightDetection
+                    - Name
+            RetentionInDays: 7
+
+    HighlightDetectionStateMachine:
+        Type: AWS::StepFunctions::StateMachine
+        Properties:
+            StateMachineName: !Sub
+                - ${ResourcePrefix}-${name}
+                - name: !FindInMap
+                    - Workflow
+                    - HighlightDetection
+                    - Name
+            StateMachineType: STANDARD
+            RoleArn: !GetAtt HighlightDetectionStateMachineServiceRole.Arn
+            TracingConfiguration:
+                Enabled: true
+            LoggingConfiguration:
+                Destinations:
+                    - CloudWatchLogsLogGroup:
+                        LogGroupArn: !GetAtt HighlightDetectionStateMachineLogGroup.Arn
+                IncludeExecutionData: true
+                Level: ALL
+            DefinitionString:
+                !Sub |-
+                    {
+                        "Comment": "Detect highlight segments in an ingested video and persist a HighlightSets row.",
+                        "StartAt": "Detect highlights",
+                        "States": {
+                            "Detect highlights": {
+                                "Type": "Task",
+                                "Resource": "${DetectHighlightsLambda.Arn}",
+                                "End": true,
+                                "Retry": [
+                                    {
+                                        "ErrorEquals": [
+                                            "Lambda.ClientExecutionTimeoutException",
+                                            "Lambda.ServiceException",
+                                            "Lambda.AWSLambdaException",
+                                            "Lambda.SdkClientException"
+                                        ],
+                                        "IntervalSeconds": 6,
+                                        "MaxAttempts": 4,
+                                        "BackoffRate": 2
+                                    },
+                                    {
+                                        "ErrorEquals": [
+                                            "Lambda.TooManyRequestsException",
+                                            "ThrottlingException"
+                                        ],
+                                        "IntervalSeconds": 2,
+                                        "MaxAttempts": 6,
+                                        "BackoffRate": 1.5
+                                    }
+                                ]
+                            }
+                        }
+                    }
+            Tags:
+                -
+                    Key: Name
+                    Value: Media2Cloud Highlight Detection
+                -
+                    Key: SolutionId
+                    Value: !Ref SolutionId
+                -
+                    Key: ResourcePrefix
+                    Value: !Ref ResourcePrefix
+
 Outputs:
     HighlightSetsTableName:
         Value: !Ref HighlightSetsTable
@@ -272,3 +588,15 @@ Outputs:
     HighlightSettingsTableArn:
         Value: !GetAtt HighlightSettingsTable.Arn
         Description: HighlightSettingsTableArn
+    DetectHighlightsLambdaArn:
+        Value: !GetAtt DetectHighlightsLambda.Arn
+        Description: DetectHighlightsLambdaArn
+    DetectHighlightsLambdaName:
+        Value: !Ref DetectHighlightsLambda
+        Description: DetectHighlightsLambdaName
+    HighlightDetectionStateMachineArn:
+        Value: !Ref HighlightDetectionStateMachine
+        Description: HighlightDetectionStateMachineArn
+    HighlightDetectionStateMachineName:
+        Value: !GetAtt HighlightDetectionStateMachine.Name
+        Description: HighlightDetectionStateMachineName

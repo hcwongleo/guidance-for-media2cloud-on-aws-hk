@@ -1670,6 +1670,30 @@ Resources:
                         - Stack
                         - Highlight
             Parameters:
+                S3Bucket: !Sub
+                    - ${bucket}${region}
+                    -
+                        bucket: !FindInMap
+                            - Solution
+                            - Template
+                            - S3Bucket
+                        region: !If
+                            - bSingleRegion
+                            - ""
+                            - !Sub -${AWS::Region}
+                KeyPrefix: !FindInMap
+                    - Solution
+                    - Template
+                    - KeyPrefix
+                SolutionId: !FindInMap
+                    - Solution
+                    - Project
+                    - Id
+                SolutionLowerCaseId: !FindInMap
+                    - Solution
+                    - Project
+                    - LowerCaseId
+                SolutionUuid: !GetAtt CoreStack.Outputs.SolutionUuid
                 ResourcePrefix: !Sub
                     - ${solutionId}-${stackId}
                     -
@@ -1686,6 +1710,13 @@ Resources:
                                     - !Split
                                         - "/"
                                         - !Ref AWS::StackId
+                CustomUserAgent: !FindInMap
+                    - Solution
+                    - Project
+                    - CustomUserAgent
+                AwsSdkLayer: !GetAtt CoreStack.Outputs.AwsSdkLayer
+                CoreLibLayer: !GetAtt CoreStack.Outputs.CoreLibLayer
+                ProxyBucket: !GetAtt CoreStack.Outputs.ProxyBucket
 
     ShoppableStack:
         Condition: bEnableShoppable

@@ -1,0 +1,274 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: Media2Cloud Highlight Stack - DynamoDB tables backing the highlight clipping + video editor feature (HighlightSets, EditProjects, Renders, HighlightSettings). Version %%VERSION%%
+
+Mappings:
+    DynamoDB:
+        # One row per highlight detection run.
+        # PK: uuid (source video). SK: highlightSetId (ULID, multiple runs allowed).
+        HighlightSets:
+            Suffix: highlight-sets
+            PartitionKey: uuid
+            SortKey: highlightSetId
+        # One row per editor session.
+        # PK: editProjectId (ULID). GSI on uuid for "list edit projects for video".
+        EditProjects:
+            Suffix: edit-projects
+            PartitionKey: editProjectId
+            GSIUuidIndex: gsi-uuid
+            GSIUuidPartitionKey: uuid
+        # One row per Render & Publish click.
+        # PK: renderId (ULID). GSI on editProjectId for "list renders for project".
+        Renders:
+            Suffix: renders
+            PartitionKey: renderId
+            GSIEditProjectIndex: gsi-editprojectid
+            GSIEditProjectPartitionKey: editProjectId
+        # One row per owner. Stores model/strategy/prompt defaults.
+        HighlightSettings:
+            Suffix: highlight-settings
+            PartitionKey: ownerId
+
+Parameters:
+    ResourcePrefix:
+        Type: String
+        Description: ResourcePrefix
+
+Resources:
+    ################################################################################
+    #
+    # Amazon DynamoDB tables
+    # * HighlightSets:     detection runs (timecodes only, no media)
+    # * EditProjects:      editor session state (segments, publish flag)
+    # * Renders:           Render & Publish job tracking
+    # * HighlightSettings: per-owner model/strategy/prompt defaults
+    #
+    ################################################################################
+    HighlightSetsTable:
+        Type: AWS::DynamoDB::Table
+        Metadata:
+            cfn_nag:
+                rules_to_suppress:
+                    -
+                        id: W28
+                        reason: Tables are explicitly assigned with predefined names
+        Properties:
+            TableName: !Sub
+                - ${ResourcePrefix}-${suffix}
+                - suffix: !FindInMap
+                    - DynamoDB
+                    - HighlightSets
+                    - Suffix
+            BillingMode: PAY_PER_REQUEST
+            AttributeDefinitions:
+                -
+                    AttributeName: !FindInMap
+                        - DynamoDB
+                        - HighlightSets
+                        - PartitionKey
+                    AttributeType: S
+                -
+                    AttributeName: !FindInMap
+                        - DynamoDB
+                        - HighlightSets
+                        - SortKey
+                    AttributeType: S
+            KeySchema:
+                -
+                    AttributeName: !FindInMap
+                        - DynamoDB
+                        - HighlightSets
+                        - PartitionKey
+                    KeyType: HASH
+                -
+                    AttributeName: !FindInMap
+                        - DynamoDB
+                        - HighlightSets
+                        - SortKey
+                    KeyType: RANGE
+            SSESpecification:
+                SSEEnabled: true
+            PointInTimeRecoverySpecification:
+                PointInTimeRecoveryEnabled: true
+            TimeToLiveSpecification:
+                AttributeName: ttl
+                Enabled: true
+
+    EditProjectsTable:
+        Type: AWS::DynamoDB::Table
+        Metadata:
+            cfn_nag:
+                rules_to_suppress:
+                    -
+                        id: W28
+                        reason: Tables are explicitly assigned with predefined names
+        Properties:
+            TableName: !Sub
+                - ${ResourcePrefix}-${suffix}
+                - suffix: !FindInMap
+                    - DynamoDB
+                    - EditProjects
+                    - Suffix
+            BillingMode: PAY_PER_REQUEST
+            AttributeDefinitions:
+                -
+                    AttributeName: !FindInMap
+                        - DynamoDB
+                        - EditProjects
+                        - PartitionKey
+                    AttributeType: S
+                -
+                    AttributeName: !FindInMap
+                        - DynamoDB
+                        - EditProjects
+                        - GSIUuidPartitionKey
+                    AttributeType: S
+            KeySchema:
+                -
+                    AttributeName: !FindInMap
+                        - DynamoDB
+                        - EditProjects
+                        - PartitionKey
+                    KeyType: HASH
+            SSESpecification:
+                SSEEnabled: true
+            PointInTimeRecoverySpecification:
+                PointInTimeRecoveryEnabled: true
+            TimeToLiveSpecification:
+                AttributeName: ttl
+                Enabled: true
+            GlobalSecondaryIndexes:
+                -
+                    IndexName: !FindInMap
+                        - DynamoDB
+                        - EditProjects
+                        - GSIUuidIndex
+                    KeySchema:
+                        -
+                            AttributeName: !FindInMap
+                                - DynamoDB
+                                - EditProjects
+                                - GSIUuidPartitionKey
+                            KeyType: HASH
+                    Projection:
+                        ProjectionType: ALL
+
+    RendersTable:
+        Type: AWS::DynamoDB::Table
+        Metadata:
+            cfn_nag:
+                rules_to_suppress:
+                    -
+                        id: W28
+                        reason: Tables are explicitly assigned with predefined names
+        Properties:
+            TableName: !Sub
+                - ${ResourcePrefix}-${suffix}
+                - suffix: !FindInMap
+                    - DynamoDB
+                    - Renders
+                    - Suffix
+            BillingMode: PAY_PER_REQUEST
+            AttributeDefinitions:
+                -
+                    AttributeName: !FindInMap
+                        - DynamoDB
+                        - Renders
+                        - PartitionKey
+                    AttributeType: S
+                -
+                    AttributeName: !FindInMap
+                        - DynamoDB
+                        - Renders
+                        - GSIEditProjectPartitionKey
+                    AttributeType: S
+            KeySchema:
+                -
+                    AttributeName: !FindInMap
+                        - DynamoDB
+                        - Renders
+                        - PartitionKey
+                    KeyType: HASH
+            SSESpecification:
+                SSEEnabled: true
+            PointInTimeRecoverySpecification:
+                PointInTimeRecoveryEnabled: true
+            TimeToLiveSpecification:
+                AttributeName: ttl
+                Enabled: true
+            GlobalSecondaryIndexes:
+                -
+                    IndexName: !FindInMap
+                        - DynamoDB
+                        - Renders
+                        - GSIEditProjectIndex
+                    KeySchema:
+                        -
+                            AttributeName: !FindInMap
+                                - DynamoDB
+                                - Renders
+                                - GSIEditProjectPartitionKey
+                            KeyType: HASH
+                    Projection:
+                        ProjectionType: ALL
+
+    HighlightSettingsTable:
+        Type: AWS::DynamoDB::Table
+        Metadata:
+            cfn_nag:
+                rules_to_suppress:
+                    -
+                        id: W28
+                        reason: Tables are explicitly assigned with predefined names
+        Properties:
+            TableName: !Sub
+                - ${ResourcePrefix}-${suffix}
+                - suffix: !FindInMap
+                    - DynamoDB
+                    - HighlightSettings
+                    - Suffix
+            BillingMode: PAY_PER_REQUEST
+            AttributeDefinitions:
+                -
+                    AttributeName: !FindInMap
+                        - DynamoDB
+                        - HighlightSettings
+                        - PartitionKey
+                    AttributeType: S
+            KeySchema:
+                -
+                    AttributeName: !FindInMap
+                        - DynamoDB
+                        - HighlightSettings
+                        - PartitionKey
+                    KeyType: HASH
+            SSESpecification:
+                SSEEnabled: true
+            PointInTimeRecoverySpecification:
+                PointInTimeRecoveryEnabled: true
+
+Outputs:
+    HighlightSetsTableName:
+        Value: !Ref HighlightSetsTable
+        Description: HighlightSetsTableName
+    HighlightSetsTableArn:
+        Value: !GetAtt HighlightSetsTable.Arn
+        Description: HighlightSetsTableArn
+    EditProjectsTableName:
+        Value: !Ref EditProjectsTable
+        Description: EditProjectsTableName
+    EditProjectsTableArn:
+        Value: !GetAtt EditProjectsTable.Arn
+        Description: EditProjectsTableArn
+    RendersTableName:
+        Value: !Ref RendersTable
+        Description: RendersTableName
+    RendersTableArn:
+        Value: !GetAtt RendersTable.Arn
+        Description: RendersTableArn
+    HighlightSettingsTableName:
+        Value: !Ref HighlightSettingsTable
+        Description: HighlightSettingsTableName
+    HighlightSettingsTableArn:
+        Value: !GetAtt HighlightSettingsTable.Arn
+        Description: HighlightSettingsTableArn

@@ -22,6 +22,7 @@ Mappings:
             WebApp: media2cloud-webapp-stack.template
             Graph: media2cloud-graph-stack.template
             Shoppable: media2cloud-shoppable-stack.template
+            Highlight: media2cloud-highlight-stack.template
             CodeBuild: media2cloud-codebuild-stack.template
     Workflow:
         CustomResources:
@@ -1645,6 +1646,46 @@ Resources:
                 ProxyBucket: !GetAtt CoreStack.Outputs.ProxyBucket
                 # Media2Cloud Workflow events
                 UnifiedStateMachineStatusBusName: !GetAtt CoreStack.Outputs.UnifiedStateMachineStatusBusName
+
+    HighlightStack:
+        Type: AWS::CloudFormation::Stack
+        Properties:
+            TemplateURL: !Sub
+                - http://${bucket}${region}.s3.amazonaws.com/${keyprefix}/${stackName}
+                -
+                    bucket: !FindInMap
+                        - Solution
+                        - Template
+                        - S3Bucket
+                    region: !If
+                        - bSingleRegion
+                        - ""
+                        - !Sub -${AWS::Region}
+                    keyprefix: !FindInMap
+                        - Solution
+                        - Template
+                        - KeyPrefix
+                    stackName: !FindInMap
+                        - Solution
+                        - Stack
+                        - Highlight
+            Parameters:
+                ResourcePrefix: !Sub
+                    - ${solutionId}-${stackId}
+                    -
+                        solutionId: !FindInMap
+                            - Solution
+                            - Project
+                            - LowerCaseId
+                        stackId: !Select
+                            - 4
+                            - !Split
+                                - "-"
+                                - !Select
+                                    - 2
+                                    - !Split
+                                        - "/"
+                                        - !Ref AWS::StackId
 
     ShoppableStack:
         Condition: bEnableShoppable

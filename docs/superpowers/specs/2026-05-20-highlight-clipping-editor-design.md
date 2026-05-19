@@ -259,19 +259,21 @@ Same Cognito authorizer + `assertOwner(uuid, cognitoSub)` helper used by the exi
 
 ## 6. Deployment / IAM / Bedrock (locked)
 
-### CDK stack
+### CloudFormation nested stack
 
-One new nested stack: `HighlightEditorStack`, mounted under the M2C root stack. Same pattern as `analysis/` and `ingest/`.
+The project deploys via plain **CloudFormation YAML** at `deployment/*.yaml` (no CDK, no SAM). Build pipeline: `deployment/build-s3-dist.sh` copies `*.yaml` to `regional-s3-assets/`, packages Lambda code, and substitutes `%%PLACEHOLDERS%%`.
+
+One new nested stack — same pattern as `media2cloud-shoppable-stack.yaml`:
 
 ```
-source/cdk/lib/highlight-editor/
-  index.ts
-  state-machines/  highlight-detection.ts, render-publish.ts
-  lambdas/         detect-highlights.ts, anchor-and-snap.ts, compose-edl.ts, render-status.ts
-  tables/          highlight-sets.ts, edit-projects.ts, renders.ts, highlight-settings.ts
+deployment/
+  media2cloud.yaml                       ← root: add Highlight to Mappings/Solution/Stack and mount HighlightStack
+  media2cloud-highlight-stack.yaml       ← NEW nested stack: 4 DDB tables, Lambdas, SFs
 ```
 
 No new buckets, no new VPC, no new KMS keys, no new Cognito groups, no new CloudFront distribution.
+
+> Lambda source lives under `source/main/highlight/` (matching the `source/main/{ingest,analysis,...}` convention). The build script bundles it into a versioned zip and the nested stack references it by `%%PKG_HIGHLIGHT%%` placeholder.
 
 ### IAM additions (scoped, no `*` resources)
 

@@ -11,10 +11,13 @@ Detects highlight segments in an already-ingested video using Amazon Bedrock.
   `difflib.SequenceMatcher` approach used in
   `aws-samples/gen-ai-video-short-form-generator`). Threshold: 0.70.
 
-- **pure-vlm** — not yet implemented; deferred to a follow-up commit.
+- **multimodal** — samples frames (from frame-segmentation output) and sends
+  them as image content blocks to a vision-capable Bedrock model, alongside
+  the spoken transcript when one is available. Anchors highlights by frame
+  index → timestamp.
 
 - **auto** — picks `transcript-llm` when speech density ≥ 0.6 words/sec,
-  else `pure-vlm`.
+  else `multimodal`.
 
 ## Event shape
 
@@ -22,7 +25,7 @@ Detects highlight segments in an already-ingested video using Amazon Bedrock.
 {
   "uuid":          "<m2c asset uuid>",
   "transcriptKey": "videos/<uuid>/raw/.../transcribe.json",
-  "strategy":      "auto" | "transcript-llm" | "pure-vlm",
+  "strategy":      "auto" | "transcript-llm" | "multimodal",
   "modelId":       null | "amazon.nova-2-lite-v1:0" | "qwen.qwen3-235b-a22b-2507-v1:0" | "deepseek.v3-2-v1:0",
   "prompt":        null | "<custom prompt prefix>",
   "maxSegments":   10,

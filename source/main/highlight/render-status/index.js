@@ -145,8 +145,8 @@ exports.handler = async (event) => {
   const update = {
     TableName: rendersTable,
     Key: { renderId },
-    UpdateExpression: 'SET #s = :s, percent = :p',
-    ExpressionAttributeNames: { '#s': 'status' },
+    UpdateExpression: 'SET #s = :s, #p = :p',
+    ExpressionAttributeNames: { '#s': 'status', '#p': 'percent' },
     ExpressionAttributeValues: {
       ':s': status,
       ':p': percent,

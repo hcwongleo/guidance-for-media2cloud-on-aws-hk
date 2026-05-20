@@ -391,18 +391,29 @@ Resources:
                                     - dynamodb:PutItem
                                     - dynamodb:UpdateItem
                                 Resource: !GetAtt HighlightSetsTable.Arn
-                            # Bedrock - 5 pinned models per spec §6
+                            # Bedrock - covers every model the dropdown can offer
+                            # (text + vision + video inputs, dynamically listed by modelsOp).
                             -
                                 Effect: Allow
                                 Action: bedrock:InvokeModel
                                 Resource:
-                                    - arn:aws:bedrock:*::foundation-model/amazon.nova-2-lite-v1:0
-                                    - arn:aws:bedrock:*::foundation-model/amazon.nova-pro-v1:0
-                                    - arn:aws:bedrock:*::foundation-model/twelvelabs.pegasus-1-2-v1:0
-                                    - arn:aws:bedrock:*::foundation-model/qwen.qwen3-235b-a22b-2507-v1:0
-                                    - arn:aws:bedrock:*::foundation-model/deepseek.v3-2-v1:0
-                                    - !Sub arn:aws:bedrock:*:${AWS::AccountId}:inference-profile/*amazon.nova-2-lite*
-                                    - !Sub arn:aws:bedrock:*:${AWS::AccountId}:inference-profile/*amazon.nova-pro*
+                                    - arn:aws:bedrock:*::foundation-model/amazon.nova*
+                                    - arn:aws:bedrock:*::foundation-model/twelvelabs.*
+                                    - arn:aws:bedrock:*::foundation-model/qwen.*
+                                    - arn:aws:bedrock:*::foundation-model/deepseek.*
+                                    - arn:aws:bedrock:*::foundation-model/minimax.*
+                                    - arn:aws:bedrock:*::foundation-model/moonshot.*
+                                    - arn:aws:bedrock:*::foundation-model/zai.*
+                                    - !Sub arn:aws:bedrock:*:${AWS::AccountId}:inference-profile/*amazon.nova*
+                                    - !Sub arn:aws:bedrock:*:${AWS::AccountId}:inference-profile/*twelvelabs*
+                                    - !Sub arn:aws:bedrock:*:${AWS::AccountId}:inference-profile/*qwen*
+                                    - !Sub arn:aws:bedrock:*:${AWS::AccountId}:inference-profile/*deepseek*
+                            # IoT - publish detection progress to the same status topic the
+                            # webapp already listens on for ingest/analysis/render updates.
+                            -
+                                Effect: Allow
+                                Action: iot:Publish
+                                Resource: !Sub arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topic/${IotTopic}
 
     DetectHighlightsLambda:
         Type: AWS::Lambda::Function
@@ -456,13 +467,15 @@ Resources:
                     ENV_BEDROCK_REGION: us-west-2
                     ENV_PROXY_BUCKET: !Ref ProxyBucket
                     ENV_HIGHLIGHT_SETS_TABLE: !Ref HighlightSetsTable
+                    ENV_IOT_HOST: !Ref IotHost
+                    ENV_IOT_TOPIC: !Ref IotTopic
 
     ################################################################################
     #
     # highlight-detection Step Function
     # * Single Task state for now: detect-highlights (anchor-and-snap is folded
     #   into the same Lambda since the LCS pass is sub-second)
-    # * pure-vlm strategy will add a parallel Map state in a follow-up commit
+    # * multimodal strategy reuses the same Lambda; frames + optional transcript
     #
     ################################################################################
     HighlightDetectionStateMachineServiceRole:

@@ -11,6 +11,7 @@ const {
 } = require('@aws-sdk/client-dynamodb');
 const {
   DynamoDBDocumentClient,
+  DeleteCommand,
   GetCommand,
   PutCommand,
   QueryCommand,
@@ -37,7 +38,11 @@ const {
     StateMachines: {
       RenderPublish,
     },
+    Proxy: {
+      Bucket: ProxyBucket,
+    },
   },
+  CommonUtils,
   xraysdkHelper,
   retryStrategyHelper,
   M2CException,
@@ -169,7 +174,57 @@ class RendersOp extends BaseOp {
   }
 
   async onDELETE() {
-    throw new M2CException('RendersOp.onDELETE not impl');
+    const captured = (this.request.pathParameters || {}).uuid;
+    const renderId = captured && captured.split('/').filter(Boolean)[0];
+    if (!renderId) {
+      throw new M2CException('missing renderId');
+    }
+
+    const doc = ddbDocClient();
+
+    // Look up the row first so we know which S3 prefix to clean up.
+    const existing = await doc.send(new GetCommand({
+      TableName: RendersTable,
+      Key: {
+        [RendersPartitionKey]: renderId,
+      },
+    }));
+    const item = (existing && existing.Item) || undefined;
+
+    let objectsDeleted = 0;
+    if (item && item.uuid) {
+      const prefix = `renders/${item.uuid}/${renderId}/`;
+      let token;
+      do {
+        const page = await CommonUtils.listObjects(ProxyBucket, prefix, {
+          ContinuationToken: token,
+        });
+        const contents = (page && page.Contents) || [];
+        for (const obj of contents) {
+          if (!obj || !obj.Key) continue;
+          try {
+            await CommonUtils.deleteObject(ProxyBucket, obj.Key);
+            objectsDeleted += 1;
+          } catch (e) {
+            console.error(`deleteObject ${obj.Key} failed:`, e.message);
+          }
+        }
+        token = (page && page.IsTruncated) ? page.NextContinuationToken : undefined;
+      } while (token);
+    }
+
+    await doc.send(new DeleteCommand({
+      TableName: RendersTable,
+      Key: {
+        [RendersPartitionKey]: renderId,
+      },
+    }));
+
+    return super.onDELETE({
+      renderId,
+      deleted: true,
+      objectsDeleted,
+    });
   }
 }
 

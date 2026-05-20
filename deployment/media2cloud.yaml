@@ -1254,12 +1254,13 @@ Resources:
                         Resource:
                             - !Sub arn:aws:states:${AWS::Region}:${AWS::AccountId}:execution:${HighlightStack.Outputs.HighlightDetectionStateMachineName}:*
                             - !Sub arn:aws:states:${AWS::Region}:${AWS::AccountId}:execution:${HighlightStack.Outputs.RenderPublishStateMachineName}:*
-                    # DynamoDB - HighlightSets is read-only from API; writes happen in detect-highlights Lambda
+                    # DynamoDB - HighlightSets: API reads + deletes; writes still happen in detect-highlights Lambda
                     -
                         Effect: Allow
                         Action:
                             - dynamodb:GetItem
                             - dynamodb:Query
+                            - dynamodb:DeleteItem
                         Resource: !GetAtt HighlightStack.Outputs.HighlightSetsTableArn
                     # DynamoDB - EditProjects, Renders, HighlightSettings: full read/write from API
                     -

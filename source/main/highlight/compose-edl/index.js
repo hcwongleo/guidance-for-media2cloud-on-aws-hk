@@ -7,7 +7,7 @@ const {
 const {
   DynamoDBDocumentClient,
   GetCommand,
-  PutCommand,
+  UpdateCommand,
 } = require('@aws-sdk/lib-dynamodb');
 const CRYPTO = require('node:crypto');
 
@@ -300,11 +300,24 @@ function findVideoProxy(ingestRow) {
   return proxy.key;
 }
 
-async function persistRenderRow(table, row) {
+async function persistRenderRow(table, renderId, attrs) {
   const doc = ddb();
-  await doc.send(new PutCommand({
+  const names = {};
+  const values = {};
+  const sets = [];
+  Object.entries(attrs).forEach(([k, v], i) => {
+    const nk = `#k${i}`;
+    const vk = `:v${i}`;
+    names[nk] = k;
+    values[vk] = v;
+    sets.push(`${nk} = ${vk}`);
+  });
+  await doc.send(new UpdateCommand({
     TableName: table,
-    Item: row,
+    Key: { renderId },
+    UpdateExpression: `SET ${sets.join(', ')}`,
+    ExpressionAttributeNames: names,
+    ExpressionAttributeValues: values,
   }));
 }
 
@@ -340,7 +353,10 @@ exports.handler = async (event) => {
   const proxyKey = findVideoProxy(ingestRow);
   const proxyUri = `s3://${proxyBucket}/${proxyKey}`;
 
-  const renderId = CRYPTO.randomUUID();
+  // Use the renderId minted by the API at POST time (it pre-created the row
+  // with status='queued' so the webapp could poll). Falling back to a fresh
+  // uuid would orphan that row and produce duplicate render entries.
+  const renderId = event.renderId || CRYPTO.randomUUID();
   const startedAt = new Date().toISOString();
   const destinationPrefix = `s3://${proxyBucket}/renders/${editProject.uuid}/${renderId}/`;
 
@@ -352,8 +368,7 @@ exports.handler = async (event) => {
     solutionUuid,
   });
 
-  await persistRenderRow(rendersTable, {
-    renderId,
+  await persistRenderRow(rendersTable, renderId, {
     editProjectId,
     uuid: editProject.uuid,
     status: 'composing',
@@ -363,6 +378,7 @@ exports.handler = async (event) => {
     segmentCount: segments.length,
     destinationPrefix,
     startedAt,
+    updatedAt: startedAt,
   });
 
   return {

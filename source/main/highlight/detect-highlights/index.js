@@ -23,10 +23,13 @@ const {
       },
     },
   },
+  IotStatus,
   xraysdkHelper,
   retryStrategyHelper,
   M2CException,
 } = require('core-lib');
+
+const IOT_TYPE = 'detect-highlight';
 
 const REQUIRED_ENVS = [
   'ENV_BEDROCK_REGION',
@@ -34,11 +37,37 @@ const REQUIRED_ENVS = [
   'ENV_HIGHLIGHT_SETS_TABLE',
 ];
 
-const DEFAULT_TRANSCRIPT_MODEL = 'amazon.nova-2-lite-v1:0';
+const DEFAULT_TRANSCRIPT_MODEL = 'us.amazon.nova-2-lite-v1:0';
+const DEFAULT_VLM_MODEL = 'us.amazon.nova-2-lite-v1:0';
 const DEFAULT_MAX_SEGMENTS = 10;
 const DEFAULT_AUTOPICK_THRESHOLD = 0.6; // words/sec
 const ANCHOR_SIM_THRESHOLD = 0.70;      // matches Python reference
+const MIN_HIGHLIGHT_SEC = 5;
+const MAX_HIGHLIGHT_SEC = 60;
 const FPS = 25;
+const VIDEO_FORMAT_BY_EXT = {
+  mp4: 'mp4',
+  mov: 'mov',
+  mkv: 'mkv',
+  webm: 'webm',
+  flv: 'flv',
+  mpeg: 'mpeg',
+  mpg: 'mpeg',
+  wmv: 'wmv',
+  '3gp': 'three_gp',
+};
+
+// Bedrock rejects on-demand for some Nova models — auto-prefix the inference profile.
+function ensureInferenceProfile(modelId) {
+  if (!modelId) return modelId;
+  if (modelId.startsWith('us.') || modelId.startsWith('eu.') || modelId.startsWith('apac.')) {
+    return modelId;
+  }
+  if (/^amazon\.nova/.test(modelId) || /^anthropic\.claude/.test(modelId)) {
+    return `us.${modelId}`;
+  }
+  return modelId;
+}
 
 function lcsLength(a, b) {
   const n = a.length;
@@ -157,7 +186,9 @@ function mergeOverlapping(segments) {
   for (let i = 1; i < sorted.length; i += 1) {
     const prev = merged[merged.length - 1];
     const cur = sorted[i];
-    if (cur.startSec <= prev.endSec) {
+    // Strict overlap only — touching segments stay separate so models that
+    // emit adjacent ranges don't get collapsed into one giant clip.
+    if (cur.startSec < prev.endSec) {
       prev.endSec = Math.max(prev.endSec, cur.endSec);
       prev.text = `${prev.text} ${cur.text}`.trim();
     } else {
@@ -168,20 +199,22 @@ function mergeOverlapping(segments) {
 }
 
 function buildPrompt(transcriptText, maxSegments, customPrompt) {
-  if (customPrompt && customPrompt.length > 0) {
-    return `${customPrompt}\n\nTranscript:\n${transcriptText}`;
-  }
-  return [
+  const lines = [
     'You are a video editor identifying the most engaging moments in a video for short-form highlights.',
     `Pick up to ${maxSegments} highlight segments from the transcript below.`,
     'Each segment should be self-contained, between 5 and 60 seconds of speech.',
     'Quote the exact transcript words that bound the segment. If you skip words inside, replace them with [...].',
-    'Respond ONLY with valid JSON in this shape:',
-    '{"highlights":[{"title":"<short>","reason":"<why it matters>","quote":"<verbatim transcript span with optional [...]>"}]}',
-    '',
-    'Transcript:',
-    transcriptText,
-  ].join('\n');
+  ];
+  if (customPrompt && customPrompt.length > 0) {
+    lines.push('Additional guidance from the user:');
+    lines.push(customPrompt);
+  }
+  lines.push('Respond ONLY with valid JSON in this shape:');
+  lines.push('{"highlights":[{"title":"<short>","reason":"<why it matters>","quote":"<verbatim transcript span with optional [...]>"}]}');
+  lines.push('');
+  lines.push('Transcript:');
+  lines.push(transcriptText);
+  return lines.join('\n');
 }
 
 function parseHighlightsResponse(rawText) {
@@ -202,6 +235,10 @@ function parseHighlightsResponse(rawText) {
 }
 
 async function callBedrock(modelId, prompt, region) {
+  return callBedrockConverse(modelId, region, [{ text: prompt }]);
+}
+
+async function callBedrockConverse(modelId, region, contentBlocks) {
   const client = xraysdkHelper(new BedrockRuntimeClient({
     region,
     customUserAgent: CustomUserAgent,
@@ -212,7 +249,7 @@ async function callBedrock(modelId, prompt, region) {
     modelId,
     messages: [{
       role: 'user',
-      content: [{ text: prompt }],
+      content: contentBlocks,
     }],
     inferenceConfig: {
       maxTokens: 4096,
@@ -255,7 +292,142 @@ function joinTranscriptText(words) {
 }
 
 function autoPickStrategy(density) {
-  return density >= DEFAULT_AUTOPICK_THRESHOLD ? 'transcript-llm' : 'pure-vlm';
+  return density >= DEFAULT_AUTOPICK_THRESHOLD ? 'transcript-llm' : 'multimodal';
+}
+
+function videoFormatFromKey(key) {
+  const m = /\.([a-z0-9]+)$/i.exec(key || '');
+  if (!m) {
+    return null;
+  }
+  return VIDEO_FORMAT_BY_EXT[m[1].toLowerCase()] || null;
+}
+
+function buildVideoPrompt(maxSegments, customPrompt, totalDurationSec, transcriptText) {
+  const hasTranscript = transcriptText && transcriptText.length > 0;
+  const lines = [
+    'You are a video editor selecting the most engaging moments from a video for short-form highlights.',
+    `You are given the full ${Math.round(totalDurationSec)}-second video${hasTranscript ? ', along with the spoken transcript' : ''}.`,
+    `Pick up to ${maxSegments} non-overlapping highlight segments based on ${hasTranscript ? 'what you see and what is said' : 'what you see in the video'}.`,
+    'STRICT RULES — failures here are unusable:',
+    '- Each segment MUST be at least 5000 milliseconds and at most 60000 milliseconds long (endMs - startMs).',
+    '- Do NOT emit 1-second clips. Do NOT emit clips that span most of the video.',
+    '- Segments must NOT touch or overlap: each segment\'s startMs must be strictly greater than the previous segment\'s endMs.',
+    '- Center each segment on the moment of interest; if the moment is brief, pad with surrounding context to reach at least 5 seconds.',
+    'Report timestamps in milliseconds from the start of the video.',
+  ];
+  if (customPrompt && customPrompt.length > 0) {
+    lines.push('Additional guidance from the user:');
+    lines.push(customPrompt);
+  }
+  lines.push('Respond ONLY with valid JSON in this shape:');
+  lines.push('{"highlights":[{"title":"<short>","reason":"<why it matters>","startMs":<int>,"endMs":<int>}]}');
+  if (hasTranscript) {
+    lines.push('');
+    lines.push('Transcript:');
+    lines.push(transcriptText);
+  }
+  return lines.join('\n');
+}
+
+function parseVideoHighlightsResponse(rawText, totalDurationSec) {
+  let text = rawText.trim();
+  text = text.replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
+  const first = text.indexOf('{');
+  const last = text.lastIndexOf('}');
+  if (first === -1 || last === -1 || last <= first) {
+    throw new M2CException('VLM response did not contain JSON');
+  }
+  const json = JSON.parse(text.slice(first, last + 1));
+  if (!Array.isArray(json.highlights)) {
+    throw new M2CException('VLM response missing highlights[]');
+  }
+
+  const segments = [];
+  const cap = totalDurationSec > 0 ? totalDurationSec : Number.POSITIVE_INFINITY;
+  for (let i = 0; i < json.highlights.length; i += 1) {
+    const h = json.highlights[i];
+    const startMs = Number(h.startMs);
+    const endMs = Number(h.endMs);
+    if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) {
+      console.log(`=== VLM segment #${i + 1} bad timestamps: start=${h.startMs} end=${h.endMs}`);
+      continue;
+    }
+    let startSec = Math.max(0, startMs / 1000);
+    let endSec = Math.min(cap, endMs / 1000);
+    let duration = endSec - startSec;
+    // Models often ignore the 5-60s constraint. Clamp short clips by
+    // padding around the midpoint, and trim long clips from the end.
+    if (duration < MIN_HIGHLIGHT_SEC) {
+      const mid = (startSec + endSec) / 2;
+      startSec = Math.max(0, mid - MIN_HIGHLIGHT_SEC / 2);
+      endSec = Math.min(cap, startSec + MIN_HIGHLIGHT_SEC);
+      // If we hit the end of the video, pull start back so duration is preserved.
+      if (endSec - startSec < MIN_HIGHLIGHT_SEC) {
+        startSec = Math.max(0, endSec - MIN_HIGHLIGHT_SEC);
+      }
+      duration = endSec - startSec;
+    }
+    if (duration > MAX_HIGHLIGHT_SEC) {
+      endSec = startSec + MAX_HIGHLIGHT_SEC;
+      duration = MAX_HIGHLIGHT_SEC;
+    }
+    if (duration < 1) {
+      console.log(`=== VLM segment #${i + 1} too short after clamp (${duration}s)`);
+      continue;
+    }
+    segments.push({
+      kind: 'highlight',
+      title: h.title || `Highlight ${i + 1}`,
+      reason: h.reason || '',
+      startSec,
+      endSec,
+      startTimecode: secondsToTimecode(startSec),
+      endTimecode: secondsToTimecode(endSec),
+      text: '',
+    });
+  }
+  return segments;
+}
+
+async function runMultimodalStrategy({ uuid, proxyBucket, proxyKey, accountId, maxSegments, modelId, customPrompt, durationSec, region, transcriptText }) {
+  const format = videoFormatFromKey(proxyKey);
+  if (!format) {
+    throw new M2CException(`unsupported video format for proxy ${proxyKey}`);
+  }
+
+  console.log(`=== multimodal: video s3://${proxyBucket}/${proxyKey} (${format}), transcript=${transcriptText ? `${transcriptText.length}ch` : 'none'} for ${uuid}`);
+
+  const promptText = buildVideoPrompt(maxSegments, customPrompt, durationSec, transcriptText);
+  const s3Location = { uri: `s3://${proxyBucket}/${proxyKey}` };
+  if (accountId) {
+    s3Location.bucketOwner = String(accountId);
+  }
+
+  const contentBlocks = [
+    { video: { format, source: { s3Location } } },
+    { text: promptText },
+  ];
+
+  const { text: rawResponse, usage } = await callBedrockConverse(modelId, region, contentBlocks);
+  console.log(`=== multimodal raw response (${rawResponse.length}ch): ${rawResponse}`);
+  const segments = parseVideoHighlightsResponse(rawResponse, durationSec);
+  console.log(`=== multimodal parsed segments: ${segments.length}`);
+
+  return { segments, usage };
+}
+
+async function publishStatus(extra) {
+  // Fire-and-forget — failures only log, never break the run.
+  try {
+    return await IotStatus.publish({
+      type: IOT_TYPE,
+      ...extra,
+    });
+  } catch (e) {
+    console.log(`=== publishStatus failed: ${e.message}`);
+    return undefined;
+  }
 }
 
 async function persistHighlightSet(table, row) {
@@ -284,6 +456,8 @@ exports.handler = async (event) => {
   const {
     uuid,
     transcriptKey,
+    proxyKey,
+    accountId,
     strategy: requestedStrategy = 'auto',
     modelId: requestedModelId,
     prompt: customPrompt,
@@ -295,97 +469,153 @@ exports.handler = async (event) => {
   if (!uuid) {
     throw new M2CException('uuid is required');
   }
-  if (!transcriptKey) {
-    throw new M2CException('transcriptKey is required');
-  }
-
-  const transcriptJson = await readTranscript(proxyBucket, transcriptKey);
-  const words = extractWords(transcriptJson);
-  if (words.length === 0) {
-    throw new M2CException(`no transcript words found at s3://${proxyBucket}/${transcriptKey}`);
-  }
-  const lastWordEnd = words[words.length - 1].end;
-  const totalDuration = durationSec || lastWordEnd;
-  const density = speechDensity(words, totalDuration);
 
   let strategy = requestedStrategy;
-  if (strategy === 'auto') {
-    strategy = autoPickStrategy(density);
-  }
 
-  if (strategy === 'pure-vlm') {
-    // Pure-VLM frame extraction + multipart Bedrock call ships in a follow-up commit.
-    throw new M2CException('pure-vlm strategy is not yet implemented; use transcript-llm');
-  }
-  if (strategy !== 'transcript-llm') {
-    throw new M2CException(`unsupported strategy: ${strategy}`);
-  }
+  try {
+    await publishStatus({ uuid, strategy, status: 'started', percent: 0 });
 
-  const modelId = requestedModelId || DEFAULT_TRANSCRIPT_MODEL;
-  const transcriptText = joinTranscriptText(words);
-  const prompt = buildPrompt(transcriptText, maxSegments, customPrompt);
+    // Transcript is required for transcript-llm; multimodal uses it when available.
+    let words = [];
+    let totalDuration = durationSec || 0;
+    let density = 0;
 
-  const startedAt = new Date().toISOString();
-  const { text: rawResponse, usage } = await callBedrock(modelId, prompt, region);
-  const rawHighlights = parseHighlightsResponse(rawResponse);
-
-  const segments = [];
-  for (let i = 0; i < rawHighlights.length; i += 1) {
-    const h = rawHighlights[i];
-    const quote = (h.quote || '').replace(/\[\.\.\.\]/g, ' ').trim();
-    if (quote.length === 0) {
-      continue;
+    if (transcriptKey) {
+      const transcriptJson = await readTranscript(proxyBucket, transcriptKey);
+      words = extractWords(transcriptJson);
+      if (words.length > 0) {
+        const lastWordEnd = words[words.length - 1].end;
+        totalDuration = totalDuration || lastWordEnd;
+        density = speechDensity(words, totalDuration);
+      }
     }
-    const tf = findTimeframe(quote, words);
-    if (!tf) {
-      console.log(`=== anchor failed for #${i + 1}: "${(h.title || '').slice(0, 60)}"`);
-      continue;
+
+    if (strategy === 'auto') {
+      strategy = autoPickStrategy(density);
     }
-    segments.push({
-      kind: 'highlight',
-      title: h.title || `Highlight ${i + 1}`,
-      reason: h.reason || '',
-      quote: h.quote || '',
-      startSec: tf.startSec,
-      endSec: tf.endSec,
-      startTimecode: secondsToTimecode(tf.startSec),
-      endTimecode: secondsToTimecode(tf.endSec),
-      anchorRatio: Number(tf.ratio.toFixed(3)),
-      text: quote,
+
+    await publishStatus({ uuid, strategy, status: 'processing', percent: 30, phase: 'data-loaded' });
+
+    const startedAt = new Date().toISOString();
+    let merged;
+    let modelId;
+    let usage = {};
+    let extra = {};
+
+    if (strategy === 'transcript-llm') {
+      if (words.length === 0) {
+        throw new M2CException('transcript-llm requires a transcript; none found for this asset');
+      }
+      modelId = ensureInferenceProfile(requestedModelId || DEFAULT_TRANSCRIPT_MODEL);
+      const transcriptText = joinTranscriptText(words);
+      const prompt = buildPrompt(transcriptText, maxSegments, customPrompt);
+      const out = await callBedrock(modelId, prompt, region);
+      usage = out.usage;
+      await publishStatus({ uuid, strategy, status: 'processing', percent: 70, phase: 'model-completed' });
+      const rawHighlights = parseHighlightsResponse(out.text);
+      const segments = [];
+      for (let i = 0; i < rawHighlights.length; i += 1) {
+        const h = rawHighlights[i];
+        const quote = (h.quote || '').replace(/\[\.\.\.\]/g, ' ').trim();
+        if (quote.length === 0) {
+          continue;
+        }
+        const tf = findTimeframe(quote, words);
+        if (!tf) {
+          console.log(`=== anchor failed for #${i + 1}: "${(h.title || '').slice(0, 60)}"`);
+          continue;
+        }
+        segments.push({
+          kind: 'highlight',
+          title: h.title || `Highlight ${i + 1}`,
+          reason: h.reason || '',
+          quote: h.quote || '',
+          startSec: tf.startSec,
+          endSec: tf.endSec,
+          startTimecode: secondsToTimecode(tf.startSec),
+          endTimecode: secondsToTimecode(tf.endSec),
+          anchorRatio: Number(tf.ratio.toFixed(3)),
+          text: quote,
+        });
+      }
+      merged = mergeOverlapping(segments);
+    } else if (strategy === 'multimodal') {
+      if (!proxyKey) {
+        throw new M2CException('multimodal requires a proxyKey; ensure ingest produced a video proxy');
+      }
+      modelId = ensureInferenceProfile(requestedModelId || DEFAULT_VLM_MODEL);
+      const transcriptText = words.length > 0 ? joinTranscriptText(words) : '';
+      const out = await runMultimodalStrategy({
+        uuid,
+        proxyBucket,
+        proxyKey,
+        accountId,
+        maxSegments,
+        modelId,
+        customPrompt,
+        durationSec: totalDuration,
+        region,
+        transcriptText,
+      });
+      usage = out.usage;
+      await publishStatus({ uuid, strategy, status: 'processing', percent: 70, phase: 'model-completed' });
+      merged = mergeOverlapping(out.segments);
+      extra = { proxyKey };
+    } else {
+      throw new M2CException(`unsupported strategy: ${strategy}`);
+    }
+
+    await publishStatus({ uuid, strategy, status: 'processing', percent: 90, phase: 'anchored', segmentCount: merged.length });
+
+    const highlightSetId = CRYPTO.randomUUID();
+
+    const row = {
+      uuid,
+      highlightSetId,
+      strategy,
+      modelId,
+      prompt: customPrompt || null,
+      segments: merged,
+      status: 'COMPLETED',
+      createdAt: startedAt,
+      finishedAt: new Date().toISOString(),
+      createdBy: owner,
+      speechDensity: Number(density.toFixed(3)),
+      durationSec: totalDuration,
+      cost: {
+        inputTokens: usage.inputTokens || 0,
+        outputTokens: usage.outputTokens || 0,
+      },
+      ...extra,
+    };
+
+    await persistHighlightSet(tableName, row);
+
+    await publishStatus({
+      uuid,
+      strategy,
+      status: 'completed',
+      percent: 100,
+      highlightSetId,
+      segmentCount: merged.length,
     });
+
+    return {
+      uuid,
+      highlightSetId,
+      strategy,
+      modelId,
+      segmentCount: merged.length,
+      segments: merged,
+      status: 'COMPLETED',
+    };
+  } catch (e) {
+    await publishStatus({
+      uuid,
+      strategy,
+      status: 'error',
+      error: e.message || String(e),
+    });
+    throw e;
   }
-
-  const merged = mergeOverlapping(segments);
-  const highlightSetId = CRYPTO.randomUUID();
-
-  const row = {
-    uuid,
-    highlightSetId,
-    strategy,
-    modelId,
-    prompt: customPrompt || null,
-    segments: merged,
-    status: 'COMPLETED',
-    createdAt: startedAt,
-    finishedAt: new Date().toISOString(),
-    createdBy: owner,
-    speechDensity: Number(density.toFixed(3)),
-    durationSec: totalDuration,
-    cost: {
-      inputTokens: usage.inputTokens || 0,
-      outputTokens: usage.outputTokens || 0,
-    },
-  };
-
-  await persistHighlightSet(tableName, row);
-
-  return {
-    uuid,
-    highlightSetId,
-    strategy,
-    modelId,
-    segmentCount: merged.length,
-    segments: merged,
-    status: 'COMPLETED',
-  };
 };

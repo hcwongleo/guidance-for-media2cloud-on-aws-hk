@@ -35,7 +35,7 @@
             "Syntax": "DEFAULT",
             "Softness": 0,
             "GopClosedCadence": 1,
-            "GopSize": 2,
+            "GopSize": 1,
             "Slices": 1,
             "GopBReference": "DISABLED",
             "MaxBitrate": 2000000,

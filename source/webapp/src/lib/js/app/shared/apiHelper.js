@@ -433,12 +433,14 @@ export default class ApiHelper {
   }
 
   static async getModels(capability) {
-    const qs = capability ? `?capability=${capability}` : '';
+    // AuthHttpRequest.send strips any ?query baked into the endpoint URL —
+    // it parses with `new URL()` and only keeps url.pathname. Pass query as
+    // the third arg so it makes it onto the wire.
+    const query = capability ? { capability } : {};
     return _authHttpRequest.send(
       'GET',
-      `${ENDPOINTS.Models}${qs}`,
-      undefined,
-      undefined
+      ENDPOINTS.Models,
+      query
     );
   }
 
@@ -640,6 +642,13 @@ export default class ApiHelper {
     );
   }
 
+  static async deletePublishOutput(uuid, outputId) {
+    return _authHttpRequest.send(
+      'DELETE',
+      `${ENDPOINTS.Publish}/${uuid}/outputs/${encodeURIComponent(outputId)}`
+    );
+  }
+
   static async deletePublishTemplate(name) {
     return _authHttpRequest.send(
       'DELETE',
@@ -667,6 +676,13 @@ export default class ApiHelper {
   static async getHighlightSet(uuid, highlightSetId) {
     return _authHttpRequest.send(
       'GET',
+      `${ENDPOINTS.Highlights}/${uuid}/${highlightSetId}`
+    );
+  }
+
+  static async deleteHighlightSet(uuid, highlightSetId) {
+    return _authHttpRequest.send(
+      'DELETE',
       `${ENDPOINTS.Highlights}/${uuid}/${highlightSetId}`
     );
   }
@@ -745,6 +761,13 @@ export default class ApiHelper {
       'GET',
       ENDPOINTS.Renders,
       { editProjectId }
+    );
+  }
+
+  static async deleteRender(renderId) {
+    return _authHttpRequest.send(
+      'DELETE',
+      `${ENDPOINTS.Renders}/${renderId}`
     );
   }
 }

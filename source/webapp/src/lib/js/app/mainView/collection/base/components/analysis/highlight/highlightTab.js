@@ -1,7 +1,6 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import SolutionManifest from '/solution-manifest.js';
 import Localization from '../../../../../../shared/localization.js';
 import ApiHelper from '../../../../../../shared/apiHelper.js';
 import Spinner from '../../../../../../shared/spinner.js';
@@ -9,13 +8,13 @@ import BaseMedia from '../../../../../../shared/media/baseMedia.js';
 import BaseAnalysisTab from '../base/baseAnalysisTab.js';
 import mxAlert from '../../../../../../mixins/mxAlert.js';
 import HighlightEditorModal from './highlightEditorModal.js';
+import {
+  RegisterIotMessageEvent,
+  UnregisterIotMessageEvent,
+} from '../../../../../../shared/iotSubscriber.js';
 
 class AlertHelper extends mxAlert(class {}) {}
 const _alertAgent = new AlertHelper();
-
-const {
-  FoundationModels = [],
-} = SolutionManifest;
 
 const {
   Messages: {
@@ -27,6 +26,7 @@ const {
     HighlightStrategy: MSG_STRATEGY,
     HighlightStrategyAuto: MSG_STRATEGY_AUTO,
     HighlightStrategyTranscript: MSG_STRATEGY_TRANSCRIPT,
+    HighlightStrategyVlm: MSG_STRATEGY_VLM,
     HighlightModel: MSG_MODEL,
     HighlightDefaultModel: MSG_DEFAULT_MODEL,
     HighlightCustomPrompt: MSG_PROMPT,
@@ -40,11 +40,13 @@ const {
     HighlightMaxSegmentsTooltip: TP_MAX_SEGMENTS,
     ViewHighlightSet: TP_VIEW,
     OpenHighlightEditor: TP_OPEN_EDITOR,
+    DeleteHighlightSet: TP_DELETE,
   },
   Buttons: {
     DetectHighlights: BTN_DETECT,
     ViewHighlightSet: BTN_VIEW,
     OpenHighlightEditor: BTN_OPEN_EDITOR,
+    DeleteHighlightSet: BTN_DELETE,
   },
   Alerts: {
     Oops: OOPS,
@@ -57,9 +59,18 @@ const {
 const STRATEGIES = [
   { value: 'auto', label: MSG_STRATEGY_AUTO },
   { value: 'transcript-llm', label: MSG_STRATEGY_TRANSCRIPT },
+  { value: 'multimodal', label: MSG_STRATEGY_VLM },
 ];
 
+// 'auto' may run either path; multimodal sends a video block, so it needs VIDEO-input models.
+const STRATEGY_CAPABILITY = {
+  auto: 'video',
+  'transcript-llm': 'text',
+  multimodal: 'video',
+};
+
 const VIDEO_TYPE = 'video';
+const IOT_TYPE_DETECT = 'detect-highlight';
 
 export default class HighlightTab extends BaseAnalysisTab {
   constructor(previewComponent) {
@@ -71,6 +82,11 @@ export default class HighlightTab extends BaseAnalysisTab {
       prompt: '',
       maxSegments: 10,
     };
+
+    this.$iotReceiverName = `highlight-detect-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    this.$progressLabel = null;
+    this.$setsBody = null;
+    this.$detectActive = false;
 
     Spinner.useSpinner();
   }
@@ -112,8 +128,11 @@ export default class HighlightTab extends BaseAnalysisTab {
     setsSection.append(setsBody);
 
     // Detect form section
+    this.$setsBody = setsBody;
     const formSection = this.createDetectForm(setsBody);
     container.append(formSection);
+
+    RegisterIotMessageEvent(this.$iotReceiverName, async (msg) => this._onIotMessage(msg));
 
     // initial load
     container.ready(async () => {
@@ -121,6 +140,11 @@ export default class HighlightTab extends BaseAnalysisTab {
     });
 
     return container;
+  }
+
+  async hide() {
+    UnregisterIotMessageEvent(this.$iotReceiverName);
+    return super.hide();
   }
 
   async refreshHighlightSets(setsBody) {
@@ -192,7 +216,7 @@ export default class HighlightTab extends BaseAnalysisTab {
       viewCell.append(viewBtn);
 
       const editBtn = $('<button/>')
-        .addClass('btn btn-sm btn-primary')
+        .addClass('btn btn-sm btn-primary mr-1')
         .attr('type', 'button')
         .attr('data-toggle', 'tooltip')
         .attr('data-placement', 'bottom')
@@ -204,12 +228,67 @@ export default class HighlightTab extends BaseAnalysisTab {
       editBtn.on('click', async () => {
         editBtn.tooltip('hide');
         try {
-          const modal = new HighlightEditorModal(this.previewComponent, it);
+          const onSaved = (editProject) => {
+            const segs = (editProject && editProject.segments) || [];
+            it.segments = segs.map((s) => ({
+              startSec: s.startSec,
+              endSec: s.endSec,
+              startMs: Number.isFinite(s.startMs) ? s.startMs : (s.startSec || 0) * 1000,
+              endMs: Number.isFinite(s.endMs) ? s.endMs : (s.endSec || 0) * 1000,
+              title: s.title || '',
+              reason: s.reason || '',
+              kind: s.kind,
+            }));
+            it.segmentCount = segs.length;
+            row.children('td').eq(3).text(segs.length);
+            // Invalidate cached detail so next expand re-renders from updated segments.
+            detailCell.empty();
+            if (!detailRow.hasClass('d-none')) {
+              detailCell.append(this.renderSetDetail(it));
+            }
+          };
+          const modal = new HighlightEditorModal(this.previewComponent, it, { onSaved });
           await modal.open();
         } catch (e) {
           console.error(e);
           await _alertAgent.showMessage(this.tabContent, 'danger', OOPS,
             (e && e.message) || 'Failed to open editor', 5000);
+        }
+      });
+
+      const deleteBtn = $('<button/>')
+        .addClass('btn btn-sm btn-outline-danger')
+        .attr('type', 'button')
+        .attr('data-toggle', 'tooltip')
+        .attr('data-placement', 'bottom')
+        .attr('title', TP_DELETE)
+        .text(BTN_DELETE)
+        .tooltip({ trigger: 'hover' });
+      viewCell.append(deleteBtn);
+
+      deleteBtn.on('click', async () => {
+        deleteBtn.tooltip('hide');
+        const summary = `${_iso(it.createdAt)} · ${it.strategy || '-'} · ${(it.segments || []).length || it.segmentCount || 0} segments`;
+        if (!window.confirm(`Delete this highlight set?\n\n${summary}\n\nThis cannot be undone.`)) {
+          return;
+        }
+        try {
+          deleteBtn.prop('disabled', true);
+          editBtn.prop('disabled', true);
+          viewBtn.prop('disabled', true);
+          await ApiHelper.deleteHighlightSet(it.uuid, it.highlightSetId);
+          row.remove();
+          detailRow.remove();
+          if (tbody.children('tr').length === 0) {
+            await this.refreshHighlightSets(setsBody);
+          }
+        } catch (e) {
+          console.error(e);
+          deleteBtn.prop('disabled', false);
+          editBtn.prop('disabled', false);
+          viewBtn.prop('disabled', false);
+          await _alertAgent.showMessage(this.tabContent, 'danger', OOPS,
+            (e && e.message) || 'Failed to delete highlight set', 5000);
         }
       });
 
@@ -297,18 +376,21 @@ export default class HighlightTab extends BaseAnalysisTab {
       .addClass('form-inline');
     section.append(form);
 
+    // model dropdown is rebuilt whenever strategy changes (text vs video capability).
+    const modelGroup = this.createModelSelectGroup();
+    const reloadModels = () => this.reloadModelOptions(modelGroup);
+
     // strategy
     form.append(this.createSelectGroup(MSG_STRATEGY, TP_STRATEGY,
       STRATEGIES.map((s) => ({ value: s.value, label: s.label })),
       this.formState.strategy,
-      (val) => { this.formState.strategy = val; }));
+      (val) => {
+        this.formState.strategy = val;
+        reloadModels();
+      }));
 
-    // model
-    const modelOptions = [{ value: '', label: MSG_DEFAULT_MODEL }]
-      .concat(FoundationModels.map((m) => ({ value: m.value, label: m.name })));
-    form.append(this.createSelectGroup(MSG_MODEL, TP_MODEL,
-      modelOptions, this.formState.modelId,
-      (val) => { this.formState.modelId = val; }));
+    form.append(modelGroup);
+    reloadModels();
 
     // prompt
     form.append(this.createTextGroup(MSG_PROMPT, TP_PROMPT,
@@ -335,20 +417,27 @@ export default class HighlightTab extends BaseAnalysisTab {
       .tooltip({ trigger: 'hover' });
     btnGroup.append(submitBtn);
 
+    const progressLabel = $('<span/>')
+      .addClass('lead-xs text-muted ml-3')
+      .text('');
+    btnGroup.append(progressLabel);
+    this.$progressLabel = progressLabel;
+    this.$submitBtn = submitBtn;
+
     form.submit(async (event) => {
       event.preventDefault();
       submitBtn.attr('disabled', 'disabled');
       submitBtn.tooltip('hide');
       try {
+        this.$detectActive = true;
+        this._setProgressLabel('started', 0);
         await this.onSubmit();
         await _alertAgent.showMessage(this.tabContent, 'success', '', ALERT_STARTED, 4000);
-        // refresh after a short delay so the new run shows up if it's fast
-        setTimeout(() => {
-          this.refreshHighlightSets(setsBody);
-        }, 1500);
       } catch (e) {
         console.error(e);
         this.shake(form);
+        this.$detectActive = false;
+        this._setProgressLabel('error', 0, (e && e.message) || '');
 
         if (e && e.message && /transcript/i.test(e.message)) {
           await _alertAgent.showMessage(this.tabContent, 'danger', OOPS, ALERT_NO_TRANSCRIPT, 6000);
@@ -356,7 +445,6 @@ export default class HighlightTab extends BaseAnalysisTab {
           const msg = (ALERT_FAILED || '').replace('{{ERROR}}', (e && e.message) || '');
           await _alertAgent.showMessage(this.tabContent, 'danger', OOPS, msg, 6000);
         }
-      } finally {
         submitBtn.removeAttr('disabled');
       }
     });
@@ -383,6 +471,76 @@ export default class HighlightTab extends BaseAnalysisTab {
     } finally {
       Spinner.loading(false);
     }
+  }
+
+  createModelSelectGroup() {
+    const group = $('<div/>')
+      .addClass('form-group col-6 px-0 mt-2 mb-2');
+
+    const lbl = $('<label/>')
+      .addClass('lead-s col-3 px-0')
+      .attr('data-toggle', 'tooltip')
+      .attr('data-placement', 'bottom')
+      .attr('title', TP_MODEL)
+      .text(MSG_MODEL)
+      .tooltip({ trigger: 'hover' });
+    group.append(lbl);
+
+    const select = $('<select/>')
+      .addClass('custom-select custom-select-sm col-8')
+      .attr('data-role', 'highlight-model-select');
+    group.append(select);
+
+    select.on('change', () => {
+      this.formState.modelId = select.val();
+    });
+
+    return group;
+  }
+
+  async reloadModelOptions(modelGroup) {
+    const select = modelGroup.find('[data-role="highlight-model-select"]');
+    select.empty();
+    select.append($('<option/>').attr('value', '').text(MSG_DEFAULT_MODEL));
+    select.attr('disabled', 'disabled');
+
+    const capability = STRATEGY_CAPABILITY[this.formState.strategy] || 'text';
+
+    let providers;
+    try {
+      const res = await ApiHelper.getModels(capability);
+      providers = (res && res.providers) || {};
+    } catch (e) {
+      console.error('getModels failed:', e);
+      select.removeAttr('disabled');
+      return;
+    }
+
+    const names = Object.keys(providers).sort();
+    for (const provider of names) {
+      const optgroup = $('<optgroup/>').attr('label', provider);
+      const models = (providers[provider] || []).slice()
+        .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+      for (const m of models) {
+        optgroup.append($('<option/>').attr('value', m.id).text(m.name));
+      }
+      if (optgroup.children().length > 0) {
+        select.append(optgroup);
+      }
+    }
+
+    if (this.formState.modelId) {
+      // restore selection if still present
+      const found = select.find(`option[value="${this.formState.modelId}"]`).length > 0;
+      if (found) {
+        select.val(this.formState.modelId);
+      } else {
+        this.formState.modelId = '';
+        select.val('');
+      }
+    }
+
+    select.removeAttr('disabled');
   }
 
   createSelectGroup(label, tooltip, options, currentValue, onChange) {
@@ -480,6 +638,36 @@ export default class HighlightTab extends BaseAnalysisTab {
 
   shake(element, delay = 200) {
     _alertAgent.shake(element, delay);
+  }
+
+  _setProgressLabel(status, percent, errMsg) {
+    if (!this.$progressLabel) return;
+    const pct = Number(percent || 0);
+    if (status === 'completed') {
+      this.$progressLabel.text(`Detection completed (100%)`);
+    } else if (status === 'error') {
+      this.$progressLabel.text(`Detection failed${errMsg ? `: ${errMsg}` : ''}`);
+    } else if (status === 'started') {
+      this.$progressLabel.text('Detection started…');
+    } else {
+      this.$progressLabel.text(`Detection in progress… ${pct}%`);
+    }
+  }
+
+  async _onIotMessage(msg) {
+    if (!msg || msg.type !== IOT_TYPE_DETECT) return;
+    if (!this.$detectActive) return;
+    if (!this.media || msg.uuid !== this.media.uuid) return;
+
+    this._setProgressLabel(msg.status, msg.percent, msg.error);
+
+    if (msg.status === 'completed' || msg.status === 'error') {
+      this.$detectActive = false;
+      if (this.$submitBtn) this.$submitBtn.removeAttr('disabled');
+      if (msg.status === 'completed' && this.$setsBody) {
+        await this.refreshHighlightSets(this.$setsBody);
+      }
+    }
   }
 }
 

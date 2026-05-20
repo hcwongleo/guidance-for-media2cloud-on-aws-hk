@@ -79,12 +79,17 @@ class S3Utils {
 
   async signUrl(
     bucket,
-    key
+    key,
+    options = {}
   ) {
-    const command = new GetObjectCommand({
+    const params = {
       Bucket: bucket,
       Key: key,
-    });
+    };
+    if (options.responseContentDisposition) {
+      params.ResponseContentDisposition = options.responseContentDisposition;
+    }
+    const command = new GetObjectCommand(params);
 
     return getSignedUrl(
       _s3Client,

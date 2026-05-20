@@ -8,8 +8,6 @@ const _Sortable = (typeof window !== 'undefined') ? window.Sortable : undefined;
 
 const {
   Messages: {
-    HighlightEditorSourceTrack: MSG_SRC,
-    HighlightEditorAutoTrack: MSG_AUTO,
     HighlightEditorEditTrack: MSG_EDIT,
     HighlightEditorInspector: MSG_INSPECTOR,
     HighlightEditorEmptyEdit: MSG_EMPTY,
@@ -17,10 +15,7 @@ const {
     HighlightEditorIn: MSG_IN,
     HighlightEditorOut: MSG_OUT,
     HighlightEditorDrop: MSG_DROP,
-    HighlightEditorRestore: MSG_RESTORE,
     HighlightEditorRemove: MSG_REMOVE,
-    HighlightEditorMoveUp: MSG_UP,
-    HighlightEditorMoveDown: MSG_DOWN,
   },
 } = Localization;
 
@@ -29,6 +24,33 @@ const KIND_CUSTOM = 'custom';
 
 function _fmt(sec) {
   return BaseMedia.readableDuration(Math.max(0, Number(sec) || 0) * 1000);
+}
+
+// Editable timecode helpers: round-trip to "MM:SS.mm" or "H:MM:SS.mm".
+function _fmtTimeEdit(sec) {
+  const s = Math.max(0, Number(sec) || 0);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s - h * 3600) / 60);
+  const rem = s - h * 3600 - m * 60;
+  const remStr = rem.toFixed(2).padStart(5, '0');
+  if (h > 0) {
+    return `${h}:${String(m).padStart(2, '0')}:${remStr}`;
+  }
+  return `${String(m).padStart(2, '0')}:${remStr}`;
+}
+
+function _parseTime(str) {
+  if (str == null) return null;
+  const trimmed = String(str).trim();
+  if (!trimmed) return null;
+  const parts = trimmed.split(':');
+  let total = 0;
+  for (const p of parts) {
+    const n = Number(p);
+    if (!Number.isFinite(n) || n < 0) return null;
+    total = total * 60 + n;
+  }
+  return total;
 }
 
 function _totalSourceSec(highlightSet) {
@@ -56,6 +78,37 @@ export default class EditorTracks {
     this.$state = state;
     this.$sortable = null;
     this.$totalSec = _totalSourceSec(highlightSet);
+    // Active preview: auto-pause when the player crosses endSec.
+    this.$previewEndSec = null;
+    // Chained compilation playback: when set, advance to next segment instead of pausing.
+    this.$compilationQueue = null;
+    this.$compilationIndex = 0;
+    this.$playhead = null;
+    this.$onTimeUpdate = () => {
+      if (!this.$player) return;
+      if (this.$previewEndSec != null
+        && this.$player.currentTime >= this.$previewEndSec) {
+        this._onSegmentBoundaryReached();
+      }
+      this._updatePlayhead();
+    };
+    // Re-render once the video reports its real duration so chip widths
+    // (scaled to total video length) match the playhead position.
+    this.$onLoadedMetadata = () => {
+      const dur = this.$player && this.$player.duration;
+      if (Number.isFinite(dur) && dur > this.$totalSec) {
+        this.$totalSec = dur;
+        this.render();
+      }
+    };
+    if (this.$player) {
+      this.$player.addEventListener('timeupdate', this.$onTimeUpdate);
+      this.$player.addEventListener('loadedmetadata', this.$onLoadedMetadata);
+      // If metadata is already available (cached), trigger immediately.
+      if (Number.isFinite(this.$player.duration) && this.$player.duration > 0) {
+        this.$onLoadedMetadata();
+      }
+    }
   }
 
   destroy() {
@@ -63,96 +116,201 @@ export default class EditorTracks {
       try { this.$sortable.destroy(); } catch (e) { /* noop */ }
       this.$sortable = null;
     }
+    if (this.$player && this.$onTimeUpdate) {
+      this.$player.removeEventListener('timeupdate', this.$onTimeUpdate);
+    }
+    if (this.$player && this.$onLoadedMetadata) {
+      this.$player.removeEventListener('loadedmetadata', this.$onLoadedMetadata);
+    }
+    this.$previewEndSec = null;
+    this.$compilationQueue = null;
+    this.$playhead = null;
     this.$tracks.empty();
     this.$inspector.empty();
   }
 
+  // Seek, then call play() only once the browser has both finished the seek
+  // AND buffered enough data to play forward (readyState >= HAVE_FUTURE_DATA).
+  // Without the readyState check, calling play() right after `seeked` on a
+  // sparse-GOP MP4 can cause a visible stall while the decoder catches up.
+  _seekThenPlay(startSec) {
+    const player = this.$player;
+    if (!player) return;
+    const start = Math.max(0, Number(startSec) || 0);
+    let launched = false;
+    const launch = () => {
+      if (launched) return;
+      launched = true;
+      cleanup();
+      const p = player.play();
+      if (p && typeof p.catch === 'function') {
+        p.catch(() => { /* autoplay blocked */ });
+      }
+    };
+    const onSeeked = () => {
+      if (player.readyState >= 3) launch();
+    };
+    const onCanPlay = () => {
+      // canplay implies readyState >= HAVE_FUTURE_DATA at the current position.
+      launch();
+    };
+    const cleanup = () => {
+      player.removeEventListener('seeked', onSeeked);
+      player.removeEventListener('canplay', onCanPlay);
+    };
+
+    // Already at target with enough buffer — just play.
+    if (Math.abs((player.currentTime || 0) - start) < 0.05
+      && player.readyState >= 3) {
+      const p = player.play();
+      if (p && typeof p.catch === 'function') {
+        p.catch(() => {});
+      }
+      return;
+    }
+
+    player.addEventListener('seeked', onSeeked);
+    player.addEventListener('canplay', onCanPlay);
+    try {
+      player.currentTime = start;
+    } catch (e) {
+      cleanup();
+    }
+  }
+
+  _previewSegment(startSec, endSec) {
+    if (!this.$player) return;
+    const start = Math.max(0, Number(startSec) || 0);
+    const end = Number(endSec) || 0;
+    if (end <= start) return;
+    // Single-segment preview cancels any active compilation.
+    this.$compilationQueue = null;
+    this.$previewEndSec = end;
+    this._seekThenPlay(start);
+  }
+
+  _previewCompilation() {
+    if (!this.$player) return;
+    const segs = (this.$state.editProject.segments || [])
+      .filter((s) => Number(s.endSec) > Number(s.startSec));
+    if (segs.length === 0) return;
+    this.$compilationQueue = segs.slice();
+    this.$compilationIndex = 0;
+    this._playCompilationSegment(0);
+  }
+
+  _playCompilationSegment(idx) {
+    const queue = this.$compilationQueue;
+    if (!queue || idx >= queue.length) {
+      this.$compilationQueue = null;
+      this.$previewEndSec = null;
+      return;
+    }
+    const seg = queue[idx];
+    this.$compilationIndex = idx;
+    this.$previewEndSec = Number(seg.endSec) || 0;
+    this._seekThenPlay(Number(seg.startSec) || 0);
+  }
+
+  _onSegmentBoundaryReached() {
+    if (this.$compilationQueue) {
+      const next = this.$compilationIndex + 1;
+      if (next < this.$compilationQueue.length) {
+        this._playCompilationSegment(next);
+        return;
+      }
+      this.$compilationQueue = null;
+    }
+    this.$player.pause();
+    this.$previewEndSec = null;
+  }
+
+  _seekTo(sec) {
+    if (!this.$player) return;
+    try {
+      this.$player.currentTime = Math.max(0, Number(sec) || 0);
+      this.$previewEndSec = null;
+      this.$compilationQueue = null;
+    } catch (e) { /* noop */ }
+  }
+
   render() {
     this.$tracks.empty();
-    this.$tracks.append(this._buildSourceTrack());
-    this.$tracks.append(this._buildAutoTrack());
     this.$tracks.append(this._buildEditTrack());
     this._renderInspector();
   }
 
-  // ---------- Source ribbon ----------
-  _buildSourceTrack() {
-    const block = $('<div/>').addClass('mb-3');
-    block.append($('<p/>').addClass('lead-xs mb-1 text-muted').text(MSG_SRC));
-    const ribbon = $('<div/>')
-      .addClass('w-100 bg-secondary rounded')
-      .css({ height: '8px' });
-    block.append(ribbon);
-    return block;
-  }
-
-  // ---------- Auto-highlights ribbon ----------
-  _buildAutoTrack() {
-    const block = $('<div/>').addClass('mb-3');
-    block.append($('<p/>').addClass('lead-xs mb-1 text-muted').text(MSG_AUTO));
-
-    const ribbon = $('<div/>')
-      .addClass('w-100 position-relative bg-light rounded')
-      .css({ height: '20px' });
-    block.append(ribbon);
-
-    const total = this.$totalSec;
-    const segs = this.$highlightSet.segments || [];
+  _updatePlayhead() {
+    if (!this.$playhead || !this.$player) return;
     const editSegs = this.$state.editProject.segments;
+    if (!editSegs || editSegs.length === 0) {
+      this.$playhead.css('display', 'none');
+      return;
+    }
+    const cur = this.$player.currentTime || 0;
 
-    segs.forEach((seg, i) => {
-      const start = Number(seg.startSec) || 0;
-      const end = Number(seg.endSec) || 0;
-      const inEdit = editSegs.some((es) =>
-        es.kind === KIND_HIGHLIGHT && es.sourceSegmentIndex === i);
+    // Resolve which edit clip is active. Compilation playback drives index
+    // explicitly; otherwise fall back to source-time containment.
+    let activeIdx = -1;
+    if (this.$compilationQueue) {
+      activeIdx = this.$compilationIndex;
+    } else {
+      for (let i = 0; i < editSegs.length; i += 1) {
+        const s = Number(editSegs[i].startSec) || 0;
+        const e = Number(editSegs[i].endSec) || 0;
+        if (cur >= s && cur < e) { activeIdx = i; break; }
+      }
+    }
 
-      const left = `${(start / total) * 100}%`;
-      const width = `${Math.max(0.5, ((end - start) / total) * 100)}%`;
+    if (activeIdx < 0) {
+      this.$playhead.css('display', 'none');
+      return;
+    }
 
-      const chip = $('<div/>')
-        .addClass('position-absolute rounded')
-        .attr('data-toggle', 'tooltip')
-        .attr('title', `${seg.title || `#${i + 1}`} — ${_fmt(start)}–${_fmt(end)}`)
-        .css({
-          left,
-          width,
-          top: '2px',
-          bottom: '2px',
-          cursor: 'pointer',
-          background: inEdit ? '#28a745' : 'transparent',
-          border: inEdit ? '1px solid #1e7e34' : '1px dashed #6c757d',
-          opacity: inEdit ? 0.85 : 0.5,
-        });
+    const seg = editSegs[activeIdx];
+    const segStart = Number(seg.startSec) || 0;
+    const segEnd = Number(seg.endSec) || 0;
+    const segDur = Math.max(0.001, segEnd - segStart);
+    const offset = Math.max(0, Math.min(1, (cur - segStart) / segDur));
 
-      chip.on('click', () => {
-        if (this.$player) {
-          try { this.$player.currentTime = start; } catch (e) { /* noop */ }
-        }
-        if (!inEdit) {
-          this._restoreFromAuto(i);
-        } else {
-          // select the corresponding edit segment
-          const idx = editSegs.findIndex((es) =>
-            es.kind === KIND_HIGHLIGHT && es.sourceSegmentIndex === i);
-          if (idx >= 0) {
-            this.$state.selectedEditIndex = idx;
-            this._renderInspector();
-          }
-        }
-      });
-
-      ribbon.append(chip);
+    let totalEditSec = 0;
+    let priorSec = 0;
+    editSegs.forEach((s, i) => {
+      const d = Math.max(0, (Number(s.endSec) || 0) - (Number(s.startSec) || 0));
+      if (i < activeIdx) priorSec += d;
+      totalEditSec += d;
     });
-
-    return block;
+    if (totalEditSec <= 0) {
+      this.$playhead.css('display', 'none');
+      return;
+    }
+    const pct = ((priorSec + offset * segDur) / totalEditSec) * 100;
+    this.$playhead.css({ display: '', left: `${pct}%` });
   }
 
-  // ---------- Edit ribbon (sortable) ----------
+  // ---------- Edit ribbon: two-row (source map + playback sequence) ----------
   _buildEditTrack() {
     const block = $('<div/>').addClass('mb-3');
-    block.append($('<p/>').addClass('lead-xs mb-1 text-muted').text(MSG_EDIT));
+
+    const header = $('<div/>').addClass('d-flex align-items-center mb-1');
+    header.append($('<p/>').addClass('lead-xs text-muted mb-0 mr-2').text(MSG_EDIT));
 
     const editSegs = this.$state.editProject.segments;
+    const totalDur = editSegs.reduce((acc, s) =>
+      acc + Math.max(0, (Number(s.endSec) || 0) - (Number(s.startSec) || 0)), 0);
+
+    if (editSegs.length > 0) {
+      const playAllBtn = $('<button/>')
+        .addClass('btn btn-sm btn-success py-0 mr-2')
+        .css({ fontSize: '11px', lineHeight: '18px' })
+        .attr('type', 'button')
+        .attr('title', 'Play all edit segments back-to-back')
+        .html(`▶ Play compilation (${_fmt(totalDur)})`);
+      playAllBtn.on('click', () => this._previewCompilation());
+      header.append(playAllBtn);
+    }
+    block.append(header);
+
     if (editSegs.length === 0) {
       block.append($('<p/>')
         .addClass('lead-xs text-muted font-italic')
@@ -161,52 +319,172 @@ export default class EditorTracks {
       return block;
     }
 
-    const ribbon = $('<div/>')
-      .addClass('w-100 d-flex flex-wrap')
-      .attr('data-role', 'edit-ribbon')
-      .css({ minHeight: '36px', gap: '4px' });
-    block.append(ribbon);
+    // Row 1: source-positioned ribbon (where each edit clip lives in the original).
+    block.append(this._buildSourceRow(editSegs));
 
-    const totalEditSec = editSegs.reduce((acc, s) =>
-      acc + Math.max(0, (Number(s.endSec) || 0) - (Number(s.startSec) || 0)), 0) || 1;
+    // Row 2: playback-sequence ribbon (left-to-right in playback order).
+    const sequenceRibbon = this._buildSequenceRow(editSegs);
+    block.append(sequenceRibbon);
+
+    this._wireSortable(sequenceRibbon.find('[data-role="edit-ribbon"]')[0]);
+    return block;
+  }
+
+  _buildSourceRow(editSegs) {
+    const wrap = $('<div/>').addClass('mb-2');
+    wrap.append($('<p/>')
+      .addClass('lead-xs mb-1 text-muted')
+      .text('Source positions'));
+
+    const dur = (this.$player && Number.isFinite(this.$player.duration)
+      && this.$player.duration > 0)
+      ? this.$player.duration
+      : this.$totalSec;
+
+    const ribbon = $('<div/>')
+      .addClass('w-100 position-relative bg-light rounded')
+      .css({ height: '24px', cursor: 'pointer' });
 
     editSegs.forEach((seg, idx) => {
-      const dur = Math.max(0, (Number(seg.endSec) || 0) - (Number(seg.startSec) || 0));
-      const widthPct = Math.max(6, (dur / totalEditSec) * 100);
+      const start = Number(seg.startSec) || 0;
+      const end = Number(seg.endSec) || 0;
+      if (end <= start) return;
+
       const isSelected = idx === this.$state.selectedEditIndex;
       const isCustom = seg.kind === KIND_CUSTOM;
 
+      const left = `${(start / dur) * 100}%`;
+      const width = `${Math.max(0.5, ((end - start) / dur) * 100)}%`;
+
       const chip = $('<div/>')
-        .addClass('edit-segment d-flex align-items-center justify-content-center text-truncate rounded px-2')
-        .attr('data-edit-index', idx)
-        .attr('title', `${seg.title || (isCustom ? 'Custom' : `#${idx + 1}`)} — ${_fmt(dur)}`)
+        .addClass('position-absolute rounded d-flex align-items-center justify-content-center text-truncate')
+        .attr('data-source-index', idx)
+        .attr('title', `#${idx + 1} ${seg.title || (isCustom ? 'Custom' : '')} — ${_fmt(start)}→${_fmt(end)}`)
         .css({
-          flexBasis: `${widthPct}%`,
-          height: '28px',
-          cursor: 'grab',
+          left,
+          width,
+          top: '2px',
+          bottom: '2px',
+          cursor: 'pointer',
           color: '#fff',
-          background: isSelected
-            ? '#0d6efd'
-            : (isCustom ? '#fd7e14' : '#28a745'),
-          border: isSelected ? '2px solid #0a58ca' : '1px solid rgba(0,0,0,0.15)',
-          fontSize: '11px',
+          fontSize: '10px',
+          background: isSelected ? '#0d6efd' : '#28a745',
+          border: isSelected ? '2px solid #0a58ca' : '1px solid rgba(0,0,0,0.2)',
+          opacity: isSelected ? 1 : 0.85,
         })
-        .text(seg.title || (isCustom ? 'Custom' : `#${idx + 1}`));
+        .text(`#${idx + 1}`);
 
       chip.on('click', (evt) => {
         evt.stopPropagation();
         this.$state.selectedEditIndex = idx;
-        if (this.$player) {
-          try { this.$player.currentTime = Number(seg.startSec) || 0; } catch (e) { /* noop */ }
-        }
         this.render();
+        this._previewSegment(start, end);
       });
 
       ribbon.append(chip);
     });
 
-    this._wireSortable(ribbon[0]);
-    return block;
+    ribbon.on('click', (evt) => {
+      const el = ribbon[0];
+      const rect = el.getBoundingClientRect();
+      const x = (evt.clientX != null ? evt.clientX
+        : (evt.originalEvent && evt.originalEvent.touches
+          ? evt.originalEvent.touches[0].clientX : 0)) - rect.left;
+      const ratio = Math.max(0, Math.min(1, x / rect.width));
+      this._seekTo(ratio * dur);
+    });
+
+    wrap.append(ribbon);
+    return wrap;
+  }
+
+  _buildSequenceRow(editSegs) {
+    const wrap = $('<div/>').addClass('mb-1');
+    wrap.append($('<p/>')
+      .addClass('lead-xs mb-1 text-muted')
+      .text('Playback sequence'));
+
+    const ribbon = $('<div/>')
+      .addClass('w-100 position-relative bg-light rounded d-flex flex-nowrap')
+      .attr('data-role', 'edit-ribbon')
+      .css({ height: '32px' });
+
+    const totalEditSec = editSegs.reduce((acc, s) =>
+      acc + Math.max(0, (Number(s.endSec) || 0) - (Number(s.startSec) || 0)), 0) || 1;
+
+    editSegs.forEach((seg, idx) => {
+      const segDur = Math.max(0, (Number(seg.endSec) || 0) - (Number(seg.startSec) || 0));
+      const widthPct = Math.max(0.5, (segDur / totalEditSec) * 100);
+
+      const isSelected = idx === this.$state.selectedEditIndex;
+      const isCustom = seg.kind === KIND_CUSTOM;
+      const label = `#${idx + 1} ${seg.title || (isCustom ? 'Custom' : '')}`.trim();
+
+      const chip = $('<div/>')
+        .addClass('edit-segment d-flex align-items-center justify-content-center text-truncate rounded px-1')
+        .attr('data-edit-index', idx)
+        .attr('title', `${label} — ${_fmt(segDur)} (source ${_fmt(seg.startSec)}→${_fmt(seg.endSec)})`)
+        .css({
+          flex: `0 0 ${widthPct}%`,
+          height: '28px',
+          margin: '2px 1px',
+          cursor: 'grab',
+          color: '#fff',
+          background: isSelected ? '#0d6efd' : '#28a745',
+          border: isSelected ? '2px solid #0a58ca' : '1px solid rgba(0,0,0,0.15)',
+          fontSize: '11px',
+          minWidth: 0,
+        })
+        .text(label);
+
+      chip.on('click', (evt) => {
+        evt.stopPropagation();
+        this.$state.selectedEditIndex = idx;
+        this.render();
+        this._previewSegment(seg.startSec, seg.endSec);
+      });
+
+      ribbon.append(chip);
+    });
+
+    const playhead = $('<div/>')
+      .addClass('position-absolute')
+      .css({
+        top: '-2px',
+        bottom: '-2px',
+        left: '0%',
+        width: '2px',
+        background: '#dc3545',
+        pointerEvents: 'none',
+        zIndex: 10,
+      });
+    ribbon.append(playhead);
+    this.$playhead = playhead;
+
+    wrap.append(ribbon);
+    setTimeout(() => this._updatePlayhead(), 0);
+    return wrap;
+  }
+
+  _refreshChipLabels() {
+    const editSegs = this.$state.editProject.segments;
+    if (!editSegs) return;
+    editSegs.forEach((seg, idx) => {
+      const isCustom = seg.kind === KIND_CUSTOM;
+      const label = `#${idx + 1} ${seg.title || (isCustom ? 'Custom' : '')}`.trim();
+      const segDur = Math.max(0, (Number(seg.endSec) || 0) - (Number(seg.startSec) || 0));
+      const seqChip = this.$tracks.find(`[data-edit-index="${idx}"]`);
+      if (seqChip.length) {
+        seqChip.text(label);
+        seqChip.attr('title',
+          `${label} — ${_fmt(segDur)} (source ${_fmt(seg.startSec)}→${_fmt(seg.endSec)})`);
+      }
+      const srcChip = this.$tracks.find(`[data-source-index="${idx}"]`);
+      if (srcChip.length) {
+        srcChip.attr('title',
+          `#${idx + 1} ${seg.title || (isCustom ? 'Custom' : '')} — ${_fmt(seg.startSec)}→${_fmt(seg.endSec)}`);
+      }
+    });
   }
 
   _wireSortable(ribbonEl) {
@@ -251,70 +529,29 @@ export default class EditorTracks {
         .attr('type', 'text')
         .attr('placeholder', 'Title')
         .val(seg.title || '');
-      title.on('blur', () => {
+      title.on('input', () => {
         seg.title = title.val();
+        this._refreshChipLabels();
       });
       wrap.append($('<label/>').addClass('lead-xs mb-1').text('Title'));
       wrap.append(title);
 
-      if (seg.reason) {
-        wrap.append($('<p/>')
-          .addClass('lead-xs text-muted mb-2')
-          .text(seg.reason));
-      }
+      const reason = $('<textarea/>')
+        .addClass('form-control form-control-sm mb-2 lead-xs')
+        .attr('rows', 2)
+        .attr('placeholder', 'Reason / notes')
+        .val(seg.reason || '');
+      reason.on('blur', () => {
+        seg.reason = reason.val();
+      });
+      wrap.append($('<label/>').addClass('lead-xs mb-1').text('Reason'));
+      wrap.append(reason);
 
-      const timeRow = $('<div/>').addClass('mb-2');
-      timeRow.append($('<span/>').addClass('lead-xs mr-2')
-        .text(`${_fmt(seg.startSec)} → ${_fmt(seg.endSec)} (${_fmt(seg.endSec - seg.startSec)})`));
-      wrap.append(timeRow);
+      wrap.append($('<div/>').addClass('lead-xs text-muted mb-2')
+        .text(`Duration: ${_fmt(seg.endSec - seg.startSec)}`));
 
-      const inOutRow = $('<div/>').addClass('btn-group btn-group-sm mb-2');
-      const inBtn = $('<button/>').addClass('btn btn-outline-secondary')
-        .attr('type', 'button').text(MSG_IN);
-      const outBtn = $('<button/>').addClass('btn btn-outline-secondary')
-        .attr('type', 'button').text(MSG_OUT);
-      inBtn.on('click', () => {
-        if (!this.$player) return;
-        const t = Math.max(0, Math.floor((this.$player.currentTime || 0) * 100) / 100);
-        if (t < seg.endSec) {
-          seg.startSec = t;
-          this._renderInspector();
-          this.render();
-        }
-      });
-      outBtn.on('click', () => {
-        if (!this.$player) return;
-        const t = Math.max(0, Math.floor((this.$player.currentTime || 0) * 100) / 100);
-        if (t > seg.startSec) {
-          seg.endSec = t;
-          this._renderInspector();
-          this.render();
-        }
-      });
-      inOutRow.append(inBtn).append(outBtn);
-      wrap.append(inOutRow);
-
-      const moveRow = $('<div/>').addClass('btn-group btn-group-sm mb-2 ml-2');
-      const upBtn = $('<button/>').addClass('btn btn-outline-secondary')
-        .attr('type', 'button').text(MSG_UP)
-        .prop('disabled', idx <= 0);
-      const downBtn = $('<button/>').addClass('btn btn-outline-secondary')
-        .attr('type', 'button').text(MSG_DOWN)
-        .prop('disabled', idx >= segs.length - 1);
-      upBtn.on('click', () => {
-        if (idx <= 0) return;
-        [segs[idx - 1], segs[idx]] = [segs[idx], segs[idx - 1]];
-        this.$state.selectedEditIndex = idx - 1;
-        this.render();
-      });
-      downBtn.on('click', () => {
-        if (idx >= segs.length - 1) return;
-        [segs[idx + 1], segs[idx]] = [segs[idx], segs[idx + 1]];
-        this.$state.selectedEditIndex = idx + 1;
-        this.render();
-      });
-      moveRow.append(upBtn).append(downBtn);
-      wrap.append(moveRow);
+      wrap.append(this._buildTimeEditor('In', seg, 'startSec'));
+      wrap.append(this._buildTimeEditor('Out', seg, 'endSec'));
 
       const removeBtn = $('<button/>')
         .addClass('btn btn-outline-danger btn-sm d-block mt-2')
@@ -341,6 +578,106 @@ export default class EditorTracks {
     wrap.append(addBtn);
 
     this.$inspector.append(wrap);
+  }
+
+  _buildTimeEditor(label, seg, field) {
+    const isStart = field === 'startSec';
+    const block = $('<div/>').addClass('mb-2 p-2 border rounded');
+
+    block.append($('<div/>').addClass('lead-xs font-weight-bold mb-1').text(label));
+
+    const inputRow = $('<div/>').addClass('d-flex align-items-center mb-1');
+
+    const input = $('<input/>')
+      .addClass('form-control form-control-sm lead-xs mr-1')
+      .css({ width: '95px', fontVariantNumeric: 'tabular-nums' })
+      .attr('type', 'text')
+      .attr('inputmode', 'decimal')
+      .attr('placeholder', 'MM:SS.mm')
+      .val(_fmtTimeEdit(seg[field]));
+
+    const commit = () => {
+      const parsed = _parseTime(input.val());
+      if (parsed == null) {
+        input.val(_fmtTimeEdit(seg[field]));
+        return;
+      }
+      this._updateSegmentTime(seg, field, parsed);
+      this.render();
+    };
+    input.on('blur', commit);
+    input.on('keydown', (evt) => {
+      if (evt.key === 'Enter') {
+        evt.preventDefault();
+        commit();
+        input.blur();
+      }
+    });
+    inputRow.append(input);
+
+    const goBtn = $('<button/>')
+      .addClass('btn btn-sm btn-outline-secondary mr-1')
+      .attr('type', 'button')
+      .html('⇥');
+    goBtn.on('click', () => this._seekTo(seg[field]));
+    inputRow.append(goBtn);
+
+    const setBtn = $('<button/>')
+      .addClass('btn btn-sm btn-outline-primary')
+      .attr('type', 'button')
+      .text(isStart ? MSG_IN : MSG_OUT);
+    setBtn.on('click', () => {
+      if (!this.$player) return;
+      const t = Math.max(0, Math.floor((this.$player.currentTime || 0) * 100) / 100);
+      this._updateSegmentTime(seg, field, t);
+      this._renderInspector();
+      this.render();
+    });
+    inputRow.append(setBtn);
+
+    block.append(inputRow);
+
+    const nudges = [-1, -0.1, 0.1, 1];
+    const nudgeRow = $('<div/>').addClass('btn-group btn-group-sm');
+    nudges.forEach((delta) => {
+      const sign = delta > 0 ? '+' : '−';
+      const mag = Math.abs(delta);
+      const btn = $('<button/>')
+        .addClass('btn btn-outline-secondary')
+        .css({ minWidth: '52px', fontVariantNumeric: 'tabular-nums' })
+        .attr('type', 'button')
+        .text(`${sign}${mag}s`);
+      btn.on('click', () => {
+        const next = (seg[field] || 0) + delta;
+        this._updateSegmentTime(seg, field, next);
+        this._renderInspector();
+        this.render();
+        this._seekTo(seg[field]);
+      });
+      nudgeRow.append(btn);
+    });
+    block.append(nudgeRow);
+
+    return block;
+  }
+
+  _updateSegmentTime(seg, field, value) {
+    const dur = (this.$player && Number.isFinite(this.$player.duration))
+      ? this.$player.duration
+      : this.$totalSec;
+    let v = Math.max(0, Number(value) || 0);
+    if (Number.isFinite(dur) && dur > 0) {
+      v = Math.min(v, dur);
+    }
+    if (field === 'startSec') {
+      const maxStart = Math.max(0, (seg.endSec || 0) - 0.05);
+      seg.startSec = Math.min(v, maxStart);
+    } else {
+      const minEnd = (seg.startSec || 0) + 0.05;
+      seg.endSec = Math.max(v, minEnd);
+    }
+    seg.startSec = Math.round(seg.startSec * 100) / 100;
+    seg.endSec = Math.round(seg.endSec * 100) / 100;
   }
 
   _restoreFromAuto(sourceIdx) {

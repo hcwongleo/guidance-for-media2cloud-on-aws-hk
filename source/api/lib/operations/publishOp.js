@@ -121,7 +121,71 @@ class PublishOp extends BaseOp {
       }
       return super.onDELETE(await this._deleteTemplate(route.templateName));
     }
+    if (route.subOp && route.subOp.startsWith('outputs/')) {
+      const outputId = route.subOp.slice('outputs/'.length);
+      return super.onDELETE(await this._deletePublishOutput(route.uuid, outputId));
+    }
     throw new M2CException('unsupported publish DELETE');
+  }
+
+  async _deletePublishOutput(uuid, outputId) {
+    if (!outputId || !/^[A-Za-z0-9_-]{1,64}$/.test(outputId)) {
+      throw new M2CException(`invalid outputId: ${outputId}`);
+    }
+
+    const status = await _readStatus(uuid);
+
+    // Delete every object under {uuid}/publish/{outputId}/ — handles HLS
+    // master/variants/segments and the MP4 group together.
+    const prefix = `${uuid}/${PUBLISH_PREFIX}/${outputId}/`;
+    let deleted = 0;
+    let token;
+    do {
+      const page = await CommonUtils.listObjects(ProxyBucket, prefix, {
+        ContinuationToken: token,
+      });
+      const contents = (page && page.Contents) || [];
+      for (const obj of contents) {
+        if (!obj || !obj.Key) continue;
+        try {
+          await CommonUtils.deleteObject(ProxyBucket, obj.Key);
+          deleted += 1;
+        } catch (e) {
+          console.error(`deleteObject ${obj.Key} failed:`, e.message);
+        }
+      }
+      token = (page && page.IsTruncated) ? page.NextContinuationToken : undefined;
+    } while (token);
+
+    // Update status doc: drop entry from current/history.
+    if (status) {
+      let mutated = false;
+      if (status.outputId === outputId) {
+        delete status.outputId;
+        delete status.outputs;
+        delete status.hlsDestination;
+        delete status.mp4Destination;
+        delete status.jobId;
+        delete status.jobPercentComplete;
+        delete status.currentPhase;
+        delete status.errorCode;
+        delete status.errorMessage;
+        delete status.finishedAt;
+        delete status.template;
+        status.status = 'idle';
+        mutated = true;
+      }
+      if (Array.isArray(status.history)) {
+        const before = status.history.length;
+        status.history = status.history.filter((h) => h && h.outputId !== outputId);
+        if (status.history.length !== before) mutated = true;
+      }
+      if (mutated) {
+        await _writeStatus(uuid, status);
+      }
+    }
+
+    return { uuid, outputId, deleted };
   }
 
   // Convert s3://<ProxyBucket>/<key> → https://<publish-cloudfront-domain>/<key>

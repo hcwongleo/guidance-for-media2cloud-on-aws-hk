@@ -137,7 +137,7 @@ export default class AdBreakTab extends BaseAnalysisTab {
       .addClass('my-4');
     details.append(summary);
 
-    let title = `${MSG_LIST_TITLE} (${datapoints.length})`;
+    let title = `${MSG_LIST_TITLE} (${(datapoints || []).length})`;
     title = $('<span/>')
       .addClass('lead ml-2')
       .html(title);

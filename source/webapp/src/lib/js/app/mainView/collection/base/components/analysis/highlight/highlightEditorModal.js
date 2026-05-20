@@ -9,6 +9,9 @@ import {
   RegisterIotMessageEvent,
   UnregisterIotMessageEvent,
 } from '../../../../../../shared/iotSubscriber.js';
+import {
+  GetS3Utils,
+} from '../../../../../../shared/s3utils.js';
 import EditorTracks from './editorTracks.js';
 
 class AlertHelper extends mxAlert(class {}) {}
@@ -17,9 +20,6 @@ const _alertAgent = new AlertHelper();
 const {
   Messages: {
     HighlightEditorTitle: MSG_TITLE,
-    HighlightEditorPublishLabel: MSG_PUBLISH,
-    HighlightEditorAspectRatio: MSG_ASPECT,
-    HighlightEditorBurnCaptions: MSG_BURN,
   },
   Buttons: {
     SaveHighlightEdit: BTN_SAVE,
@@ -37,26 +37,23 @@ const {
   },
 } = Localization;
 
-const ASPECT_RATIOS = ['16:9', '9:16', '1:1', '4:3'];
-
 function _id(prefix) {
   return `${prefix}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
 export default class HighlightEditorModal {
-  constructor(previewComponent, highlightSet) {
+  constructor(previewComponent, highlightSet, options = {}) {
     this.$previewComponent = previewComponent;
     this.$highlightSet = highlightSet;
+    this.$onSaved = typeof options.onSaved === 'function' ? options.onSaved : null;
     this.$state = null;
     this.$tracks = null;
     this.$modal = null;
     this.$ids = {
       modal: _id('he-modal'),
-      publish: _id('he-publish'),
-      burn: _id('he-burn'),
-      aspect: _id('he-aspect'),
       render: _id('he-render'),
       progress: _id('he-progress'),
+      history: _id('he-history'),
     };
     this.$iotReceiverName = `highlight-editor-${this.$ids.modal}`;
     this.$activeRenderId = null;
@@ -102,6 +99,145 @@ export default class HighlightEditorModal {
 
     this._buildDom();
     this.$modal.modal('show');
+    if (this.$onSaved) {
+      try {
+        this.$onSaved(this.$state.editProject);
+      } catch (cbErr) {
+        console.error('onSaved callback failed:', cbErr);
+      }
+    }
+    this._refreshRenderHistory().catch((e) => console.error(e));
+  }
+
+  async _refreshRenderHistory() {
+    const editProjectId = this.state.editProject.editProjectId;
+    let rows = [];
+    try {
+      const res = await ApiHelper.listRenders(editProjectId);
+      rows = (res && res.renders) || [];
+    } catch (e) {
+      console.error('listRenders failed:', e);
+    }
+    rows = rows.slice().sort((a, b) => {
+      const ta = (a && (a.updatedAt || a.submittedAt)) || '';
+      const tb = (b && (b.updatedAt || b.submittedAt)) || '';
+      return tb.localeCompare(ta);
+    });
+    this._renderHistoryList(rows);
+
+    // Resume tracking if any in-flight render is still active.
+    const inflight = rows.find((r) =>
+      r && r.status && r.status !== 'completed' && r.status !== 'error');
+    if (inflight && inflight.renderId) {
+      this.$activeRenderId = inflight.renderId;
+      this._setProgressLabel(inflight.status, inflight.percent || 0);
+      const renderBtn = this.$modal && this.$modal.find(`#${this.$ids.render}`);
+      if (renderBtn) renderBtn.prop('disabled', true);
+    }
+  }
+
+  _renderHistoryList(rows) {
+    if (!this.$modal) return;
+    const slot = this.$modal.find(`#${this.$ids.history}`);
+    slot.empty();
+    if (!rows || rows.length === 0) {
+      slot.append($('<p/>')
+        .addClass('text-muted font-italic mb-0')
+        .text('No renders yet.'));
+      return;
+    }
+
+    rows.forEach((row) => {
+      slot.append(this._buildHistoryRow(row));
+    });
+  }
+
+  _buildHistoryRow(row) {
+    const wrap = $('<div/>')
+      .addClass('d-flex align-items-center py-1 border-bottom')
+      .attr('data-render-id', row.renderId);
+
+    const status = row.status || 'unknown';
+    const submitted = row.submittedAt || row.updatedAt || '';
+    const ts = submitted ? new Date(submitted).toLocaleString() : '';
+    const idShort = (row.renderId || '').slice(0, 8);
+
+    const meta = $('<span/>')
+      .addClass('mr-auto text-truncate')
+      .css({ minWidth: 0 })
+      .text(`${idShort} · ${ts} · ${status}${row.percent ? ` (${row.percent}%)` : ''}`);
+    wrap.append(meta);
+
+    const actions = $('<span/>').addClass('ml-2');
+
+    if (status === 'completed') {
+      const playBtn = $('<a/>')
+        .attr('target', '_blank')
+        .attr('rel', 'noopener noreferrer')
+        .addClass('btn btn-sm btn-outline-primary mr-1 disabled')
+        .css({ pointerEvents: 'none' })
+        .text('▶ Play');
+      const dlBtn = $('<a/>')
+        .addClass('btn btn-sm btn-outline-secondary mr-1 disabled')
+        .css({ pointerEvents: 'none' })
+        .text('⬇ Download');
+      actions.append(playBtn).append(dlBtn);
+
+      // Resolve URLs async, enable buttons when ready.
+      this._signRenderUrls(row).then((urls) => {
+        if (!urls) return;
+        playBtn.attr('href', urls.playUrl)
+          .removeClass('disabled')
+          .css({ pointerEvents: '' });
+        dlBtn.attr('href', urls.downloadUrl)
+          .removeClass('disabled')
+          .css({ pointerEvents: '' });
+      }).catch((e) => {
+        console.error('failed to sign render output:', e);
+        meta.append($('<span/>')
+          .addClass('text-danger ml-2')
+          .text(' (output unavailable)'));
+      });
+    } else if (status === 'error') {
+      meta.addClass('text-danger');
+    }
+
+    const delBtn = $('<button/>')
+      .attr('type', 'button')
+      .addClass('btn btn-sm btn-outline-danger')
+      .text('Delete');
+    delBtn.on('click', async () => {
+      delBtn.prop('disabled', true);
+      try {
+        await ApiHelper.deleteRender(row.renderId);
+        wrap.remove();
+        if (this.$activeRenderId === row.renderId) {
+          this.$activeRenderId = null;
+          this._setProgressLabel('', 0);
+          const renderBtn = this.$modal && this.$modal.find(`#${this.$ids.render}`);
+          if (renderBtn) renderBtn.prop('disabled', false);
+        }
+        const slot = this.$modal.find(`#${this.$ids.history}`);
+        if (slot.children().length === 0) {
+          slot.append($('<p/>')
+            .addClass('text-muted font-italic mb-0')
+            .text('No renders yet.'));
+        }
+      } catch (e) {
+        console.error('deleteRender failed:', e);
+        delBtn.prop('disabled', false);
+      }
+    });
+    actions.append(delBtn);
+
+    wrap.append(actions);
+    return wrap;
+  }
+
+  async _signRenderUrls(row) {
+    const prefix = ((row || {}).outputs || {}).mp4;
+    if (!prefix) return null;
+    return this._signRenderedMp4(prefix);
   }
 
   async _loadOrSeedEditProject() {
@@ -134,9 +270,6 @@ export default class HighlightEditorModal {
       uuid,
       name: this.highlightSet.name || `Edit ${editProjectId.slice(0, 8)}`,
       segments: seedSegments,
-      publishToLibrary: false,
-      aspectRatio: '16:9',
-      burnCaptions: false,
     };
   }
 
@@ -167,21 +300,15 @@ export default class HighlightEditorModal {
                   <div data-role="inspector"></div>
                 </div>
               </div>
+              <div class="row mt-3">
+                <div class="col-12 px-2">
+                  <p class="lead-xs text-muted mb-1">Renders</p>
+                  <div id="${ids.history}" class="lead-xs"></div>
+                </div>
+              </div>
             </div>
             <div class="modal-footer flex-wrap">
-              <div class="form-check mr-3">
-                <input type="checkbox" class="form-check-input" id="${ids.publish}">
-                <label class="form-check-label lead-xs" for="${ids.publish}">${MSG_PUBLISH}</label>
-              </div>
-              <div class="form-check mr-3">
-                <input type="checkbox" class="form-check-input" id="${ids.burn}">
-                <label class="form-check-label lead-xs" for="${ids.burn}">${MSG_BURN}</label>
-              </div>
-              <div class="form-inline mr-auto">
-                <label class="lead-xs mb-0 mr-2" for="${ids.aspect}">${MSG_ASPECT}</label>
-                <select id="${ids.aspect}" class="custom-select custom-select-sm"></select>
-              </div>
-              <span class="lead-xs text-muted mr-2" id="${ids.progress}"></span>
+              <span class="lead-xs text-muted mr-auto" id="${ids.progress}"></span>
               <button type="button" class="btn btn-secondary btn-sm"
                       data-dismiss="modal">${BTN_CLOSE}</button>
               <button type="button" class="btn btn-primary btn-sm" data-role="save">${BTN_SAVE}</button>
@@ -198,28 +325,6 @@ export default class HighlightEditorModal {
     if (player && this.state.proxyUrl) {
       player.src = this.state.proxyUrl;
     }
-
-    const publishCheckbox = modal.find(`#${ids.publish}`);
-    publishCheckbox.prop('checked', !!ep.publishToLibrary);
-    publishCheckbox.on('change', () => {
-      ep.publishToLibrary = publishCheckbox.is(':checked');
-    });
-
-    const burnCheckbox = modal.find(`#${ids.burn}`);
-    burnCheckbox.prop('checked', !!ep.burnCaptions);
-    burnCheckbox.on('change', () => {
-      ep.burnCaptions = burnCheckbox.is(':checked');
-    });
-
-    const aspectSelect = modal.find(`#${ids.aspect}`);
-    ASPECT_RATIOS.forEach((r) => {
-      const opt = $('<option/>').attr('value', r).text(r);
-      if (r === ep.aspectRatio) opt.attr('selected', 'selected');
-      aspectSelect.append(opt);
-    });
-    aspectSelect.on('change', () => {
-      ep.aspectRatio = aspectSelect.val();
-    });
 
     modal.find('button[data-role="save"]').on('click', () => this._onSave());
     modal.find('button[data-role="render"]').on('click', () => this._onRender());
@@ -263,15 +368,19 @@ export default class HighlightEditorModal {
           ? { highlightSetId: seg.highlightSetId }
           : {}),
       })),
-      publishToLibrary: !!ep.publishToLibrary,
-      aspectRatio: ep.aspectRatio || '16:9',
-      burnCaptions: !!ep.burnCaptions,
     };
 
     Spinner.loading(true);
     try {
       const saved = await ApiHelper.saveEditProject(ep.editProjectId, payload);
       this.$state.editProject = { ...ep, ...saved };
+      if (this.$onSaved) {
+        try {
+          this.$onSaved(this.$state.editProject);
+        } catch (cbErr) {
+          console.error('onSaved callback failed:', cbErr);
+        }
+      }
       await _alertAgent.showMessage(this.$modal, 'success', '', ALERT_SAVED, 3000);
     } catch (e) {
       console.error(e);
@@ -300,12 +409,10 @@ export default class HighlightEditorModal {
     try {
       const res = await ApiHelper.startRender({
         editProjectId: ep.editProjectId,
-        publishToLibrary: !!ep.publishToLibrary,
-        aspectRatio: ep.aspectRatio || '16:9',
-        burnCaptions: !!ep.burnCaptions,
       });
       this.$activeRenderId = (res && res.renderId) || null;
       this._setProgressLabel('queued', 0);
+      this._refreshRenderHistory().catch((e) => console.error(e));
       await _alertAgent.showMessage(this.$modal, 'success', '', ALERT_RENDER_QUEUED, 5000);
     } catch (e) {
       console.error(e);
@@ -338,12 +445,48 @@ export default class HighlightEditorModal {
     if (msg.renderId && msg.renderId !== this.$activeRenderId) return;
 
     this._setProgressLabel(msg.status, msg.percent);
+    this._patchHistoryRowStatus(this.$activeRenderId, msg.status, msg.percent);
 
     if (msg.status === 'completed' || msg.status === 'error') {
       const renderBtn = this.$modal && this.$modal.find(`#${this.$ids.render}`);
       if (renderBtn) renderBtn.prop('disabled', false);
       this.$activeRenderId = null;
+      this._refreshRenderHistory().catch((e) => console.error(e));
     }
+  }
+
+  _patchHistoryRowStatus(renderId, status, percent) {
+    if (!this.$modal || !renderId) return;
+    const row = this.$modal.find(`[data-render-id="${renderId}"]`);
+    if (!row.length) return;
+    const meta = row.children().first();
+    const idShort = renderId.slice(0, 8);
+    const ts = meta.text().split(' · ')[1] || '';
+    const pct = Number(percent || 0);
+    const tail = pct ? ` (${pct}%)` : '';
+    meta.text(`${idShort} · ${ts} · ${status}${tail}`);
+  }
+
+  async _signRenderedMp4(s3Prefix) {
+    // s3Prefix is "s3://{bucket}/renders/{uuid}/{renderId}/mp4/"
+    const m = /^s3:\/\/([^/]+)\/(.+)$/.exec(s3Prefix);
+    if (!m) throw new Error(`unexpected output URI: ${s3Prefix}`);
+    const bucket = m[1];
+    const prefix = m[2];
+
+    const s3 = GetS3Utils();
+    const items = await s3.listObjects(bucket, prefix);
+    const mp4 = (items || []).find((it) =>
+      it && typeof it.Key === 'string' && it.Key.toLowerCase().endsWith('.mp4'));
+    if (!mp4) throw new Error('no .mp4 found under render output');
+    const filename = mp4.Key.split('/').pop() || 'render.mp4';
+    const [playUrl, downloadUrl] = await Promise.all([
+      s3.signUrl(bucket, mp4.Key),
+      s3.signUrl(bucket, mp4.Key, {
+        responseContentDisposition: `attachment; filename="${filename}"`,
+      }),
+    ]);
+    return { playUrl, downloadUrl };
   }
 
   _onHidden() {

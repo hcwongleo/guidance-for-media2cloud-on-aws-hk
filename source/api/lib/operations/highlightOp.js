@@ -12,6 +12,7 @@ const {
   DynamoDBDocumentClient,
   QueryCommand,
   GetCommand,
+  DeleteCommand,
 } = require('@aws-sdk/lib-dynamodb');
 const {
   CommonUtils,
@@ -36,6 +37,16 @@ const {
         Table: HighlightSetsTable,
         PartitionKey: HighlightSetsPartitionKey,
         SortKey: HighlightSetsSortKey,
+      },
+      EditProjects: {
+        Table: EditProjectsTable,
+        PartitionKey: EditProjectsPartitionKey,
+        GSI: {
+          Uuid: {
+            Name: EditProjectsUuidGsiName,
+            Key: EditProjectsUuidGsiKey,
+          },
+        },
       },
     },
     StateMachines: {
@@ -73,12 +84,12 @@ class HighlightOp extends BaseOp {
     const maxSegments = Number(body.maxSegments) || 10;
     const owner = body.owner || this.request.cognitoIdentityId || 'anonymous';
 
-    // Resolve transcriptKey + durationSec from existing M2C state.
+    // Resolve transcriptKey + proxy MP4 + durationSec from existing M2C state.
     const ingestDb = new DB({
       Table: IngestTable,
       PartitionKey: IngestPartitionKey,
     });
-    const ingestRow = await ingestDb.fetch(uuid, undefined, ['duration'])
+    const ingestRow = await ingestDb.fetch(uuid, undefined, ['duration', 'proxies', 'destination'])
       .catch(() => ({}));
 
     const analysisDb = new DB({
@@ -86,13 +97,26 @@ class HighlightOp extends BaseOp {
       PartitionKey: AnalysisPartitionKey,
       SortKey: AnalysisSortKey,
     });
-    const audioRow = await analysisDb.fetch(uuid, ANALYSIS_TYPE_AUDIO)
-      .catch(() => undefined);
+    const audioRow = await analysisDb.fetch(uuid, ANALYSIS_TYPE_AUDIO).catch(() => undefined);
 
     const transcriptKey = body.transcriptKey
       || (audioRow && audioRow.transcribe && audioRow.transcribe.output);
-    if (!transcriptKey) {
-      throw new M2CException('no transcript available for this asset');
+
+    // Pick the AIML video/mp4 proxy (preferred) or any video/mp4 proxy.
+    const proxies = (ingestRow && ingestRow.proxies) || [];
+    const videoProxy = proxies.find((p) => p.mime === 'video/mp4' && p.outputType === 'aiml')
+      || proxies.find((p) => p.mime === 'video/mp4');
+    const proxyKey = body.proxyKey || (videoProxy && videoProxy.key);
+
+    // multimodal needs the video proxy (transcript optional); transcript-llm needs transcript; auto needs at least one.
+    if (strategy === 'multimodal' && !proxyKey) {
+      throw new M2CException('multimodal requires a video proxy; ensure ingest produced a video/mp4 proxy');
+    }
+    if (strategy === 'transcript-llm' && !transcriptKey) {
+      throw new M2CException('transcript-llm requires a transcript; none found for this asset');
+    }
+    if (strategy === 'auto' && !transcriptKey && !proxyKey) {
+      throw new M2CException('no transcript or video proxy available for this asset');
     }
 
     const durationSec = (ingestRow && ingestRow.duration)
@@ -102,12 +126,14 @@ class HighlightOp extends BaseOp {
     const sfnInput = {
       uuid,
       transcriptKey,
+      proxyKey,
       strategy,
       modelId,
       prompt,
       maxSegments,
       durationSec,
       owner,
+      accountId: this.request.accountId,
     };
 
     const stateMachineArn = [
@@ -179,15 +205,74 @@ class HighlightOp extends BaseOp {
         ':pk': uuid,
       },
     }));
+    const sets = res.Items || [];
+
+    // Overlay saved edits: when the user opens the editor and saves, we
+    // persist the modified segments to EditProjects keyed by editProjectId
+    // (= highlightSetId). Merge those back so the table shows the user's
+    // current segments rather than the original auto-detected ones.
+    const editsRes = await doc.send(new QueryCommand({
+      TableName: EditProjectsTable,
+      IndexName: EditProjectsUuidGsiName,
+      KeyConditionExpression: '#k = :v',
+      ExpressionAttributeNames: {
+        '#k': EditProjectsUuidGsiKey,
+      },
+      ExpressionAttributeValues: {
+        ':v': uuid,
+      },
+    })).catch((e) => {
+      console.error('listEditProjects(merge) failed:', e);
+      return undefined;
+    });
+    const editById = {};
+    ((editsRes && editsRes.Items) || []).forEach((ep) => {
+      if (ep && ep.editProjectId) editById[ep.editProjectId] = ep;
+    });
+
+    const merged = sets.map((it) => {
+      const ep = editById[it.highlightSetId];
+      if (!ep || !Array.isArray(ep.segments)) return it;
+      return { ...it, segments: ep.segments };
+    });
 
     return super.onGET({
       uuid,
-      highlightSets: res.Items || [],
+      highlightSets: merged,
     });
   }
 
   async onDELETE() {
-    throw new M2CException('HighlightOp.onDELETE not impl');
+    const captured = (this.request.pathParameters || {}).uuid;
+    if (!captured) {
+      throw new M2CException('missing uuid');
+    }
+
+    const parts = captured.split('/').filter(Boolean);
+    const uuid = parts[0];
+    const highlightSetId = parts[1];
+
+    if (!CommonUtils.validateUuid(uuid)) {
+      throw new M2CException('invalid uuid');
+    }
+    if (!highlightSetId) {
+      throw new M2CException('highlightSetId is required to delete a highlight set');
+    }
+
+    const doc = ddbDocClient();
+    await doc.send(new DeleteCommand({
+      TableName: HighlightSetsTable,
+      Key: {
+        [HighlightSetsPartitionKey]: uuid,
+        [HighlightSetsSortKey]: highlightSetId,
+      },
+    }));
+
+    return super.onDELETE({
+      uuid,
+      highlightSetId,
+      deleted: true,
+    });
   }
 }
 

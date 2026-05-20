@@ -111,14 +111,11 @@ export default class PublishTab extends mxAlert(BaseAnalysisTab) {
       hiddenFile.trigger('click');
     });
     newBtn.on('click', () => {
-      const name = window.prompt('Enter a name for the new template (letters, digits, _ or -, max 64 chars):', '');
-      if (!name) return;
-      if (!/^[A-Za-z0-9_-]{1,64}$/.test(name)) {
-        this.setTemplateStatus('Invalid name. Use A-Z, a-z, 0-9, _, - (max 64 chars).', 'err');
-        return;
-      }
+      // Pick the file first; prompt for the name on change. window.prompt()
+      // before .click() breaks the user-gesture chain so Chrome silently
+      // refuses to open the file picker.
       hiddenFile.data('mode', 'new');
-      hiddenFile.data('newName', name);
+      hiddenFile.removeData('newName');
       hiddenFile.trigger('click');
     });
     deleteBtn.on('click', () => this.deleteSelectedTemplate());
@@ -126,8 +123,15 @@ export default class PublishTab extends mxAlert(BaseAnalysisTab) {
     hiddenFile.on('change', () => {
       const file = hiddenFile[0].files[0];
       const mode = hiddenFile.data('mode');
-      const newName = hiddenFile.data('newName');
       hiddenFile.val('');
+      let newName;
+      if (mode === 'new' && file) {
+        newName = (file.name || '').replace(/\.json$/i, '').replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 64);
+        if (!/^[A-Za-z0-9_-]{1,64}$/.test(newName)) {
+          this.setTemplateStatus('Filename must yield A-Z, a-z, 0-9, _, - (max 64 chars).', 'err');
+          return;
+        }
+      }
       this.uploadTemplateFile(file, mode, newName).catch((e) => {
         console.error(e);
         this.setTemplateStatus(`Upload failed: ${e.message}`, 'err');
@@ -539,7 +543,7 @@ export default class PublishTab extends mxAlert(BaseAnalysisTab) {
   renderStatus(status) {
     if (!status || status.status === 'idle') {
       this.setStatusBody('Idle. No publish job has been started yet for this asset.');
-      this.renderOutputs(null);
+      this.renderOutputs(null, (status && status.history) || []);
       return;
     }
     const rows = [];
@@ -558,10 +562,10 @@ export default class PublishTab extends mxAlert(BaseAnalysisTab) {
     this.setStatusBody(rows.join('\n'));
 
     const isComplete = status.status === 'COMPLETE';
-    this.renderOutputs(isComplete ? (status.outputs || {}) : null, status.history || []);
+    this.renderOutputs(isComplete ? (status.outputs || {}) : null, status.history || [], status);
   }
 
-  renderOutputs(outputs, history) {
+  renderOutputs(outputs, history, currentStatus) {
     const section = this.$root().find('[data-role="outputs-section"]');
     const body = this.$root().find('[data-role="outputs-body"]');
     body.empty();
@@ -574,7 +578,9 @@ export default class PublishTab extends mxAlert(BaseAnalysisTab) {
     }
     section.css('display', '');
     if (hasCurrent) {
-      body.append(this.buildOutputRow(outputs));
+      body.append(this.buildOutputRow(outputs, {
+        outputId: currentStatus && currentStatus.outputId,
+      }));
     }
     this.renderHistory(history || []);
   }
@@ -582,9 +588,36 @@ export default class PublishTab extends mxAlert(BaseAnalysisTab) {
   buildOutputRow(outputs, opts) {
     const opts2 = opts || {};
     const wrap = $('<div/>').addClass('mb-3');
+
+    const headingRow = $('<div/>').addClass('d-flex align-items-center mb-1');
     if (opts2.heading) {
-      wrap.append($('<div/>').addClass('lead-xs text-muted mb-1').html(opts2.heading));
+      headingRow.append($('<div/>')
+        .addClass('lead-xs text-muted mr-auto')
+        .html(opts2.heading));
+    } else {
+      headingRow.append($('<div/>').addClass('mr-auto'));
     }
+
+    if (opts2.outputId) {
+      const delBtn = $('<button/>')
+        .attr('type', 'button')
+        .addClass('btn btn-sm btn-outline-danger')
+        .html('Delete files');
+      delBtn.on('click', () => {
+        if (!window.confirm(
+          'Delete the HLS and MP4 files for this output?\n\n'
+          + 'This permanently removes the rendered files from S3.'
+        )) return;
+        delBtn.prop('disabled', true);
+        this.deletePublishOutput(opts2.outputId).catch((e) => {
+          console.error(e);
+          delBtn.prop('disabled', false);
+        });
+      });
+      headingRow.append(delBtn);
+    }
+    wrap.append(headingRow);
+
     if (outputs.hlsMaster) {
       const row = $('<div/>').addClass('mb-2');
       row.append($('<strong/>').html('HLS master: '));
@@ -625,8 +658,23 @@ export default class PublishTab extends mxAlert(BaseAnalysisTab) {
         : h.submittedAt ? new Date(h.submittedAt).toLocaleString()
         : '';
       const heading = `<strong>${h.template || ''}</strong> · ${ts || h.outputId || ''}`;
-      body.append(this.buildOutputRow(h.outputs, { heading }));
+      body.append(this.buildOutputRow(h.outputs, { heading, outputId: h.outputId }));
     });
+  }
+
+  async deletePublishOutput(outputId) {
+    const uuid = this.media.uuid;
+    try {
+      this.setControlsStatus(`Deleting ${outputId}...`);
+      const res = await ApiHelper.deletePublishOutput(uuid, outputId);
+      const n = (res && res.deleted) || 0;
+      this.setControlsStatus(`Deleted ${n} file(s) for ${outputId}.`, 'ok');
+      // Re-fetch status so the row(s) disappear from the UI.
+      await this.refreshStatus();
+    } catch (e) {
+      console.error(e);
+      this.setControlsStatus(`Delete failed: ${e.message}`, 'err');
+    }
   }
 
   startPolling() {

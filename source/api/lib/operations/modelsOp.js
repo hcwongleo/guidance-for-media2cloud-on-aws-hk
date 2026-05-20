@@ -81,6 +81,16 @@ function _filter(models, capability) {
     return _group(models.filter((m) =>
       (m.inputModalities || []).includes('IMAGE')));
   }
+  if (capability === 'video') {
+    return _group(models.filter((m) =>
+      (m.inputModalities || []).includes('VIDEO')));
+  }
+  if (capability === 'text') {
+    // Multimodal models like Nova still accept text-only prompts, so include
+    // anything with TEXT input — vision/video capability doesn't disqualify.
+    return _group(models.filter((m) =>
+      (m.inputModalities || []).includes('TEXT')));
+  }
   return _group(models);
 }
 

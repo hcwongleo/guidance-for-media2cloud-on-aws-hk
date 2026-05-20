@@ -1937,7 +1937,7 @@ const mxAnalysisSettings = (Base) => class extends Base {
       select.append(option);
     });
 
-    if (!this.canModify) {
+    if (!this.canModify && custom.name !== OPT_LANGUAGECODE) {
       select.attr('disabled', 'disabled');
     }
   }

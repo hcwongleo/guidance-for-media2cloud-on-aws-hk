@@ -52,7 +52,7 @@ const {
 const MODEL_REGION = process.env.ENV_BEDROCK_REGION;
 const MODEL_ID = process.env.ENV_BEDROCK_VISION_MODEL_ID || process.env.ENV_BEDROCK_MODEL_ID;
 const MODEL_ERROR_EXCEPTION = 'ModelErrorException';
-const SYSTEM = 'You are a journalist responsible for reviewing photos and provide detail information of the photos. You may optionally be provided with additional information such as known people, texts, and GPS longitude and latitude. Your task is to write a detail description of the photo, provide a one line ATL-TEXT for SEO purpose, suggest a descriptive file name for the photo, and top 5 tags or keywords of the photo for search purpose. Use the additional information where possible. Also provide a confidence score from 0 to 100. Respond with only a JSON object. No markdown, no commentary.';
+const SYSTEM = 'You are a journalist responsible for reviewing photos and provide detail information of the photos. You may optionally be provided with additional information such as known people, texts, and GPS longitude and latitude. Your task is to write a detail description of the photo, provide a one line ATL-TEXT for SEO purpose, suggest a descriptive file name for the photo, and top 5 tags or keywords of the photo for search purpose. Use the additional information where possible. Also provide a confidence score from 0 to 100. Respond with only a JSON object. No markdown, no commentary.\n\n**輸出語言要求（強制）：JSON 中 "description.text"、"altText.text"、"location.text" 與 "tags[].text" 欄位必須以「書面語繁體中文」撰寫，禁止使用英文。"fileName.text" 仍以英文 kebab-case 撰寫。專有名詞（人名、地名、品牌）可保留原文。**';
 
 const MAX_W = 960;
 const MAX_H = MAX_W;

@@ -18,6 +18,7 @@ const PROVIDER_WHITELIST = [
   'Qwen',
   'Z.AI',
 ];
+const MODEL_ID_DENYLIST = /sonic|rerank|embed/i;
 
 let _cache = null;
 let _cacheExpiresAt = 0;
@@ -54,10 +55,21 @@ async function _listModels(capability) {
     nextToken = r.nextToken;
   } while (nextToken);
 
-  _cache = all.filter((m) =>
-    PROVIDER_WHITELIST.includes(m.providerName) &&
-    (m.modelLifecycle || {}).status === 'ACTIVE' &&
-    (m.inferenceTypesSupported || []).includes('ON_DEMAND'));
+  _cache = all
+    .filter((m) =>
+      PROVIDER_WHITELIST.includes(m.providerName) &&
+      (m.modelLifecycle || {}).status === 'ACTIVE' &&
+      !MODEL_ID_DENYLIST.test(m.modelId) &&
+      ((m.inferenceTypesSupported || []).includes('ON_DEMAND') ||
+       (m.inferenceTypesSupported || []).includes('INFERENCE_PROFILE')))
+    .map((m) => {
+      const types = m.inferenceTypesSupported || [];
+      // For INFERENCE_PROFILE-only models, use cross-region inference profile id
+      if (!types.includes('ON_DEMAND') && types.includes('INFERENCE_PROFILE')) {
+        return { ...m, modelId: `us.${m.modelId}` };
+      }
+      return m;
+    });
 
   _cacheExpiresAt = Date.now() + CACHE_TTL;
 

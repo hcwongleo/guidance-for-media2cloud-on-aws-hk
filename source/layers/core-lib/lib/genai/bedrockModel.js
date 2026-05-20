@@ -240,7 +240,7 @@ function _createTVRatingsInput(inputParams, inferenceConfig) {
 }
 
 function _createSummarizeInput(inputParams, inferenceConfig) {
-  const system = 'You are a media operation engineer responsible for reviewing transcripts and summarize the dialogues into one or two paragraphs and provide a confidence score from 0 to 100. Respond with only a JSON object. No markdown, no commentary.';
+  const system = 'You are a media operation engineer responsible for reviewing transcripts and summarize the dialogues into one or two paragraphs and provide a confidence score from 0 to 100. Respond with only a JSON object. No markdown, no commentary.\n\n**輸出語言要求（強制）：JSON 中 "summary.text" 欄位必須以「書面語繁體中文」撰寫，禁止使用英文或其他語言。專有名詞（人名、地名、品牌）可保留原文。**';
   const transcript = _textInput(inputParams);
   const example = { summary: { text: 'The transcript describes ...', score: 98 } };
 
@@ -263,7 +263,7 @@ function _createSummarizeInput(inputParams, inferenceConfig) {
 }
 
 function _createCustomInput(inputParams, inferenceConfig) {
-  const system = 'You are a media operation engineer responsible for reviewing transcripts and answer the following question and provide a confidence score from 0 to 100. Respond with only a JSON object. No markdown, no commentary.';
+  const system = 'You are a media operation engineer responsible for reviewing transcripts and answer the following question and provide a confidence score from 0 to 100. Respond with only a JSON object. No markdown, no commentary.\n\n**輸出語言要求（強制）：JSON 中 "custom.text" 欄位必須以「書面語繁體中文」撰寫，禁止使用英文或其他語言。專有名詞（人名、地名、品牌）可保留原文。**';
   const transcript = _textInput(inputParams);
   const example = { custom: { text: 'Answer goes here', score: 98 } };
 

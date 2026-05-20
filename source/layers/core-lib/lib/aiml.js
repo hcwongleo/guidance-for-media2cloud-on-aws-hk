@@ -60,7 +60,7 @@ const COMPREHEND_OPTIONS = {
 
 const TRANSCRIBE_OPTIONS = {
   [Transcribe]: false,
-  languageCode: undefined,
+  languageCode: 'zh-HK',
   customVocabulary: undefined,
   customLanguageModel: undefined,
 };

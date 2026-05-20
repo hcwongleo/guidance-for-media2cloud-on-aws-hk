@@ -102,9 +102,9 @@ class StateStartTranscribe {
       OutputBucketName: bucket,
       OutputKey: outPrefix,
       // OutputEncryptionKMSKeyId: 'alias/aws/s3',
-      IdentifyLanguage: (languageCode === undefined),
-      IdentifyMultipleLanguages: (languageCode === undefined),
-      LanguageCode: languageCode,
+      IdentifyLanguage: false,
+      IdentifyMultipleLanguages: false,
+      LanguageCode: languageCode || 'zh-HK',
       Settings: {
         // WORKAROUND:
         // Enabling Channel Identification or SpeakerLabels causes

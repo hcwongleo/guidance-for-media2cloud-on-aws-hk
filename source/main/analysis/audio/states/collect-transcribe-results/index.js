@@ -12,6 +12,7 @@ const {
   ConverseCommand,
 } = require('@aws-sdk/client-bedrock-runtime');
 const {
+  Environment,
   StateData,
   AnalysisTypes: {
     Transcribe,
@@ -19,7 +20,11 @@ const {
   CommonUtils,
   M2CException,
   WebVttHelper,
+  xraysdkHelper,
+  retryStrategyHelper,
 } = require('core-lib');
+
+const CUSTOM_USER_AGENT = Environment.Solution.Metrics.CustomUserAgent;
 
 const JOB_COMPLETED = 'COMPLETED';
 const CONVERSATION = 'conversations';
@@ -125,7 +130,7 @@ class StateTranscribeResults {
 
   async getJob(jobId) {
     const transcribeClient = xraysdkHelper(new TranscribeClient({
-      customUserAgent: CustomUserAgent,
+      customUserAgent: CUSTOM_USER_AGENT,
       retryStrategy: retryStrategyHelper(),
     }));
 

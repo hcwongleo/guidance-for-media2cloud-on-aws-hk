@@ -31,7 +31,7 @@ const MODEL_REGION = process.env.ENV_BEDROCK_REGION;
 const MODEL_ID = process.env.ENV_BEDROCK_MODEL_ID;
 const TASK_ALL = 'You are asked to provide the following information: a detail description to describe the scene, identify the most relevant IAB taxonomy, GARM, sentiment, and brands and logos that may appear in the scene, and five most relevant tags from the scene.';
 const TASK_IAB = 'You are asked to identify the most relevant IAB taxonomy.';
-const SYSTEM = 'You are a media operation engineer. Your job is to review a portion of a video content presented by a sequence of consecutive images. Each image also contains a sequence of frames presented in a 4x7 grid reading from left to right and then from top to bottom. You may also optionally be given the dialogues of the scene that helps you to understand the context. {{TASK}} Respond with only a JSON object including a confidence score from 0 to 100. No markdown, no commentary.';
+const SYSTEM = 'You are a media operation engineer. Your job is to review a portion of a video content presented by a sequence of consecutive images. Each image also contains a sequence of frames presented in a 4x7 grid reading from left to right and then from top to bottom. You may also optionally be given the dialogues of the scene that helps you to understand the context. {{TASK}} Respond with only a JSON object including a confidence score from 0 to 100. No markdown, no commentary.\n\n**輸出語言要求（強制）：JSON 中 "description.text" 欄位必須以「書面語繁體中文」撰寫，禁止使用英文。其他分類欄位（sentiment、garmTaxonomy、iabTaxonomy）必須沿用提供的英文清單值。"brandAndLogos[].text" 與 "tags[].text" 中之專有名詞保留原文。**';
 
 const ENABLE_IMAGE_TILE = false;
 // can support upto 140 frames per scene

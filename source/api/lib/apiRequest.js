@@ -24,6 +24,8 @@ const SubtitleOp = require('./operations/subtitleOp');
 const PublishOp = require('./operations/publishOp');
 const HighlightOp = require('./operations/highlightOp');
 const HighlightSettingsOp = require('./operations/highlightSettingsOp');
+const EditsOp = require('./operations/editsOp');
+const RendersOp = require('./operations/rendersOp');
 
 const OP_REKOGNITION = 'rekognition';
 const OP_TRANSCRIBE = 'transcribe';
@@ -158,6 +160,12 @@ class ApiRequest {
     }
     if (op === ApiOps.HighlightSettings) {
       return new HighlightSettingsOp(this);
+    }
+    if (op === ApiOps.Edits) {
+      return new EditsOp(this);
+    }
+    if (op === ApiOps.Renders) {
+      return new RendersOp(this);
     }
     throw new M2CException(`operation '${(this.pathParameters || {}).operation}' not supported`);
   }

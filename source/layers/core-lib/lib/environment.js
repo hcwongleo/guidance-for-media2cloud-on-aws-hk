@@ -42,6 +42,7 @@ module.exports = {
     Shoppable: `${ResourcePrefix}-shoppable`,
     FaceApiModel: `${ResourcePrefix}-faceapi-model`,
     HighlightDetection: `${ResourcePrefix}-highlight-detection`,
+    RenderPublish: `${ResourcePrefix}-render-publish`,
   },
   DynamoDB: {
     Ingest: {

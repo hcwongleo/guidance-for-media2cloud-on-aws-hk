@@ -219,6 +219,10 @@ PKG_SHOPPABLE_API=
 
 # Highlight clipping + editor
 PKG_DETECT_HIGHLIGHTS=
+PKG_COMPOSE_EDL=
+PKG_START_RENDER=
+PKG_RENDER_STATUS=
+PKG_PUBLISH_TO_LIBRARY=
 
 ## anonymous data setting
 ANONYMOUS_DATA="Yes"
@@ -1086,6 +1090,7 @@ function build_webapp_dependencies() {
     "jquery-bundle" \
     "crypto-js-bundle" \
     "echarts-js-bundle" \
+    "sortablejs-bundle" \
   )
   for bundle in ${bundles[@]}
   do
@@ -1316,6 +1321,10 @@ function build_highlight_packages() {
   echo "[Highlight] Building Highlight Workflow Packages"
   echo "------------------------------------------------------------------------------"
   build_detect_highlights_package
+  build_compose_edl_package
+  build_start_render_package
+  build_render_status_package
+  build_publish_to_library_package
 }
 
 function build_detect_highlights_package() {
@@ -1331,6 +1340,70 @@ function build_detect_highlights_package() {
   npm run build
   npm run zip -- "$PKG_DETECT_HIGHLIGHTS" .
   cp -v "./dist/$PKG_DETECT_HIGHLIGHTS" "$BUILD_DIST_DIR"
+  popd
+}
+
+function build_compose_edl_package() {
+  echo "------------------------------------------------------------------------------"
+  echo "[Highlight] Building compose-edl lambda package"
+  echo "------------------------------------------------------------------------------"
+  local workflow="highlight"
+  local lambda="compose-edl"
+  local package="${workflow}-${lambda}"
+  PKG_COMPOSE_EDL="${package}-${VERSION}.zip"
+  pushd "$SOURCE_DIR/main/highlight/${lambda}"
+  npm install
+  npm run build
+  npm run zip -- "$PKG_COMPOSE_EDL" .
+  cp -v "./dist/$PKG_COMPOSE_EDL" "$BUILD_DIST_DIR"
+  popd
+}
+
+function build_start_render_package() {
+  echo "------------------------------------------------------------------------------"
+  echo "[Highlight] Building start-render lambda package"
+  echo "------------------------------------------------------------------------------"
+  local workflow="highlight"
+  local lambda="start-render"
+  local package="${workflow}-${lambda}"
+  PKG_START_RENDER="${package}-${VERSION}.zip"
+  pushd "$SOURCE_DIR/main/highlight/${lambda}"
+  npm install
+  npm run build
+  npm run zip -- "$PKG_START_RENDER" .
+  cp -v "./dist/$PKG_START_RENDER" "$BUILD_DIST_DIR"
+  popd
+}
+
+function build_render_status_package() {
+  echo "------------------------------------------------------------------------------"
+  echo "[Highlight] Building render-status lambda package"
+  echo "------------------------------------------------------------------------------"
+  local workflow="highlight"
+  local lambda="render-status"
+  local package="${workflow}-${lambda}"
+  PKG_RENDER_STATUS="${package}-${VERSION}.zip"
+  pushd "$SOURCE_DIR/main/highlight/${lambda}"
+  npm install
+  npm run build
+  npm run zip -- "$PKG_RENDER_STATUS" .
+  cp -v "./dist/$PKG_RENDER_STATUS" "$BUILD_DIST_DIR"
+  popd
+}
+
+function build_publish_to_library_package() {
+  echo "------------------------------------------------------------------------------"
+  echo "[Highlight] Building publish-to-library lambda package"
+  echo "------------------------------------------------------------------------------"
+  local workflow="highlight"
+  local lambda="publish-to-library"
+  local package="${workflow}-${lambda}"
+  PKG_PUBLISH_TO_LIBRARY="${package}-${VERSION}.zip"
+  pushd "$SOURCE_DIR/main/highlight/${lambda}"
+  npm install
+  npm run build
+  npm run zip -- "$PKG_PUBLISH_TO_LIBRARY" .
+  cp -v "./dist/$PKG_PUBLISH_TO_LIBRARY" "$BUILD_DIST_DIR"
   popd
 }
 
@@ -1554,6 +1627,18 @@ function build_cloudformation_templates() {
   echo "Updating %%PKG_DETECT_HIGHLIGHTS%% param in cloudformation templates..."
   sed -i'.bak' -e "s|%%PKG_DETECT_HIGHLIGHTS%%|${PKG_DETECT_HIGHLIGHTS}|g" *.yaml || exit 1
 
+  echo "Updating %%PKG_COMPOSE_EDL%% param in cloudformation templates..."
+  sed -i'.bak' -e "s|%%PKG_COMPOSE_EDL%%|${PKG_COMPOSE_EDL}|g" *.yaml || exit 1
+
+  echo "Updating %%PKG_START_RENDER%% param in cloudformation templates..."
+  sed -i'.bak' -e "s|%%PKG_START_RENDER%%|${PKG_START_RENDER}|g" *.yaml || exit 1
+
+  echo "Updating %%PKG_RENDER_STATUS%% param in cloudformation templates..."
+  sed -i'.bak' -e "s|%%PKG_RENDER_STATUS%%|${PKG_RENDER_STATUS}|g" *.yaml || exit 1
+
+  echo "Updating %%PKG_PUBLISH_TO_LIBRARY%% param in cloudformation templates..."
+  sed -i'.bak' -e "s|%%PKG_PUBLISH_TO_LIBRARY%%|${PKG_PUBLISH_TO_LIBRARY}|g" *.yaml || exit 1
+
   #
   # DEMO Features
   #
@@ -1631,6 +1716,10 @@ function on_complete() {
   echo "** PKG_SHOPPABLE_API=${PKG_SHOPPABLE_API} **"
   ## Highlight Workflow ##
   echo "** PKG_DETECT_HIGHLIGHTS=${PKG_DETECT_HIGHLIGHTS} **"
+  echo "** PKG_COMPOSE_EDL=${PKG_COMPOSE_EDL} **"
+  echo "** PKG_START_RENDER=${PKG_START_RENDER} **"
+  echo "** PKG_RENDER_STATUS=${PKG_RENDER_STATUS} **"
+  echo "** PKG_PUBLISH_TO_LIBRARY=${PKG_PUBLISH_TO_LIBRARY} **"
 
   ## Misc. ##
   echo "** PKG_CUSTOM_RESOURCES=${PKG_CUSTOM_RESOURCES} **"

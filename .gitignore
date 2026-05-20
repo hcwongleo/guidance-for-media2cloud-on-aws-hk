@@ -73,3 +73,6 @@ source/webapp/third_party/video.min.js
 source/webapp/third_party/videojs-markers.min.js
 source/webapp/third_party/videojs.markers.min.css
 source/layers/image-process-lib/wget-log*
+
+#### Demo Video
+*.mp4

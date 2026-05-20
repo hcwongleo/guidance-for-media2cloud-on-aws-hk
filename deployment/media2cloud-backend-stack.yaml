@@ -10150,6 +10150,9 @@ Outputs:
     AnalysisStateMachineServiceRoleArn:
         Value: !GetAtt AnalysisStateMachineServiceRole.Arn
         Description: AnalysisStateMachineServiceRoleArn
+    ServiceDataAccessRoleArn:
+        Value: !GetAtt ServiceDataAccessRole.Arn
+        Description: ServiceDataAccessRoleArn
     # Misc.
     DefaultAIOptions:
         Value: !Ref DefaultAIOptions

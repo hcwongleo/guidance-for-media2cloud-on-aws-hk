@@ -48,6 +48,8 @@ import AdBreakTab from './analysis/adbreak/adbreakTab.js';
 import ShoppableTab from './analysis/shoppable/shoppableTab.js';
 // Publish (Sub-Project D)
 import PublishTab from './analysis/publish/publishTab.js';
+// Highlight
+import HighlightTab from './analysis/highlight/highlightTab.js';
 
 const {
   Rekognition: {
@@ -86,6 +88,10 @@ export default class AnalysisComponent {
 
     if (GenAITab.canSupport()) {
       this.$tabControllers.push(new GenAITab(previewComponent));
+    }
+
+    if (HighlightTab.canSupport(previewComponent)) {
+      this.$tabControllers.push(new HighlightTab(previewComponent));
     }
 
     if (previewComponent.media.getTranscribeResults()) {

@@ -1237,19 +1237,23 @@ Resources:
             PolicyDocument:
                 Version: "2012-10-17"
                 Statement:
-                    # Step Functions - kick off highlight detection
+                    # Step Functions - kick off highlight detection + render-publish
                     -
                         Effect: Allow
                         Action:
                             - states:DescribeStateMachine
                             - states:StartExecution
-                        Resource: !GetAtt HighlightStack.Outputs.HighlightDetectionStateMachineArn
+                        Resource:
+                            - !GetAtt HighlightStack.Outputs.HighlightDetectionStateMachineArn
+                            - !GetAtt HighlightStack.Outputs.RenderPublishStateMachineArn
                     -
                         Effect: Allow
                         Action:
                             - states:DescribeExecution
                             - states:StopExecution
-                        Resource: !Sub arn:aws:states:${AWS::Region}:${AWS::AccountId}:execution:${HighlightStack.Outputs.HighlightDetectionStateMachineName}:*
+                        Resource:
+                            - !Sub arn:aws:states:${AWS::Region}:${AWS::AccountId}:execution:${HighlightStack.Outputs.HighlightDetectionStateMachineName}:*
+                            - !Sub arn:aws:states:${AWS::Region}:${AWS::AccountId}:execution:${HighlightStack.Outputs.RenderPublishStateMachineName}:*
                     # DynamoDB - HighlightSets is read-only from API; writes happen in detect-highlights Lambda
                     -
                         Effect: Allow
@@ -1771,6 +1775,11 @@ Resources:
                 AwsSdkLayer: !GetAtt CoreStack.Outputs.AwsSdkLayer
                 CoreLibLayer: !GetAtt CoreStack.Outputs.CoreLibLayer
                 ProxyBucket: !GetAtt CoreStack.Outputs.ProxyBucket
+                IngestTable: !GetAtt BackendStack.Outputs.IngestTable
+                MediaConvertEndpoint: !GetAtt CoreStack.Outputs.MediaConvertEndpoint
+                IotHost: !GetAtt CoreStack.Outputs.IotHost
+                IotTopic: !GetAtt CoreStack.Outputs.IotTopic
+                ServiceDataAccessRoleArn: !GetAtt BackendStack.Outputs.ServiceDataAccessRoleArn
 
     ShoppableStack:
         Condition: bEnableShoppable

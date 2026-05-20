@@ -1,0 +1,17 @@
+{
+  "name": "sortablejs-bundle",
+  "version": "1.15.6",
+  "description": "SortableJS for drag-to-reorder in the highlight editor",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"bundle exists\" && exit 0",
+    "build:clean": "rm -rf dist && mkdir -p dist/js",
+    "build:copy": "cp -v ./node_modules/sortablejs/Sortable.min.js ./dist/js",
+    "build": "npm-run-all -s build:clean build:copy"
+  },
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "sortablejs": "1.15.6"
+  }
+}

@@ -41,6 +41,10 @@ const ENDPOINTS = {
   Subtitle: `${ApiEndpoint}/subtitle`,
   Publish: `${ApiEndpoint}/publish`,
   Workflow: `${ApiEndpoint}/${ApiOps.Execution}`,
+  Highlights: `${ApiEndpoint}/${ApiOps.Highlights}`,
+  HighlightSettings: `${ApiEndpoint}/${ApiOps.HighlightSettings}`,
+  Edits: `${ApiEndpoint}/${ApiOps.Edits}`,
+  Renders: `${ApiEndpoint}/${ApiOps.Renders}`,
 };
 
 let GRAPH_ENDPOINT;
@@ -640,6 +644,107 @@ export default class ApiHelper {
     return _authHttpRequest.send(
       'DELETE',
       `${ENDPOINTS.Publish}/templates/${encodeURIComponent(name)}`
+    );
+  }
+
+  // Highlight detection
+  static async startHighlightDetection(uuid, body) {
+    return _authHttpRequest.send(
+      'POST',
+      `${ENDPOINTS.Highlights}/${uuid}`,
+      undefined,
+      body || {}
+    );
+  }
+
+  static async listHighlightSets(uuid) {
+    return _authHttpRequest.send(
+      'GET',
+      `${ENDPOINTS.Highlights}/${uuid}`
+    );
+  }
+
+  static async getHighlightSet(uuid, highlightSetId) {
+    return _authHttpRequest.send(
+      'GET',
+      `${ENDPOINTS.Highlights}/${uuid}/${highlightSetId}`
+    );
+  }
+
+  // Highlight settings (per-owner defaults)
+  static async getHighlightSettings(query) {
+    return _authHttpRequest.send(
+      'GET',
+      ENDPOINTS.HighlightSettings,
+      query
+    );
+  }
+
+  static async setHighlightSettings(payload) {
+    return _authHttpRequest.send(
+      'POST',
+      ENDPOINTS.HighlightSettings,
+      undefined,
+      payload || {}
+    );
+  }
+
+  // Edit projects
+  static async createEditProject(payload) {
+    return _authHttpRequest.send(
+      'POST',
+      ENDPOINTS.Edits,
+      undefined,
+      payload || {}
+    );
+  }
+
+  static async saveEditProject(editProjectId, payload) {
+    return _authHttpRequest.send(
+      'POST',
+      `${ENDPOINTS.Edits}/${editProjectId}`,
+      undefined,
+      payload || {}
+    );
+  }
+
+  static async getEditProject(editProjectId) {
+    return _authHttpRequest.send(
+      'GET',
+      `${ENDPOINTS.Edits}/${editProjectId}`
+    );
+  }
+
+  static async listEditProjects(uuid) {
+    return _authHttpRequest.send(
+      'GET',
+      ENDPOINTS.Edits,
+      { uuid }
+    );
+  }
+
+  // Renders
+  static async startRender(payload) {
+    return _authHttpRequest.send(
+      'POST',
+      ENDPOINTS.Renders,
+      undefined,
+      payload || {}
+    );
+  }
+
+  static async getRender(renderId) {
+    return _authHttpRequest.send(
+      'GET',
+      `${ENDPOINTS.Renders}/${renderId}`
+    );
+  }
+
+  static async listRenders(editProjectId) {
+    return _authHttpRequest.send(
+      'GET',
+      ENDPOINTS.Renders,
+      { editProjectId }
     );
   }
 }

@@ -168,4 +168,20 @@ module.exports = {
    * /highlight-settings                        GET, POST
    */
   HighlightSettings: 'highlight-settings',
+
+  /**
+   * @description manage edit projects (highlight + custom segment timelines)
+   * /edits                                     POST: create new edit project
+   * /edits/{editProjectId}                     GET:  load editor state
+   * /edits/{editProjectId}                     POST: update editor state
+   */
+  Edits: 'edits',
+
+  /**
+   * @description manage Render & Publish jobs
+   * /renders                                   POST: kick off a render-publish run
+   * /renders?editProjectId={id}                GET:  list renders for a project
+   * /renders/{renderId}                        GET:  status of a single render
+   */
+  Renders: 'renders',
 };

@@ -10,6 +10,21 @@ Mappings:
         DetectHighlights:
             Package: "%%PKG_DETECT_HIGHLIGHTS%%"
             Name: detect-highlights
+        # Render & Publish state machine
+        RenderPublish:
+            Name: render-publish
+        ComposeEdl:
+            Package: "%%PKG_COMPOSE_EDL%%"
+            Name: compose-edl
+        StartRender:
+            Package: "%%PKG_START_RENDER%%"
+            Name: start-render
+        RenderStatus:
+            Package: "%%PKG_RENDER_STATUS%%"
+            Name: render-status
+        PublishToLibrary:
+            Package: "%%PKG_PUBLISH_TO_LIBRARY%%"
+            Name: publish-to-library
     Node:
         Runtime:
             Version: nodejs20.x
@@ -70,6 +85,21 @@ Parameters:
     ProxyBucket:
         Type: String
         Description: ProxyBucket
+    IngestTable:
+        Type: String
+        Description: IngestTable name (read by compose-edl to resolve proxy keys)
+    MediaConvertEndpoint:
+        Type: String
+        Description: MediaConvert account endpoint host
+    IotHost:
+        Type: String
+        Description: IoT data plane endpoint host (for status pushes to webapp)
+    IotTopic:
+        Type: String
+        Description: Global IoT status topic the webapp subscribes to
+    ServiceDataAccessRoleArn:
+        Type: String
+        Description: ARN of the MediaConvert service role (passed to CreateJob via iam:PassRole)
 
 Resources:
     ################################################################################
@@ -563,6 +593,739 @@ Resources:
                     Key: ResourcePrefix
                     Value: !Ref ResourcePrefix
 
+    ################################################################################
+    #
+    # compose-edl Lambda
+    # * Reads EditProjects + Ingest rows
+    # * Builds a self-contained MediaConvert job spec (clip-and-stitch)
+    # * Creates the Renders DDB row with status='composing'
+    #
+    ################################################################################
+    ComposeEdlLogGroup:
+        Type: AWS::Logs::LogGroup
+        Metadata:
+            cfn_nag:
+                rules_to_suppress:
+                    -
+                        id: W84
+                        reason: Use default encryption. Disable additional KMS encryption requirement.
+        Properties:
+            LogGroupName: !Sub
+                - /aws/lambda/${ResourcePrefix}-${name}
+                - name: !FindInMap
+                    - Workflow
+                    - ComposeEdl
+                    - Name
+            RetentionInDays: 7
+
+    ComposeEdlRole:
+        Type: AWS::IAM::Role
+        Properties:
+            AssumeRolePolicyDocument:
+                Version: "2012-10-17"
+                Statement:
+                    -
+                        Effect: Allow
+                        Action: sts:AssumeRole
+                        Principal:
+                            Service: lambda.amazonaws.com
+            Path: !Sub /${ResourcePrefix}/
+            ManagedPolicyArns:
+                - arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess
+            Policies:
+                -
+                    PolicyName: ComposeEdlAccess
+                    PolicyDocument:
+                        Version: "2012-10-17"
+                        Statement:
+                            -
+                                Effect: Allow
+                                Action:
+                                    - logs:CreateLogGroup
+                                    - logs:CreateLogStream
+                                    - logs:PutLogEvents
+                                Resource:
+                                    - !GetAtt ComposeEdlLogGroup.Arn
+                            -
+                                Effect: Allow
+                                Action: s3:ListBucket
+                                Resource: !Sub arn:aws:s3:::${ProxyBucket}
+                            -
+                                Effect: Allow
+                                Action: s3:GetObject
+                                Resource: !Sub arn:aws:s3:::${ProxyBucket}/*
+                            -
+                                Effect: Allow
+                                Action:
+                                    - dynamodb:GetItem
+                                Resource:
+                                    - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${IngestTable}
+                                    - !GetAtt EditProjectsTable.Arn
+                            -
+                                Effect: Allow
+                                Action:
+                                    - dynamodb:PutItem
+                                    - dynamodb:UpdateItem
+                                Resource: !GetAtt RendersTable.Arn
+
+    ComposeEdlLambda:
+        Type: AWS::Lambda::Function
+        Metadata:
+            cfn_nag:
+                rules_to_suppress:
+                    -
+                        id: W89
+                        reason: Workflow not using VPC
+                    -
+                        id: W92
+                        reason: Workflow not limiting simultaneous executions
+        Properties:
+            FunctionName: !Sub
+                - ${ResourcePrefix}-${name}
+                - name: !FindInMap
+                    - Workflow
+                    - ComposeEdl
+                    - Name
+            Description: !Sub (${SolutionLowerCaseId}) Compose MediaConvert clip-and-stitch job spec from edit project segments
+            Runtime: !FindInMap
+                - Node
+                - Runtime
+                - Version
+            MemorySize: 256
+            Timeout: 60
+            Handler: index.handler
+            Role: !GetAtt ComposeEdlRole.Arn
+            Code:
+                S3Bucket: !Ref S3Bucket
+                S3Key: !Sub
+                    - ${KeyPrefix}/${package}
+                    - package: !FindInMap
+                        - Workflow
+                        - ComposeEdl
+                        - Package
+            Layers:
+                - !Ref CoreLibLayer
+                - !Ref AwsSdkLayer
+            TracingConfig:
+                Mode: Active
+            Environment:
+                Variables:
+                    ENV_EXPECTED_BUCKET_OWNER: !Ref AWS::AccountId
+                    ENV_CUSTOM_USER_AGENT: !Ref CustomUserAgent
+                    ENV_SOLUTION_UUID: !Ref SolutionUuid
+                    ENV_SOLUTION_ID: !Ref SolutionId
+                    ENV_RESOURCE_PREFIX: !Ref ResourcePrefix
+                    ENV_PROXY_BUCKET: !Ref ProxyBucket
+                    ENV_INGEST_TABLE: !Ref IngestTable
+                    ENV_EDIT_PROJECTS_TABLE: !Ref EditProjectsTable
+                    ENV_RENDERS_TABLE: !Ref RendersTable
+                    ENV_DATA_ACCESS_ROLE: !Ref ServiceDataAccessRoleArn
+
+    ################################################################################
+    #
+    # start-render Lambda
+    # * Calls MediaConvert.CreateJob with the spec from compose-edl
+    # * Persists mediaConvertJobId on the Renders row, status='submitted'
+    # * Pushes IoT status to edit/${editProjectId}/render
+    #
+    ################################################################################
+    StartRenderLogGroup:
+        Type: AWS::Logs::LogGroup
+        Metadata:
+            cfn_nag:
+                rules_to_suppress:
+                    -
+                        id: W84
+                        reason: Use default encryption. Disable additional KMS encryption requirement.
+        Properties:
+            LogGroupName: !Sub
+                - /aws/lambda/${ResourcePrefix}-${name}
+                - name: !FindInMap
+                    - Workflow
+                    - StartRender
+                    - Name
+            RetentionInDays: 7
+
+    StartRenderRole:
+        Type: AWS::IAM::Role
+        Properties:
+            AssumeRolePolicyDocument:
+                Version: "2012-10-17"
+                Statement:
+                    -
+                        Effect: Allow
+                        Action: sts:AssumeRole
+                        Principal:
+                            Service: lambda.amazonaws.com
+            Path: !Sub /${ResourcePrefix}/
+            ManagedPolicyArns:
+                - arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess
+            Policies:
+                -
+                    PolicyName: StartRenderAccess
+                    PolicyDocument:
+                        Version: "2012-10-17"
+                        Statement:
+                            -
+                                Effect: Allow
+                                Action:
+                                    - logs:CreateLogGroup
+                                    - logs:CreateLogStream
+                                    - logs:PutLogEvents
+                                Resource:
+                                    - !GetAtt StartRenderLogGroup.Arn
+                            -
+                                Effect: Allow
+                                Action: mediaconvert:CreateJob
+                                Resource: !Sub arn:aws:mediaconvert:${AWS::Region}:${AWS::AccountId}:*
+                            -
+                                Effect: Allow
+                                Action: iam:PassRole
+                                Resource: !Ref ServiceDataAccessRoleArn
+                            -
+                                Effect: Allow
+                                Action: dynamodb:UpdateItem
+                                Resource: !GetAtt RendersTable.Arn
+                            -
+                                Effect: Allow
+                                Action: iot:Publish
+                                Resource: !Sub arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topic/${IotTopic}
+
+    StartRenderLambda:
+        Type: AWS::Lambda::Function
+        Metadata:
+            cfn_nag:
+                rules_to_suppress:
+                    -
+                        id: W89
+                        reason: Workflow not using VPC
+                    -
+                        id: W92
+                        reason: Workflow not limiting simultaneous executions
+        Properties:
+            FunctionName: !Sub
+                - ${ResourcePrefix}-${name}
+                - name: !FindInMap
+                    - Workflow
+                    - StartRender
+                    - Name
+            Description: !Sub (${SolutionLowerCaseId}) Submit MediaConvert highlight render job
+            Runtime: !FindInMap
+                - Node
+                - Runtime
+                - Version
+            MemorySize: 256
+            Timeout: 60
+            Handler: index.handler
+            Role: !GetAtt StartRenderRole.Arn
+            Code:
+                S3Bucket: !Ref S3Bucket
+                S3Key: !Sub
+                    - ${KeyPrefix}/${package}
+                    - package: !FindInMap
+                        - Workflow
+                        - StartRender
+                        - Package
+            Layers:
+                - !Ref CoreLibLayer
+                - !Ref AwsSdkLayer
+            TracingConfig:
+                Mode: Active
+            Environment:
+                Variables:
+                    ENV_EXPECTED_BUCKET_OWNER: !Ref AWS::AccountId
+                    ENV_CUSTOM_USER_AGENT: !Ref CustomUserAgent
+                    ENV_SOLUTION_UUID: !Ref SolutionUuid
+                    ENV_SOLUTION_ID: !Ref SolutionId
+                    ENV_RESOURCE_PREFIX: !Ref ResourcePrefix
+                    ENV_RENDERS_TABLE: !Ref RendersTable
+                    ENV_MEDIACONVERT_HOST: !Ref MediaConvertEndpoint
+                    ENV_IOT_HOST: !Ref IotHost
+                    ENV_IOT_TOPIC: !Ref IotTopic
+
+    ################################################################################
+    #
+    # render-status Lambda
+    # * Polls MediaConvert.GetJob and maps phase → completed | error | progressing
+    # * Updates Renders row with percent / outputs / errorMessage / finishedAt
+    # * Pushes IoT status to edit/${editProjectId}/render
+    #
+    ################################################################################
+    RenderStatusLogGroup:
+        Type: AWS::Logs::LogGroup
+        Metadata:
+            cfn_nag:
+                rules_to_suppress:
+                    -
+                        id: W84
+                        reason: Use default encryption. Disable additional KMS encryption requirement.
+        Properties:
+            LogGroupName: !Sub
+                - /aws/lambda/${ResourcePrefix}-${name}
+                - name: !FindInMap
+                    - Workflow
+                    - RenderStatus
+                    - Name
+            RetentionInDays: 7
+
+    RenderStatusRole:
+        Type: AWS::IAM::Role
+        Properties:
+            AssumeRolePolicyDocument:
+                Version: "2012-10-17"
+                Statement:
+                    -
+                        Effect: Allow
+                        Action: sts:AssumeRole
+                        Principal:
+                            Service: lambda.amazonaws.com
+            Path: !Sub /${ResourcePrefix}/
+            ManagedPolicyArns:
+                - arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess
+            Policies:
+                -
+                    PolicyName: RenderStatusAccess
+                    PolicyDocument:
+                        Version: "2012-10-17"
+                        Statement:
+                            -
+                                Effect: Allow
+                                Action:
+                                    - logs:CreateLogGroup
+                                    - logs:CreateLogStream
+                                    - logs:PutLogEvents
+                                Resource:
+                                    - !GetAtt RenderStatusLogGroup.Arn
+                            -
+                                Effect: Allow
+                                Action: mediaconvert:GetJob
+                                Resource: !Sub arn:aws:mediaconvert:${AWS::Region}:${AWS::AccountId}:*
+                            -
+                                Effect: Allow
+                                Action: dynamodb:UpdateItem
+                                Resource: !GetAtt RendersTable.Arn
+                            -
+                                Effect: Allow
+                                Action: iot:Publish
+                                Resource: !Sub arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topic/${IotTopic}
+
+    RenderStatusLambda:
+        Type: AWS::Lambda::Function
+        Metadata:
+            cfn_nag:
+                rules_to_suppress:
+                    -
+                        id: W89
+                        reason: Workflow not using VPC
+                    -
+                        id: W92
+                        reason: Workflow not limiting simultaneous executions
+        Properties:
+            FunctionName: !Sub
+                - ${ResourcePrefix}-${name}
+                - name: !FindInMap
+                    - Workflow
+                    - RenderStatus
+                    - Name
+            Description: !Sub (${SolutionLowerCaseId}) Poll a MediaConvert render and update Renders DDB
+            Runtime: !FindInMap
+                - Node
+                - Runtime
+                - Version
+            MemorySize: 256
+            Timeout: 60
+            Handler: index.handler
+            Role: !GetAtt RenderStatusRole.Arn
+            Code:
+                S3Bucket: !Ref S3Bucket
+                S3Key: !Sub
+                    - ${KeyPrefix}/${package}
+                    - package: !FindInMap
+                        - Workflow
+                        - RenderStatus
+                        - Package
+            Layers:
+                - !Ref CoreLibLayer
+                - !Ref AwsSdkLayer
+            TracingConfig:
+                Mode: Active
+            Environment:
+                Variables:
+                    ENV_EXPECTED_BUCKET_OWNER: !Ref AWS::AccountId
+                    ENV_CUSTOM_USER_AGENT: !Ref CustomUserAgent
+                    ENV_SOLUTION_UUID: !Ref SolutionUuid
+                    ENV_SOLUTION_ID: !Ref SolutionId
+                    ENV_RESOURCE_PREFIX: !Ref ResourcePrefix
+                    ENV_RENDERS_TABLE: !Ref RendersTable
+                    ENV_MEDIACONVERT_HOST: !Ref MediaConvertEndpoint
+                    ENV_IOT_HOST: !Ref IotHost
+                    ENV_IOT_TOPIC: !Ref IotTopic
+
+    ################################################################################
+    #
+    # publish-to-library Lambda
+    # * Locates the rendered MP4 produced by MediaConvert under destinationPrefix
+    # * Generates a new uuid and starts the Main ingest state machine pointing
+    #   at the rendered file (so the existing ingest pipeline picks it up)
+    # * Updates the Renders row with publishedUuid + publishedExecutionArn
+    #
+    ################################################################################
+    PublishToLibraryLogGroup:
+        Type: AWS::Logs::LogGroup
+        Metadata:
+            cfn_nag:
+                rules_to_suppress:
+                    -
+                        id: W84
+                        reason: Use default encryption. Disable additional KMS encryption requirement.
+        Properties:
+            LogGroupName: !Sub
+                - /aws/lambda/${ResourcePrefix}-${name}
+                - name: !FindInMap
+                    - Workflow
+                    - PublishToLibrary
+                    - Name
+            RetentionInDays: 7
+
+    PublishToLibraryRole:
+        Type: AWS::IAM::Role
+        Metadata:
+            cfn_nag:
+                rules_to_suppress:
+                    -
+                        id: W11
+                        reason: Wildcard scoped to ProxyBucket and ResourcePrefix
+        Properties:
+            AssumeRolePolicyDocument:
+                Version: "2012-10-17"
+                Statement:
+                    -
+                        Effect: Allow
+                        Action: sts:AssumeRole
+                        Principal:
+                            Service: lambda.amazonaws.com
+            Path: !Sub /${ResourcePrefix}/
+            ManagedPolicyArns:
+                - arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess
+            Policies:
+                -
+                    PolicyName: PublishToLibraryAccess
+                    PolicyDocument:
+                        Version: "2012-10-17"
+                        Statement:
+                            -
+                                Effect: Allow
+                                Action:
+                                    - logs:CreateLogGroup
+                                    - logs:CreateLogStream
+                                    - logs:PutLogEvents
+                                Resource:
+                                    - !GetAtt PublishToLibraryLogGroup.Arn
+                            -
+                                Effect: Allow
+                                Action: s3:ListBucket
+                                Resource: !Sub arn:aws:s3:::${ProxyBucket}
+                            -
+                                Effect: Allow
+                                Action: s3:GetObject
+                                Resource: !Sub arn:aws:s3:::${ProxyBucket}/*
+                            -
+                                Effect: Allow
+                                Action: dynamodb:UpdateItem
+                                Resource: !GetAtt RendersTable.Arn
+                            -
+                                Effect: Allow
+                                Action: states:StartExecution
+                                Resource: !Sub arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:${ResourcePrefix}-main
+                            -
+                                Effect: Allow
+                                Action: iot:Publish
+                                Resource: !Sub arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topic/${IotTopic}
+
+    PublishToLibraryLambda:
+        Type: AWS::Lambda::Function
+        Metadata:
+            cfn_nag:
+                rules_to_suppress:
+                    -
+                        id: W89
+                        reason: Workflow not using VPC
+                    -
+                        id: W92
+                        reason: Workflow not limiting simultaneous executions
+        Properties:
+            FunctionName: !Sub
+                - ${ResourcePrefix}-${name}
+                - name: !FindInMap
+                    - Workflow
+                    - PublishToLibrary
+                    - Name
+            Description: !Sub (${SolutionLowerCaseId}) Register a completed highlight render as a new ingest asset
+            Runtime: !FindInMap
+                - Node
+                - Runtime
+                - Version
+            MemorySize: 256
+            Timeout: 60
+            Handler: index.handler
+            Role: !GetAtt PublishToLibraryRole.Arn
+            Code:
+                S3Bucket: !Ref S3Bucket
+                S3Key: !Sub
+                    - ${KeyPrefix}/${package}
+                    - package: !FindInMap
+                        - Workflow
+                        - PublishToLibrary
+                        - Package
+            Layers:
+                - !Ref CoreLibLayer
+                - !Ref AwsSdkLayer
+            TracingConfig:
+                Mode: Active
+            Environment:
+                Variables:
+                    ENV_EXPECTED_BUCKET_OWNER: !Ref AWS::AccountId
+                    ENV_CUSTOM_USER_AGENT: !Ref CustomUserAgent
+                    ENV_SOLUTION_UUID: !Ref SolutionUuid
+                    ENV_SOLUTION_ID: !Ref SolutionId
+                    ENV_RESOURCE_PREFIX: !Ref ResourcePrefix
+                    ENV_RENDERS_TABLE: !Ref RendersTable
+                    ENV_PROXY_BUCKET: !Ref ProxyBucket
+                    ENV_IOT_HOST: !Ref IotHost
+                    ENV_IOT_TOPIC: !Ref IotTopic
+
+    ################################################################################
+    #
+    # render-publish Step Function
+    # * compose-edl → start-render → Wait(20s) → render-status → loop until isDone
+    # * On done: branch on publishToLibrary (currently a no-op leaf; library
+    #   publish is wired in Step 10)
+    #
+    ################################################################################
+    RenderPublishStateMachineServiceRole:
+        Type: AWS::IAM::Role
+        Metadata:
+            cfn_nag:
+                rules_to_suppress:
+                    -
+                        id: W11
+                        reason: CloudWatch Logs delivery actions don't support resource-level perms.
+        Properties:
+            AssumeRolePolicyDocument:
+                Version: "2012-10-17"
+                Statement:
+                    -
+                        Effect: Allow
+                        Action: sts:AssumeRole
+                        Principal:
+                            Service: !Sub states.${AWS::Region}.amazonaws.com
+            Path: !Sub /${ResourcePrefix}/
+            ManagedPolicyArns:
+                - arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess
+            Policies:
+                -
+                    PolicyName: !Sub ${ResourcePrefix}RenderPublish
+                    PolicyDocument:
+                        Version: "2012-10-17"
+                        Statement:
+                            -
+                                Effect: Allow
+                                Action: lambda:InvokeFunction
+                                Resource:
+                                    - !GetAtt ComposeEdlLambda.Arn
+                                    - !GetAtt StartRenderLambda.Arn
+                                    - !GetAtt RenderStatusLambda.Arn
+                                    - !GetAtt PublishToLibraryLambda.Arn
+                            -
+                                Effect: Allow
+                                Action:
+                                    - logs:CreateLogDelivery
+                                    - logs:GetLogDelivery
+                                    - logs:UpdateLogDelivery
+                                    - logs:DeleteLogDelivery
+                                    - logs:ListLogDeliveries
+                                    - logs:PutResourcePolicy
+                                    - logs:DescribeResourcePolicies
+                                    - logs:DescribeLogGroups
+                                    - logs:CreateLogStream
+                                    - logs:PutLogEvents
+                                Resource: "*"
+
+    RenderPublishStateMachineLogGroup:
+        Type: AWS::Logs::LogGroup
+        Metadata:
+            cfn_nag:
+                rules_to_suppress:
+                    -
+                        id: W84
+                        reason: Use default encryption. Disable additional KMS encryption requirement.
+        Properties:
+            LogGroupName: !Sub
+                - /aws/stepfunctions/${ResourcePrefix}-${name}
+                - name: !FindInMap
+                    - Workflow
+                    - RenderPublish
+                    - Name
+            RetentionInDays: 7
+
+    RenderPublishStateMachine:
+        Type: AWS::StepFunctions::StateMachine
+        Properties:
+            StateMachineName: !Sub
+                - ${ResourcePrefix}-${name}
+                - name: !FindInMap
+                    - Workflow
+                    - RenderPublish
+                    - Name
+            StateMachineType: STANDARD
+            RoleArn: !GetAtt RenderPublishStateMachineServiceRole.Arn
+            TracingConfiguration:
+                Enabled: true
+            LoggingConfiguration:
+                Destinations:
+                    - CloudWatchLogsLogGroup:
+                        LogGroupArn: !GetAtt RenderPublishStateMachineLogGroup.Arn
+                IncludeExecutionData: true
+                Level: ALL
+            DefinitionString:
+                !Sub |-
+                    {
+                        "Comment": "Compose an EDL, submit a MediaConvert clip-and-stitch render, poll until done, optionally publish to library.",
+                        "StartAt": "Compose EDL",
+                        "States": {
+                            "Compose EDL": {
+                                "Type": "Task",
+                                "Resource": "${ComposeEdlLambda.Arn}",
+                                "Next": "Start render",
+                                "Retry": [
+                                    {
+                                        "ErrorEquals": [
+                                            "Lambda.ClientExecutionTimeoutException",
+                                            "Lambda.ServiceException",
+                                            "Lambda.AWSLambdaException",
+                                            "Lambda.SdkClientException"
+                                        ],
+                                        "IntervalSeconds": 4,
+                                        "MaxAttempts": 3,
+                                        "BackoffRate": 2
+                                    }
+                                ]
+                            },
+                            "Start render": {
+                                "Type": "Task",
+                                "Resource": "${StartRenderLambda.Arn}",
+                                "Next": "Wait for render",
+                                "Retry": [
+                                    {
+                                        "ErrorEquals": [
+                                            "Lambda.ClientExecutionTimeoutException",
+                                            "Lambda.ServiceException",
+                                            "Lambda.AWSLambdaException",
+                                            "Lambda.SdkClientException"
+                                        ],
+                                        "IntervalSeconds": 4,
+                                        "MaxAttempts": 3,
+                                        "BackoffRate": 2
+                                    }
+                                ]
+                            },
+                            "Wait for render": {
+                                "Type": "Wait",
+                                "Seconds": 20,
+                                "Next": "Render status"
+                            },
+                            "Render status": {
+                                "Type": "Task",
+                                "Resource": "${RenderStatusLambda.Arn}",
+                                "Next": "Render done?",
+                                "Retry": [
+                                    {
+                                        "ErrorEquals": [
+                                            "Lambda.ClientExecutionTimeoutException",
+                                            "Lambda.ServiceException",
+                                            "Lambda.AWSLambdaException",
+                                            "Lambda.SdkClientException",
+                                            "Lambda.TooManyRequestsException",
+                                            "ThrottlingException"
+                                        ],
+                                        "IntervalSeconds": 6,
+                                        "MaxAttempts": 4,
+                                        "BackoffRate": 2
+                                    }
+                                ]
+                            },
+                            "Render done?": {
+                                "Type": "Choice",
+                                "Choices": [
+                                    {
+                                        "Variable": "$.isDone",
+                                        "BooleanEquals": true,
+                                        "Next": "Publish to library?"
+                                    }
+                                ],
+                                "Default": "Wait for render"
+                            },
+                            "Publish to library?": {
+                                "Type": "Choice",
+                                "Choices": [
+                                    {
+                                        "And": [
+                                            {
+                                                "Variable": "$.publishToLibrary",
+                                                "BooleanEquals": true
+                                            },
+                                            {
+                                                "Variable": "$.status",
+                                                "StringEquals": "completed"
+                                            }
+                                        ],
+                                        "Next": "Publish to library"
+                                    }
+                                ],
+                                "Default": "Done"
+                            },
+                            "Publish to library": {
+                                "Type": "Task",
+                                "Resource": "${PublishToLibraryLambda.Arn}",
+                                "Next": "Done",
+                                "Retry": [
+                                    {
+                                        "ErrorEquals": [
+                                            "Lambda.ClientExecutionTimeoutException",
+                                            "Lambda.ServiceException",
+                                            "Lambda.AWSLambdaException",
+                                            "Lambda.SdkClientException"
+                                        ],
+                                        "IntervalSeconds": 4,
+                                        "MaxAttempts": 3,
+                                        "BackoffRate": 2
+                                    }
+                                ],
+                                "Catch": [
+                                    {
+                                        "ErrorEquals": ["States.ALL"],
+                                        "ResultPath": "$.publishError",
+                                        "Next": "Done"
+                                    }
+                                ]
+                            },
+                            "Done": {
+                                "Type": "Pass",
+                                "End": true
+                            }
+                        }
+                    }
+            Tags:
+                -
+                    Key: Name
+                    Value: Media2Cloud Render and Publish
+                -
+                    Key: SolutionId
+                    Value: !Ref SolutionId
+                -
+                    Key: ResourcePrefix
+                    Value: !Ref ResourcePrefix
+
 Outputs:
     HighlightSetsTableName:
         Value: !Ref HighlightSetsTable
@@ -600,3 +1363,33 @@ Outputs:
     HighlightDetectionStateMachineName:
         Value: !GetAtt HighlightDetectionStateMachine.Name
         Description: HighlightDetectionStateMachineName
+    ComposeEdlLambdaArn:
+        Value: !GetAtt ComposeEdlLambda.Arn
+        Description: ComposeEdlLambdaArn
+    ComposeEdlLambdaName:
+        Value: !Ref ComposeEdlLambda
+        Description: ComposeEdlLambdaName
+    StartRenderLambdaArn:
+        Value: !GetAtt StartRenderLambda.Arn
+        Description: StartRenderLambdaArn
+    StartRenderLambdaName:
+        Value: !Ref StartRenderLambda
+        Description: StartRenderLambdaName
+    RenderStatusLambdaArn:
+        Value: !GetAtt RenderStatusLambda.Arn
+        Description: RenderStatusLambdaArn
+    RenderStatusLambdaName:
+        Value: !Ref RenderStatusLambda
+        Description: RenderStatusLambdaName
+    PublishToLibraryLambdaArn:
+        Value: !GetAtt PublishToLibraryLambda.Arn
+        Description: PublishToLibraryLambdaArn
+    PublishToLibraryLambdaName:
+        Value: !Ref PublishToLibraryLambda
+        Description: PublishToLibraryLambdaName
+    RenderPublishStateMachineArn:
+        Value: !Ref RenderPublishStateMachine
+        Description: RenderPublishStateMachineArn
+    RenderPublishStateMachineName:
+        Value: !GetAtt RenderPublishStateMachine.Name
+        Description: RenderPublishStateMachineName

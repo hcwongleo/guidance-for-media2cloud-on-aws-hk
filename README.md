@@ -4,11 +4,10 @@
 
 - [Compatibility Notes](#compatibility-notes)
 - [What's New in V4](#whats-new-in-v4)
-- [Features Beyond Upstream Main (Hong Kong Fork)](#features-beyond-upstream-main-hong-kong-fork)
+- [Hong Kong Fork — Features and Customizations](#hong-kong-fork--features-and-customizations)
 - [Introduction](#introduction)
 - [Installation](#installation)
 - [Building and Customizing the Solution](#building-and-customizing-the-solution)
-- [Customizations for Hong Kong Customers](#customizations-for-hong-kong-customers)
 - [Updating an Existing Stack](#updating-an-existing-stack)
 - [Cost Estimation](#cost-estimation)
 - [Deep dive into Media2Cloud V4](#deep-dive-into-media2cloud-v4)
@@ -49,9 +48,9 @@ See quick demo in [V4 Demo Video Gallery](#v4-demo-video-gallery)
 
 __
 
-## Features Beyond Upstream Main (Hong Kong Fork)
+## Hong Kong Fork — Features and Customizations
 
-This fork of `guidance-for-media2cloud-on-aws` adds four sub-projects on top of the upstream V4 baseline. Each one is independently shippable and gated behind the same Cognito login as the rest of the app.
+This fork of `guidance-for-media2cloud-on-aws` adds five sub-projects on top of the upstream V4 baseline plus Hong Kong–specific localization and build-system tweaks. Each sub-project is independently shippable and gated behind the same Cognito login as the rest of the app.
 
 ### Sub-Project A — Tab-stacking bug fix (analysis tabs)
 Switching between analysis tabs (Transcribe, Scenes, Ad Break, etc.) while a previous tab was still loading caused tabs to "stack" on top of each other. Replaced with a one-line sibling-active gate that drops late-arriving content if the user has already moved on.
@@ -103,10 +102,23 @@ Auto-detects highlight moments in a long-form video and lets the user assemble a
 - `highlightTab.js` — list/edit/delete highlight sets, render history.
 - `highlightEditorModal.js` + `editorTracks.js` — drag-to-trim segment timeline with frame-accurate scrubbing.
 
-### Other quality-of-life fixes carried in this fork
-- **zh-HK end-to-end** — Transcribe forced to `zh-HK`, Bedrock system prompts switched to zh-HK output. (See [Customizations for Hong Kong Customers](#customizations-for-hong-kong-customers) for the language-code list change.)
-- **Webapp deploy via Rollup-at-deploy + SRI** — surgical updates skip full CloudFormation and deploy in ~3 minutes (`deployment/build-s3-dist.sh` enhancements).
-- **Pre-built Lambda layer fetch** — image-process and PDF layers are downloaded from the official AWS Solutions S3 bucket instead of being rebuilt locally with Docker, dropping ~10–15 min off every build.
+### Hong Kong–specific localization
+
+**Chinese, Hong Kong (zh-HK)** added end-to-end:
+- **Language code** registered in the dropdown (`source/webapp/src/lib/js/app/shared/languageCodes.js`, after `zh-TW`):
+  ```javascript
+  {
+    name: 'Chinese, Hong Kong',
+    value: 'zh-HK',
+  },
+  ```
+- **Transcribe** forced to `zh-HK` for Cantonese audio.
+- **Bedrock system prompts** for summarize / custom / image / scene-taxonomy / highlight-reasons rewritten to emit zh-HK output.
+
+### Build-system tweaks (Hong Kong fork)
+
+- **Pre-built Lambda layer packages** — `deployment/build-s3-dist.sh` now downloads the official AWS-built ExifTool (`image-process-lib-v4.0.9.zip`) and PDF (`pdf-lib-v4.0.9.zip`) layers from `s3://awsi-megs-guidances-us-east-1/media2cloud/v4.0.9/` instead of running the local Docker build for each. This drops ~10–15 min off every build, fixes the `canvas.node` native-module errors that occasionally hit document processing, and falls back to Docker only if the download fails. Modified functions: `build_image_process_layer`, `build_pdf_layer`.
+- **Webapp deploy via Rollup-at-deploy + SRI** — surgical updates skip the full CloudFormation cycle and deploy a webapp change in ~3 minutes (`deployment/build-s3-dist.sh` enhancements). Useful for iterating on the highlight editor and publish tab without re-running CFN.
 
 __
 
@@ -309,56 +321,6 @@ bash deploy-s3-dist.sh \
 ```
 
 Once the artefacts are uploaded to yourname-artefact-bucket, you can use the HTTPS URL of the `media2cloud.template` to create the stack on CloudFormation.
-
-__
-
-## Customizations for Hong Kong Customers
-
-This fork includes specific customizations for Hong Kong customers:
-
-### Added Language Support
-
-**Chinese, Hong Kong (zh-HK)** language code has been added to the language selection options.
-
-- **File modified**: `source/webapp/src/lib/js/app/shared/languageCodes.js`
-- **Change**: Added zh-HK language code after line 24 (after zh-TW):
-  ```javascript
-  {
-    name: 'Chinese, Hong Kong',
-    value: 'zh-HK',
-  },
-  ```
-
-### Pre-built Lambda Layer Packages
-
-The build process has been **modified to automatically download official AWS pre-built packages** instead of building from Docker.
-
-#### ExifTool Package (Image Processing)
-
-- **Package source**: AWS S3 bucket `s3://awsi-megs-guidances-us-east-1/media2cloud/v4.0.9/`
-- **Package file**: `image-process-lib-v4.0.9.zip`
-- **Modified file**: `deployment/build-s3-dist.sh` (function `build_image_process_layer`)
-
-#### PDF Library Package (Document Processing)
-
-- **Package source**: AWS S3 bucket `s3://awsi-megs-guidances-us-east-1/media2cloud/v4.0.9/`
-- **Package file**: `pdf-lib-v4.0.9.zip`
-- **Modified file**: `deployment/build-s3-dist.sh` (function `build_pdf_layer`)
-
-#### How it works
-
-The build script automatically:
-1. Downloads the official AWS packages from AWS Solutions S3 bucket
-2. Skips the time-consuming Docker build process for both layers
-3. Falls back to Docker build only if downloads fail
-
-**Benefits**:
-- **Significantly reduced build time** (no Docker builds required)
-- **Uses official, tested AWS packages** with correct native dependencies
-- **Fixes canvas.node errors** in document processing
-- **No manual intervention needed**
-
-**Note**: These pre-built packages include properly compiled native modules (ExifTool, Canvas) that are compatible with AWS Lambda runtime.
 
 __
 

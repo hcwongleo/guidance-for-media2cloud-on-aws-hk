@@ -154,4 +154,18 @@ module.exports = {
    * method: GET, POST
    */
   Publish: 'publish',
+
+  /**
+   * @description manage highlight detection runs
+   * /highlights/{uuid}                         POST: kick off detection
+   * /highlights/{uuid}                         GET:  list highlight sets for a video
+   * /highlights/{uuid}/{highlightSetId}        GET:  full segments + metadata
+   */
+  Highlights: 'highlights',
+
+  /**
+   * @description per-owner highlight defaults (model, strategy, prompt)
+   * /highlight-settings                        GET, POST
+   */
+  HighlightSettings: 'highlight-settings',
 };

@@ -1227,6 +1227,60 @@ Resources:
                             - dynamodb:Query
                         Resource: !GetAtt ShoppableStack.Outputs.ShoppableTableArn
 
+    # Allow API to start highlight-detection SF and read/write highlight tables
+    ApiRolePolicyHighlight:
+        Type: AWS::IAM::Policy
+        Properties:
+            Roles:
+                - !GetAtt WebAppStack.Outputs.ApiRole
+            PolicyName: ApiAccessHighlightResources
+            PolicyDocument:
+                Version: "2012-10-17"
+                Statement:
+                    # Step Functions - kick off highlight detection
+                    -
+                        Effect: Allow
+                        Action:
+                            - states:DescribeStateMachine
+                            - states:StartExecution
+                        Resource: !GetAtt HighlightStack.Outputs.HighlightDetectionStateMachineArn
+                    -
+                        Effect: Allow
+                        Action:
+                            - states:DescribeExecution
+                            - states:StopExecution
+                        Resource: !Sub arn:aws:states:${AWS::Region}:${AWS::AccountId}:execution:${HighlightStack.Outputs.HighlightDetectionStateMachineName}:*
+                    # DynamoDB - HighlightSets is read-only from API; writes happen in detect-highlights Lambda
+                    -
+                        Effect: Allow
+                        Action:
+                            - dynamodb:GetItem
+                            - dynamodb:Query
+                        Resource: !GetAtt HighlightStack.Outputs.HighlightSetsTableArn
+                    # DynamoDB - EditProjects, Renders, HighlightSettings: full read/write from API
+                    -
+                        Effect: Allow
+                        Action:
+                            - dynamodb:GetItem
+                            - dynamodb:PutItem
+                            - dynamodb:UpdateItem
+                            - dynamodb:DeleteItem
+                            - dynamodb:Query
+                            - dynamodb:BatchGetItem
+                            - dynamodb:BatchWriteItem
+                        Resource:
+                            - !GetAtt HighlightStack.Outputs.EditProjectsTableArn
+                            - !GetAtt HighlightStack.Outputs.RendersTableArn
+                            - !GetAtt HighlightStack.Outputs.HighlightSettingsTableArn
+                    # DynamoDB - GSI reads on EditProjects + Renders
+                    -
+                        Effect: Allow
+                        Action:
+                            - dynamodb:Query
+                        Resource:
+                            - !Sub ${HighlightStack.Outputs.EditProjectsTableArn}/index/*
+                            - !Sub ${HighlightStack.Outputs.RendersTableArn}/index/*
+
     ################################################################################
     # CustomResourcesRoleMain
     CustomResourcesRoleMain:

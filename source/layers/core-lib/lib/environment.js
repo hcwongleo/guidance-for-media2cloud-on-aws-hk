@@ -41,6 +41,7 @@ module.exports = {
     AssetRemoval: `${ResourcePrefix}-asset-removal`,
     Shoppable: `${ResourcePrefix}-shoppable`,
     FaceApiModel: `${ResourcePrefix}-faceapi-model`,
+    HighlightDetection: `${ResourcePrefix}-highlight-detection`,
   },
   DynamoDB: {
     Ingest: {
@@ -94,6 +95,35 @@ module.exports = {
     Shoppable: {
       Table: `${ResourcePrefix}-shoppable`,
       PartitionKey: 'uuid',
+    },
+    HighlightSets: {
+      Table: `${ResourcePrefix}-highlight-sets`,
+      PartitionKey: 'uuid',
+      SortKey: 'highlightSetId',
+    },
+    EditProjects: {
+      Table: `${ResourcePrefix}-edit-projects`,
+      PartitionKey: 'editProjectId',
+      GSI: {
+        Uuid: {
+          Name: 'gsi-uuid',
+          Key: 'uuid',
+        },
+      },
+    },
+    Renders: {
+      Table: `${ResourcePrefix}-renders`,
+      PartitionKey: 'renderId',
+      GSI: {
+        EditProjectId: {
+          Name: 'gsi-editprojectid',
+          Key: 'editProjectId',
+        },
+      },
+    },
+    HighlightSettings: {
+      Table: `${ResourcePrefix}-highlight-settings`,
+      PartitionKey: 'ownerId',
     },
   },
   Iot: {

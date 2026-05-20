@@ -22,6 +22,8 @@ const ModelsOp = require('./operations/modelsOp');
 const FaceIndexerOp = require('./operations/faceIndexerOp');
 const SubtitleOp = require('./operations/subtitleOp');
 const PublishOp = require('./operations/publishOp');
+const HighlightOp = require('./operations/highlightOp');
+const HighlightSettingsOp = require('./operations/highlightSettingsOp');
 
 const OP_REKOGNITION = 'rekognition';
 const OP_TRANSCRIBE = 'transcribe';
@@ -150,6 +152,12 @@ class ApiRequest {
     }
     if (op === ApiOps.FaceIndexer) {
       return new FaceIndexerOp(this);
+    }
+    if (op === ApiOps.Highlights) {
+      return new HighlightOp(this);
+    }
+    if (op === ApiOps.HighlightSettings) {
+      return new HighlightSettingsOp(this);
     }
     throw new M2CException(`operation '${(this.pathParameters || {}).operation}' not supported`);
   }

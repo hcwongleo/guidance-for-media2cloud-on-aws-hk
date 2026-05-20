@@ -4,11 +4,13 @@
 
 - [Compatibility Notes](#compatibility-notes)
 - [What's New in V4](#whats-new-in-v4)
+- [Features Beyond Upstream Main (Hong Kong Fork)](#features-beyond-upstream-main-hong-kong-fork)
 - [Introduction](#introduction)
 - [Installation](#installation)
 - [Building and Customizing the Solution](#building-and-customizing-the-solution)
 - [Customizations for Hong Kong Customers](#customizations-for-hong-kong-customers)
 - [Updating an Existing Stack](#updating-an-existing-stack)
+- [Cost Estimation](#cost-estimation)
 - [Deep dive into Media2Cloud V4](#deep-dive-into-media2cloud-v4)
 - [V4 Demo Video Gallery](#v4-demo-video-gallery)
 - [LICENSE](#license)
@@ -44,6 +46,67 @@ __
 - **Generative AI plugins**: V4 web user inference enables you to try out Amazon Bedrock models.
 
 See quick demo in [V4 Demo Video Gallery](#v4-demo-video-gallery)
+
+__
+
+## Features Beyond Upstream Main (Hong Kong Fork)
+
+This fork of `guidance-for-media2cloud-on-aws` adds four sub-projects on top of the upstream V4 baseline. Each one is independently shippable and gated behind the same Cognito login as the rest of the app.
+
+### Sub-Project A — Tab-stacking bug fix (analysis tabs)
+Switching between analysis tabs (Transcribe, Scenes, Ad Break, etc.) while a previous tab was still loading caused tabs to "stack" on top of each other. Replaced with a one-line sibling-active gate that drops late-arriving content if the user has already moved on.
+- Spec: `docs/superpowers/specs/2026-05-18-tab-stacking-bug-fix-design.md`
+
+### Sub-Project B — Dynamic Bedrock model registry + editable prompts
+Hard-coded Claude/Nova model IDs and system prompts are replaced with a runtime registry (`source/layers/core-lib/lib/genai/bedrockModel.js` + `source/api/lib/operations/modelsOp.js`).
+- New `GET /models` endpoint lists available Bedrock models per region.
+- Per-feature system prompts (transcribe summary, scene description, ad-break taxonomy, highlight reasons, subtitle AI-edit) are editable from the Settings UI and persisted in DynamoDB.
+- `maxTokens` is clamped per model so Nova Lite no longer fails at the output ceiling.
+
+### Sub-Project C — Subtitle/transcribe AI editing + SRT export
+A side-by-side "AI editor" on the Transcribe tab that lets a producer rewrite, translate, or tighten captions with Bedrock and export the edited transcript as an SRT.
+- New tab UI: `source/webapp/src/lib/js/app/.../analysis/transcribe/transcribeTab.js`
+- New API: `source/api/lib/operations/subtitleOp.js` (async background AI-edit job, polled by the webapp)
+- New helper: `source/layers/core-lib/lib/srtHelper.js`
+- Features: bilingual side-by-side editing, async LLM rewrite, SRT download.
+
+### Sub-Project D — Publish-to-VOD pipeline (landscape + portrait)
+Lets the user pick a finished asset, choose 16:9 or 9:16, and submit a MediaConvert job that emits HLS + MP4 proxies into the Proxy bucket. The Publish tab shows job progress, finished outputs, signed download links, and a **Delete files** button that wipes the S3 prefix.
+- API: `source/api/lib/operations/publishOp.js` + JSON job templates in `source/api/lib/operations/publish/tmpl/`
+- UI: `source/webapp/src/lib/js/app/.../analysis/publish/publishTab.js`
+- Two presets: `vod_landscape.json` (16:9) and `vod_portrait.json` (9:16, uses MediaConvert SMART_CROP).
+
+### Sub-Project E — Highlight clipping + video editor (short-form video)
+Auto-detects highlight moments in a long-form video and lets the user assemble a short-form cut with a timeline editor.
+
+**Backend (`source/main/highlight/`)**
+- `detect-highlights/` — transcript-LLM strategy: feeds the transcript through a Bedrock model and returns ranked segments with reasons. Memory: 512 MB, timeout: 15 min.
+- `compose-edl/` — converts the user-edited segment list into a MediaConvert clip-and-stitch job spec (HLS 1080p/720p/480p + MP4 proxy), 25 fps, CBR.
+- `start-render/` — submits the MediaConvert job.
+- `render-status/` — polls progress, persists `percent` + signed output URLs on the Renders row.
+- `publish-to-library/` — optionally re-ingests the rendered MP4 as a new asset so it shows up in the main library.
+- A dedicated state machine `HighlightDetection` runs detect-highlights once per click; `RenderPublish` orchestrates the four render-stage Lambdas.
+
+**API (`source/api/lib/operations/`)**
+- `highlightOp.js` — `POST/GET/DELETE /highlight/{uuid}` and `/highlight/{uuid}/{highlightSetId}`. The `GET` list endpoint server-side merges saved edits from `EditProjects` so the UI shows the user's current segments, not the original auto-detected ones.
+- `highlightSettingsOp.js` — editable per-asset detection config (model, prompt, max segments).
+- `editsOp.js` — CRUD on `EditProjects` (segments, publish-to-library flag, aspect ratio, burn-captions flag).
+- `rendersOp.js` — submit / list / get / delete renders. `DELETE` paginates the S3 prefix and removes every output object before deleting the DDB row.
+
+**Storage (4 new DynamoDB tables, in `media2cloud-highlight-stack.yaml`)**
+- `HighlightSets` — auto-detected segment proposals (immutable per detection run)
+- `EditProjects` — user edits to segments (with `gsi-uuid`)
+- `Renders` — MediaConvert job tracking (with `gsi-editprojectid`)
+- `HighlightSettings` — per-asset detection config
+
+**Frontend (`source/webapp/src/lib/js/app/.../analysis/highlight/`)**
+- `highlightTab.js` — list/edit/delete highlight sets, render history.
+- `highlightEditorModal.js` + `editorTracks.js` — drag-to-trim segment timeline with frame-accurate scrubbing.
+
+### Other quality-of-life fixes carried in this fork
+- **zh-HK end-to-end** — Transcribe forced to `zh-HK`, Bedrock system prompts switched to zh-HK output. (See [Customizations for Hong Kong Customers](#customizations-for-hong-kong-customers) for the language-code list change.)
+- **Webapp deploy via Rollup-at-deploy + SRI** — surgical updates skip full CloudFormation and deploy in ~3 minutes (`deployment/build-s3-dist.sh` enhancements).
+- **Pre-built Lambda layer fetch** — image-process and PDF layers are downloaded from the official AWS Solutions S3 bucket instead of being rebuilt locally with Docker, dropping ~10–15 min off every build.
 
 __
 
@@ -351,6 +414,135 @@ aws cloudformation update-stack \
 ```
 
 **Important:** Stack updates modify Lambda code and infrastructure, but **preserve all your data** (S3 files, DynamoDB tables, OpenSearch indices, user accounts).
+
+__
+
+## Cost Estimation
+
+> **Disclaimer.** All numbers below are **rough order-of-magnitude estimates** based on public AWS list pricing in `us-west-2` as of 2026-05-21. Real costs vary by Region, contract discount (EDP / private pricing), traffic profile, OpenSearch sizing, and whether Bedrock cross-region inference is enabled. Prices change without notice — always confirm with the [AWS Pricing Calculator](https://calculator.aws) before quoting a customer. Costs are quoted in **USD**. Bedrock token volumes are estimates derived from average transcript length per minute of speech (~150 words/min ≈ 200 tokens/min in Chinese).
+
+### 1. Always-on infrastructure (per month, idle / low usage)
+
+This is what you pay just for the stack to exist, **before** any video is ingested. Most cost concentrates in OpenSearch and (if enabled) Neptune.
+
+| Component | Configuration | ~Monthly cost |
+|---|---|---|
+| Amazon OpenSearch (Dev/Test) | 1× `m5.large.search`, 10 GB gp2, 1 AZ | ~ **$110** |
+| Amazon OpenSearch (Production) | 3× `m5.large.search`, 100 GB gp2, 2 AZ + 3 dedicated masters | ~ **$650** |
+| Amazon DynamoDB | On-demand, 9 small tables (Ingest, Analysis, Faces, AdBreak, HighlightSets, EditProjects, Renders, HighlightSettings, etc.) — only billed on use | ~ **$1–5** at idle |
+| Amazon CloudFront + S3 (web app) | 1 distribution + ~30 MB static assets | ~ **$1** |
+| Amazon API Gateway | Idle | ~ **$0** (per-request) |
+| AWS Lambda | Idle | ~ **$0** (per-invocation) |
+| AWS IoT Core | 1 thing, low MQTT volume | ~ **$0–1** |
+| Amazon Cognito User Pool | < 50 MAU | **$0** (free tier) |
+| Amazon Neptune (only if `EnableKnowledgeGraph=YES`) | 1× `db.t3.medium` | ~ **$60** |
+| **Subtotal — idle stack (no Neptune, Dev OpenSearch)** | | **~ $115/mo** |
+| **Subtotal — idle stack (no Neptune, Prod OpenSearch)** | | **~ $655/mo** |
+
+**Tip — biggest single line item is OpenSearch.** For demos/POCs use the Dev/Test cluster size. Switch to Production sizing only when you start ingesting your real catalogue.
+
+### 2. Per-video — Ingest + Analysis (the original V4 pipeline)
+
+These are the variable costs for **one video upload and analyze run**. The pipeline scales linearly with **video duration**, not file size, because almost every downstream service is billed per-minute.
+
+Assumptions: H.264 1080p source, single audio track, English/Chinese transcript, default V4 AI options (Rekognition Video labels + Celebrities + Faces + Segments, Transcribe, dynamic frame analysis with average ~1 frame every 3 sec, scene description on every detected scene).
+
+| Service | What it does | Unit price (us-west-2) | Cost — 5 min video | Cost — 30 min video | Cost — 60 min video |
+|---|---|---|---|---|---|
+| AWS Elemental MediaConvert (proxy + frames) | Builds the MP4 proxy, HLS, audio proxy, frame thumbs | ~$0.0075/min (Pro tier) | **$0.04** | **$0.23** | **$0.45** |
+| Amazon Transcribe | Speech-to-text | $0.024/min | **$0.12** | **$0.72** | **$1.44** |
+| Amazon Rekognition Video — Labels | DetectLabels on segments | $0.10/min | **$0.50** | **$3.00** | **$6.00** |
+| Amazon Rekognition Video — Celebrities | RecognizeCelebrities | $0.10/min | **$0.50** | **$3.00** | **$6.00** |
+| Amazon Rekognition Video — Faces | DetectFaces + IndexFaces | $0.10/min + $0.001/face indexed | **$0.50** | **$3.00** | **$6.00** |
+| Amazon Rekognition Video — Segments | Shot/segment detection | $0.05/min | **$0.25** | **$1.50** | **$3.00** |
+| Amazon Rekognition Image (dynamic frame analysis) | Per selected keyframe | $0.001/image | ~$0.10 (~100 frames) | ~$0.60 (~600 frames) | ~$1.20 (~1200 frames) |
+| Amazon Bedrock — Claude Haiku 4.5 (scene description, IAB/GARM, sentiment) | Vision + Text per scene | $0.25/MTok in, $1.25/MTok out | ~$0.05 | ~$0.30 | ~$0.60 |
+| Amazon Bedrock — embeddings (Titan v2) | One vector per keyframe | $0.00002/1K tok | < $0.01 | < $0.05 | < $0.10 |
+| Amazon S3 storage (proxy + frames + JSON) | ~1.5× source size hot | $0.023/GB-mo | ~$0.01/mo | ~$0.05/mo | ~$0.10/mo |
+| Amazon DynamoDB writes | On-demand WCUs | $1.25/M writes | < $0.01 | < $0.01 | < $0.01 |
+| AWS Lambda + Step Functions | Orchestration | per-invocation | ~$0.05 | ~$0.20 | ~$0.40 |
+| **Total per analyze run** | | | **~ $2.10** | **~ $12.50** | **~ $25.30** |
+
+**Sensitivities**
+- **Disabling Celebrities or Faces** drops ~$0.10/min each — flip them off in `DefaultAIOptions` if not needed.
+- **Switching Bedrock model from Haiku 4.5 → Sonnet 4.6** raises the Bedrock line ~5×.
+- **Sub-Project E "auto highlight detection"** also calls Bedrock once per video on top of the analyze run (see § 3).
+
+### 3. Per-video — Highlight detection + Render + Publish (Sub-Projects D + E)
+
+These are **additional** costs on top of the analyze run, only billed when the user actually clicks "Detect highlights" or "Render" or "Publish".
+
+#### 3a. Highlight detection (one click → one Bedrock call)
+
+The detect-highlights Lambda sends the full transcript to a Bedrock model and asks for ranked highlight segments. Cost is dominated by transcript length.
+
+| Source duration | ~Tokens in / out | Claude Haiku 4.5 cost | Claude Sonnet 4.6 cost |
+|---|---|---|---|
+| 5 min | ~1.5K in / 1K out | **~ $0.002** | **~ $0.02** |
+| 30 min | ~9K in / 2K out | **~ $0.005** | **~ $0.05** |
+| 60 min | ~18K in / 3K out | **~ $0.008** | **~ $0.08** |
+| 2 h | ~36K in / 4K out | **~ $0.014** | **~ $0.13** |
+
+Lambda + DDB cost is < $0.01 per detection.
+
+#### 3b. Render (compose-edl → MediaConvert clip-and-stitch)
+
+The user picks N segments totaling D minutes; MediaConvert renders HLS (1080p/720p/480p) + an MP4 proxy.
+
+| Output duration (sum of segments) | MediaConvert (Pro tier, 4 outputs ≈ 4× minutes) | S3 storage delta (HLS + MP4) | **Total** |
+|---|---|---|---|
+| 1 min | ~$0.030 | ~25 MB ≈ $0.001/mo | **~ $0.03** |
+| 3 min | ~$0.090 | ~75 MB ≈ $0.002/mo | **~ $0.09** |
+| 5 min | ~$0.150 | ~125 MB ≈ $0.003/mo | **~ $0.15** |
+| 10 min | ~$0.300 | ~250 MB ≈ $0.006/mo | **~ $0.30** |
+
+> The Pro tier kicks in because of HD H.264 + 3 outputs ≥ 30 fps. Use the **Basic** tier (~$0.0075/min) instead by dropping the 1080p rung if cost matters more than quality.
+
+#### 3c. Publish-to-VOD (16:9 or 9:16 portrait)
+
+Same MediaConvert math as 3b, but billed against the **published** asset duration (typically equal to the source you publish — usually the rendered short, so it's basically a second render). For the 9:16 portrait preset MediaConvert SMART_CROP also adds an `elemental-inference` charge.
+
+| Aspect | Per-minute cost |
+|---|---|
+| 16:9 landscape | ~$0.030/min (Pro tier, 4 outputs) |
+| 9:16 portrait (SMART_CROP) | ~$0.045/min (Pro tier + inference) |
+
+A 60-second short published in portrait ≈ **$0.045** + a few cents of S3.
+
+### 4. Per-GB storage (recurring)
+
+After ingest, files persist until you delete them. Sub-Project E + D add a `renders/` and `outputs/` prefix on the Proxy bucket; the **Delete files** button removes them on demand.
+
+| Bucket | What's in it | Class | Price/GB-mo |
+|---|---|---|---|
+| Ingest bucket | Original master uploads | S3 Standard | $0.023 |
+| Proxy bucket — `proxies/` | MediaConvert proxy + frames + JSON metadata | S3 Standard | $0.023 |
+| Proxy bucket — `renders/{uuid}/{renderId}/` | Highlight render outputs | S3 Standard | $0.023 |
+| Proxy bucket — `outputs/{uuid}/{renderId}/` | Publish-to-VOD outputs | S3 Standard | $0.023 |
+
+For a 60-min 1080p source (~3 GB master, ~1 GB proxy, ~0.5 GB frames+JSON) → **~ $0.10/mo storage** per asset. Move cold assets to S3 Glacier Instant Retrieval (~$0.004/GB-mo) for ~80% savings.
+
+### 5. End-to-end example (one customer demo)
+
+Single 30-minute Cantonese-language source video, full analyze + 1 highlight detection + 1 render of a 90-second short + publish in 9:16 portrait, on the Dev/Test stack:
+
+| Step | Cost |
+|---|---|
+| Always-on infra (1 month) | **$115** |
+| Analyze run (30 min source, default AI options) | **$12.50** |
+| Highlight detection (Haiku 4.5) | **$0.005** |
+| Render 90 s short (clip-and-stitch HLS + MP4) | **$0.045** |
+| Publish 90 s portrait (SMART_CROP) | **$0.07** |
+| Storage for outputs (1 month) | **~$0.20** |
+| **Total — first month** | **~ $128** |
+| **Total — each subsequent 30-min video processed the same way** | **~ $13** |
+
+**Cost-saving levers**
+1. Run on **Dev/Test OpenSearch** for POCs (–$540/mo vs Production sizing).
+2. Disable Rekognition Video Celebrities + Faces if you don't need them (–$0.20/min ≈ –$6/30-min video).
+3. Use **Claude Haiku 4.5** for everything except scene description on hero content.
+4. Move analyzed-but-cold assets to **S3 Glacier Instant Retrieval** (–80% on storage line).
+5. Use the publish tab's **Delete files** button after a render is exported elsewhere — render outputs are easily 250 MB+ each.
 
 __
 

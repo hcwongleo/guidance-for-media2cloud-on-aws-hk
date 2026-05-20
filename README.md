@@ -436,16 +436,16 @@ These are **additional** costs on top of the analyze run, only billed when the u
 
 #### 3a. Highlight detection (one click → one Bedrock call)
 
-The detect-highlights Lambda sends the full transcript to a Bedrock model and asks for ranked highlight segments. Cost is dominated by transcript length.
+The detect-highlights Lambda sends the full transcript to a Bedrock model and asks for ranked highlight segments. Cost is dominated by transcript length. **This fork is configured to call Amazon Nova Pro by default** (us-west-2 list price: $0.80 / MTok input, $3.20 / MTok output).
 
-| Source duration | ~Tokens in / out | Claude Haiku 4.5 cost | Claude Sonnet 4.6 cost |
-|---|---|---|---|
-| 5 min | ~1.5K in / 1K out | **~ $0.002** | **~ $0.02** |
-| 30 min | ~9K in / 2K out | **~ $0.005** | **~ $0.05** |
-| 60 min | ~18K in / 3K out | **~ $0.008** | **~ $0.08** |
-| 2 h | ~36K in / 4K out | **~ $0.014** | **~ $0.13** |
+| Source duration | ~Tokens in / out | **Nova Pro cost (default)** | Claude Haiku 4.5 (alt) | Claude Sonnet 4.6 (alt) |
+|---|---|---|---|---|
+| 5 min | ~1.5K in / 1K out | **~ $0.005** | ~ $0.002 | ~ $0.02 |
+| 30 min | ~9K in / 2K out | **~ $0.014** | ~ $0.005 | ~ $0.05 |
+| 60 min | ~18K in / 3K out | **~ $0.024** | ~ $0.008 | ~ $0.08 |
+| 2 h | ~36K in / 4K out | **~ $0.042** | ~ $0.014 | ~ $0.13 |
 
-Lambda + DDB cost is < $0.01 per detection.
+Lambda + DDB cost is < $0.01 per detection. Switch models from the highlight Settings UI (Sub-Project B's runtime model registry) — Nova Pro is the default for stronger reasoning on long Cantonese transcripts; Nova Lite or Haiku will roughly halve / quarter the line above if cost matters more than quality.
 
 #### 3b. Render (compose-edl → MediaConvert clip-and-stitch)
 
@@ -492,7 +492,7 @@ Single 30-minute Cantonese-language source video, full analyze + 1 highlight det
 |---|---|
 | Always-on infra (1 month) | **$115** |
 | Analyze run (30 min source, default AI options) | **$12.50** |
-| Highlight detection (Haiku 4.5) | **$0.005** |
+| Highlight detection (Nova Pro) | **$0.014** |
 | Render 90 s short (clip-and-stitch HLS + MP4) | **$0.045** |
 | Publish 90 s portrait (SMART_CROP) | **$0.07** |
 | Storage for outputs (1 month) | **~$0.20** |

@@ -46,6 +46,8 @@ import GenAITab from './analysis/genai/genaiTab.js';
 import AdBreakTab from './analysis/adbreak/adbreakTab.js';
 // Shoppable
 import ShoppableTab from './analysis/shoppable/shoppableTab.js';
+// Publish (Sub-Project D)
+import PublishTab from './analysis/publish/publishTab.js';
 
 const {
   Rekognition: {
@@ -171,6 +173,11 @@ export default class AnalysisComponent {
     if (textract) {
       this.$tabControllers.push(new TextractTab(previewComponent));
     }
+    /* publish (Sub-Project D) — only for video assets */
+    if (((previewComponent.media || {}).type) === 'video') {
+      this.$tabControllers.push(new PublishTab(previewComponent));
+    }
+
     /* permission */
     const session = GetUserSession();
     if (session.canWrite()) {

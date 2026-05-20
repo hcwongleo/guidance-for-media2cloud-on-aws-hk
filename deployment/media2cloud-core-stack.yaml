@@ -377,6 +377,16 @@ Resources:
                         Condition:
                             Bool:
                                 aws:SecureTransport: false
+                    -
+                        Sid: AllowPublishCloudFrontReadPublishPrefix
+                        Effect: Allow
+                        Action: s3:GetObject
+                        Resource: !Sub ${ProxyBucket.Arn}/*/publish/*
+                        Principal:
+                            Service: cloudfront.amazonaws.com
+                        Condition:
+                            StringEquals:
+                                AWS:SourceArn: !Sub arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${PublishCloudFrontDistribution}
 
     ################################################################################
     #
@@ -1107,6 +1117,58 @@ Resources:
 
     ################################################################################
     #
+    # CloudFront Distribution (Publish VOD)
+    # * Dedicated distribution for publish outputs in the ProxyBucket
+    # * Mirrors the VOD Foundation pattern exactly: private S3 + OAC + managed
+    #   CachingOptimized policy. Only paths matching */publish/* are exposed.
+    #
+    ################################################################################
+    PublishOAC:
+        Type: AWS::CloudFront::OriginAccessControl
+        Properties:
+            OriginAccessControlConfig:
+                Description: OAC for ProxyBucket publish prefix
+                Name: !Sub ${ResourcePrefix}-publish-oac
+                OriginAccessControlOriginType: s3
+                SigningBehavior: always
+                SigningProtocol: sigv4
+
+    PublishCloudFrontDistribution:
+        Type: AWS::CloudFront::Distribution
+        Metadata:
+            cfn_nag:
+                rules_to_suppress:
+                    -
+                        id: W70
+                        reason: Will revisit to enable MinimumProtocolVersion to TLS1.2
+        Properties:
+            DistributionConfig:
+                Comment: !Sub ${AWS::StackName} Publish VOD distribution
+                Origins:
+                    -
+                        Id: !Sub S3-${ProxyBucket}-publish
+                        DomainName: !GetAtt ProxyBucket.RegionalDomainName
+                        OriginAccessControlId: !GetAtt PublishOAC.Id
+                        S3OriginConfig:
+                            OriginAccessIdentity: ""
+                DefaultCacheBehavior:
+                    TargetOriginId: !Sub S3-${ProxyBucket}-publish
+                    CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+                    Compress: true
+                    ViewerProtocolPolicy: redirect-to-https
+                Enabled: true
+                HttpVersion: http2
+                IPV6Enabled: true
+                PriceClass: !Ref PriceClass
+                ViewerCertificate:
+                    CloudFrontDefaultCertificate: true
+                Logging:
+                    Bucket: !GetAtt LogsBucket.RegionalDomainName
+                    Prefix: access_logs_cloudfront_publish/
+                    IncludeCookies: false
+
+    ################################################################################
+    #
     # Amazon EventBridge
     # * unified step functions status change events
     #
@@ -1208,6 +1270,12 @@ Outputs:
     CloudFrontDistributionDomainName:
         Value: !GetAtt CloudFrontDistribution.DomainName
         Description: CloudFrontDistribution
+    PublishCloudFrontDistributionId:
+        Value: !Ref PublishCloudFrontDistribution
+        Description: PublishCloudFrontDistributionId
+    PublishCloudFrontDistributionDomainName:
+        Value: !GetAtt PublishCloudFrontDistribution.DomainName
+        Description: PublishCloudFrontDistributionDomainName
     # MediaConvert
     MediaConvertEndpoint:
         Value: !GetAtt MediaConvertEndpoint.Endpoint

@@ -715,6 +715,9 @@ Resources:
                 WebBucket: !GetAtt CoreStack.Outputs.WebBucket
                 CloudFrontDistributionId: !GetAtt CoreStack.Outputs.CloudFrontDistributionId
                 CloudFrontDistributionDomainName: !GetAtt CoreStack.Outputs.CloudFrontDistributionDomainName
+                PublishCloudFrontDistributionDomainName: !GetAtt CoreStack.Outputs.PublishCloudFrontDistributionDomainName
+                MediaConvertEndpoint: !GetAtt CoreStack.Outputs.MediaConvertEndpoint
+                ServiceDataAccessRoleArn: !GetAtt BackendStack.Outputs.ServiceDataAccessRoleArn
                 OpenSearchDomainName: !GetAtt CoreStack.Outputs.OpenSearchDomainName
                 OpenSearchDomainEndpoint: !GetAtt CoreStack.Outputs.OpenSearchDomainEndpoint
                 OpenSearchCollection: !GetAtt CoreStack.Outputs.OpenSearchCollection

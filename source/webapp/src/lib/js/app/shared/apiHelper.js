@@ -39,6 +39,7 @@ const ENDPOINTS = {
   Custom: `${ApiEndpoint}/${ApiOps.Custom}`,
   Models: `${ApiEndpoint}/models`,
   Subtitle: `${ApiEndpoint}/subtitle`,
+  Publish: `${ApiEndpoint}/publish`,
   Workflow: `${ApiEndpoint}/${ApiOps.Execution}`,
 };
 
@@ -560,6 +561,85 @@ export default class ApiHelper {
     return _authHttpRequest.send(
       'GET',
       `${ENDPOINTS.Subtitle}/${uuid}/ai-edit-status`
+    );
+  }
+
+  // Publish (Sub-Project D)
+  static async getPublishStatus(uuid) {
+    return _authHttpRequest.send(
+      'GET',
+      `${ENDPOINTS.Publish}/${uuid}/status`
+    );
+  }
+
+  static async getPublishSettings(uuid) {
+    return _authHttpRequest.send(
+      'GET',
+      `${ENDPOINTS.Publish}/${uuid}/settings`
+    );
+  }
+
+  static async savePublishSettings(uuid, settings) {
+    return _authHttpRequest.send(
+      'POST',
+      `${ENDPOINTS.Publish}/${uuid}/settings`,
+      undefined,
+      settings
+    );
+  }
+
+  static async startPublish(uuid, settings) {
+    return _authHttpRequest.send(
+      'POST',
+      `${ENDPOINTS.Publish}/${uuid}/start`,
+      undefined,
+      settings || {}
+    );
+  }
+
+  static async getPublishLogoUploadUrl(uuid, size, ext) {
+    return _authHttpRequest.send(
+      'POST',
+      `${ENDPOINTS.Publish}/${uuid}/logo`,
+      undefined,
+      { size, ext }
+    );
+  }
+
+  static async getPublishOutputs(uuid) {
+    return _authHttpRequest.send(
+      'GET',
+      `${ENDPOINTS.Publish}/${uuid}/outputs`
+    );
+  }
+
+  static async listPublishTemplates() {
+    return _authHttpRequest.send(
+      'GET',
+      `${ENDPOINTS.Publish}/templates`
+    );
+  }
+
+  static async getPublishTemplate(name) {
+    return _authHttpRequest.send(
+      'GET',
+      `${ENDPOINTS.Publish}/templates/${encodeURIComponent(name)}`
+    );
+  }
+
+  static async savePublishTemplate(name, content) {
+    return _authHttpRequest.send(
+      'POST',
+      `${ENDPOINTS.Publish}/templates/${encodeURIComponent(name)}`,
+      undefined,
+      { content }
+    );
+  }
+
+  static async deletePublishTemplate(name) {
+    return _authHttpRequest.send(
+      'DELETE',
+      `${ENDPOINTS.Publish}/templates/${encodeURIComponent(name)}`
     );
   }
 }

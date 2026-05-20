@@ -145,4 +145,13 @@ module.exports = {
    * method: GET, POST
    */
   Subtitle: 'subtitle',
+
+  /**
+   * @description Production VOD publish (HLS + MP4 with logo + subtitle burn-in)
+   * /publish/{uuid}            POST: start publish, GET: status
+   * /publish/{uuid}/settings   GET, POST
+   * /publish/{uuid}/logo       POST: presigned logo upload URL
+   * method: GET, POST
+   */
+  Publish: 'publish',
 };

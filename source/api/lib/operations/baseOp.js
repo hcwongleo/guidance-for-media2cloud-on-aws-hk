@@ -87,6 +87,8 @@ class BaseOp {
       errorName: e.name || e.code,
       errorMessage: `${this.request.method} ${this.request.path} - ${e.name || e.code || e.message || 'unknown error'}`,
     };
+    console.error('[onError]', e.name, '-', e.message);
+    if (e.stack) console.error(e.stack);
     console.error(JSON.stringify(payload, null, 2));
     return {
       statusCode: 200,

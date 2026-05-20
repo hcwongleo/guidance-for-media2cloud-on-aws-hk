@@ -1012,6 +1012,14 @@ Resources:
                                     - s3:GetObject
                                     - s3:PutObject
                                 Resource: !Sub arn:aws:s3:::${ProxyBucket}/*
+                            # Elemental Inference - required for MediaConvert SMART_CROP
+                            # ScalingBehavior used by portrait (9:16) publish templates.
+                            # Without this, MediaConvert jobs using SMART_CROP fail with
+                            # error 1432 "Access denied creating Elemental Inference feed".
+                            -
+                                Effect: Allow
+                                Action: elemental-inference:*
+                                Resource: "*"
 
     ################################################################################
     #
@@ -10058,6 +10066,10 @@ Outputs:
     SNSTopicArn:
         Value: !Ref SNSTopic
         Description: SNSTopicArn
+    # IAM
+    ServiceDataAccessRoleArn:
+        Value: !GetAtt ServiceDataAccessRole.Arn
+        Description: ServiceDataAccessRoleArn
     # DyanmoDB
     BacklogTable:
         Value: !Ref BacklogTable

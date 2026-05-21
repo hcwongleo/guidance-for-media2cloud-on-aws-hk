@@ -519,8 +519,7 @@ export default class HighlightTab extends BaseAnalysisTab {
     const names = Object.keys(providers).sort();
     for (const provider of names) {
       const optgroup = $('<optgroup/>').attr('label', provider);
-      const models = (providers[provider] || []).slice()
-        .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+      const models = providers[provider] || [];
       for (const m of models) {
         optgroup.append($('<option/>').attr('value', m.id).text(m.name));
       }

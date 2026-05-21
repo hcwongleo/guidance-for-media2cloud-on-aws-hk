@@ -462,14 +462,18 @@ The user picks N segments totaling D minutes; MediaConvert renders HLS (1080p/72
 
 #### 3c. Publish-to-VOD (16:9 or 9:16 portrait)
 
-Same MediaConvert math as 3b, but billed against the **published** asset duration (typically equal to the source you publish — usually the rendered short, so it's basically a second render). For the 9:16 portrait preset MediaConvert SMART_CROP also adds an `elemental-inference` charge.
+Same MediaConvert math as 3b, but billed against the **published** asset duration (typically equal to the source you publish — usually the rendered short, so it's basically a second render). For the 9:16 portrait preset MediaConvert SMART_CROP additionally invokes **AWS Elemental Inference**, which is billed per output minute on top of the MediaConvert Pro tier line.
+
+**Elemental Inference list pricing (us-west-2)** — bundled discount when you stack features in the same job:
+- 1 feature (e.g. SMART_CROP only) → **$0.15/min** ($9.00/hour)
+- 2 features (e.g. SMART_CROP + ImageInserter) → **$0.23/min** ($13.80/hour)
 
 | Aspect | Per-minute cost |
 |---|---|
 | 16:9 landscape | ~$0.030/min (Pro tier, 4 outputs) |
-| 9:16 portrait (SMART_CROP) | ~$0.045/min (Pro tier + inference) |
+| 9:16 portrait (SMART_CROP, 1 inference feature) | ~$0.030/min Pro + **$0.15/min inference** ≈ **$0.18/min** |
 
-A 60-second short published in portrait ≈ **$0.045** + a few cents of S3.
+A 60-second short published in portrait ≈ **$0.18** + a few cents of S3.
 
 ### 4. Per-GB storage (recurring)
 
@@ -494,7 +498,7 @@ Single 30-minute Cantonese-language source video, full analyze + 1 highlight det
 | Analyze run (30 min source, default AI options) | **$12.50** |
 | Highlight detection (Nova Pro) | **$0.014** |
 | Render 90 s short (clip-and-stitch HLS + MP4) | **$0.045** |
-| Publish 90 s portrait (SMART_CROP) | **$0.07** |
+| Publish 90 s portrait (SMART_CROP, 1 inference feature) | **$0.27** |
 | Storage for outputs (1 month) | **~$0.20** |
 | **Total — first month** | **~ $128** |
 | **Total — each subsequent 30-min video processed the same way** | **~ $13** |

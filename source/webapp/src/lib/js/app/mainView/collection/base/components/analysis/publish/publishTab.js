@@ -258,7 +258,7 @@ export default class PublishTab extends mxAlert(BaseAnalysisTab) {
     const publishBtn = $('<button/>').attr('type', 'button')
       .addClass('btn btn-sm btn-primary mr-2 mb-1')
       .attr('data-role', 'publish')
-      .html('Generate Bundle');
+      .html('Publish');
     const refreshBtn = $('<button/>').attr('type', 'button')
       .addClass('btn btn-sm btn-outline-secondary mr-2 mb-1')
       .attr('data-role', 'refresh')

@@ -643,7 +643,7 @@ export default class TranscribeTab extends mxAlert(BaseAnalysisTab) {
         try {
           const models = await ApiHelper.getModels();
           const providers = (models || {}).providers || {};
-          Object.keys(providers).forEach((provider) => {
+          Object.keys(providers).sort().forEach((provider) => {
             const group = $('<optgroup/>').attr('label', provider);
             providers[provider].forEach((m) => {
               const opt = $('<option/>').attr('value', m.id).text(m.name);

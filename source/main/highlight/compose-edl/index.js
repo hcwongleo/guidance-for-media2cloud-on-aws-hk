@@ -325,13 +325,15 @@ async function persistRenderRow(table, renderId, attrs) {
   const names = {};
   const values = {};
   const sets = [];
-  Object.entries(attrs).forEach(([k, v], i) => {
-    const nk = `#k${i}`;
-    const vk = `:v${i}`;
-    names[nk] = k;
-    values[vk] = v;
-    sets.push(`${nk} = ${vk}`);
-  });
+  Object.entries(attrs)
+    .filter(([, v]) => v !== undefined)
+    .forEach(([k, v], i) => {
+      const nk = `#k${i}`;
+      const vk = `:v${i}`;
+      names[nk] = k;
+      values[vk] = v;
+      sets.push(`${nk} = ${vk}`);
+    });
   await doc.send(new UpdateCommand({
     TableName: table,
     Key: { renderId },

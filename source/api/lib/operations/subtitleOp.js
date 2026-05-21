@@ -42,6 +42,7 @@ const BaseOp = require('./baseOp');
 const SUBTITLE_PREFIX = 'transcode/subtitle';
 const DEFAULT_PROMPT = '將以下字幕轉換為書面語繁體中文。要求：1. 保留所有時間碼，不可改動 2. 保留 SRT 編號格式 3. 將口語廣東話轉換為正式書面語繁體中文 4. 保留專有名詞 5. 只輸出有效的 SRT 格式，不要額外說明';
 const CHUNK_CUE_SIZE = 80;
+const CHUNK_CONCURRENCY = 6;
 
 class SubtitleOp extends BaseOp {
   async onGET() {
@@ -315,11 +316,14 @@ class SubtitleOp extends BaseOp {
 
   static async _processCuesInChunksStatic(uuid, cues, userPrompt, modelId, startedAt) {
     const client = new BedrockRuntimeClient({ region: BEDROCK_REGION });
-    const results = [];
     const total = Math.ceil(cues.length / CHUNK_CUE_SIZE);
 
-    for (let i = 0, chunkIdx = 0; i < cues.length; i += CHUNK_CUE_SIZE, chunkIdx += 1) {
-      const chunk = cues.slice(i, i + CHUNK_CUE_SIZE);
+    const chunks = [];
+    for (let i = 0; i < cues.length; i += CHUNK_CUE_SIZE) {
+      chunks.push(cues.slice(i, i + CHUNK_CUE_SIZE));
+    }
+
+    const editChunk = async (chunk, chunkIdx) => {
       const chunkSrt = SrtHelper.fromCues(chunk.map((c) => ({
         start: c.start,
         end: c.end,
@@ -343,23 +347,49 @@ class SubtitleOp extends BaseOp {
 
       console.log(`[ai-edit chunk ${chunkIdx + 1}/${total}] req=${chunk.length} got=${editedCues.length} preview=${(editedCues[0] || {}).text || '(empty)'}`);
 
-      for (let j = 0; j < chunk.length; j += 1) {
-        const orig = chunk[j];
+      return chunk.map((orig, j) => {
         const edited = editedCues[j];
-        results.push({
+        return {
           start: orig.start,
           end: orig.end,
           text: edited && edited.text ? edited.text : orig.text,
-        });
-      }
+        };
+      });
+    };
 
-      await SubtitleOp._writeStatus(uuid, {
-        status: 'processing',
-        startedAt,
-        modelId,
-        progress: { chunk: chunkIdx + 1, total, cuesProcessed: results.length, cueCount: cues.length },
-      }).catch(() => undefined);
-    }
+    const results = new Array(cues.length);
+    let nextChunkIdx = 0;
+    let chunksDone = 0;
+
+    const worker = async () => {
+      while (true) {
+        const chunkIdx = nextChunkIdx;
+        if (chunkIdx >= chunks.length) {
+          return;
+        }
+        nextChunkIdx += 1;
+        const chunk = chunks[chunkIdx];
+        const editedChunk = await editChunk(chunk, chunkIdx);
+        const offset = chunkIdx * CHUNK_CUE_SIZE;
+        for (let j = 0; j < editedChunk.length; j += 1) {
+          results[offset + j] = editedChunk[j];
+        }
+        chunksDone += 1;
+        const cuesProcessed = chunksDone * CHUNK_CUE_SIZE > cues.length
+          ? cues.length
+          : chunksDone * CHUNK_CUE_SIZE;
+        await SubtitleOp._writeStatus(uuid, {
+          status: 'processing',
+          startedAt,
+          modelId,
+          progress: { chunk: chunksDone, total, cuesProcessed, cueCount: cues.length },
+        }).catch(() => undefined);
+      }
+    };
+
+    const concurrency = Math.min(CHUNK_CONCURRENCY, chunks.length);
+    await Promise.all(Array.from({ length: concurrency }, () => worker()));
+
     return results;
   }
 

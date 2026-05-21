@@ -319,7 +319,7 @@ export default class Localization {
           Labels: 'Labels',
           DownloadJson: 'Download JSON',
           TranscribeTab: 'Transcribe',
-          PublishTab: 'Publish',
+          OutputTab: 'Output',
           ImageCaptionTab: 'Captioning',
           CelebTab: 'Celebrity',
           LabelTab: 'Label',

@@ -34,6 +34,15 @@ const {
           },
         },
       },
+      EditProjects: {
+        Table: EditProjectsTable,
+        GSI: {
+          Uuid: {
+            Name: EditProjectsUuidGsiName,
+            Key: EditProjectsUuidGsiKey,
+          },
+        },
+      },
     },
     StateMachines: {
       RenderPublish,
@@ -51,6 +60,8 @@ const BaseOp = require('./baseOp');
 
 const REGION = process.env.AWS_REGION;
 
+const TEMPLATE_NAME_RE = /^[A-Za-z0-9_-]{1,64}$/;
+
 function ddbDocClient() {
   const ddb = xraysdkHelper(new DynamoDBClient({
     customUserAgent: CustomUserAgent,
@@ -61,6 +72,25 @@ function ddbDocClient() {
 
 class RendersOp extends BaseOp {
   async onPOST() {
+    return super.onPOST(await this._startRender());
+  }
+
+  async onGET() {
+    const renderId = this._renderId();
+    return super.onGET(await this._getRender(renderId));
+  }
+
+  async onDELETE() {
+    const renderId = this._renderId();
+    return super.onDELETE(await this._deleteRender(renderId));
+  }
+
+  _renderId() {
+    const raw = (this.request.pathParameters || {}).uuid || '';
+    return raw.split('/').filter((x) => x.length > 0)[0] || '';
+  }
+
+  async _startRender() {
     const body = this.request.body || {};
     const editProjectId = body.editProjectId;
     if (!editProjectId) {
@@ -73,8 +103,15 @@ class RendersOp extends BaseOp {
       || 'anonymous';
     const publishToLibrary = !!body.publishToLibrary;
     const aspectRatio = body.aspectRatio ? String(body.aspectRatio) : '16:9';
-    const burnCaptions = !!body.burnCaptions;
     const submittedAt = new Date().toISOString();
+
+    let template;
+    if (typeof body.template === 'string' && body.template.length > 0) {
+      if (!TEMPLATE_NAME_RE.test(body.template)) {
+        throw new M2CException(`invalid template name: ${body.template}`);
+      }
+      template = body.template;
+    }
 
     // Pre-create the Renders row so the webapp can poll/subscribe immediately.
     // compose-edl will UpdateItem this same row to attach the MediaConvert job spec.
@@ -87,7 +124,7 @@ class RendersOp extends BaseOp {
         owner,
         publishToLibrary,
         aspectRatio,
-        burnCaptions,
+        ...(template ? { template } : {}),
         status: 'queued',
         percent: 0,
         submittedAt,
@@ -109,8 +146,8 @@ class RendersOp extends BaseOp {
       editProjectId,
       publishToLibrary,
       aspectRatio,
-      burnCaptions,
       owner,
+      ...(template ? { template } : {}),
     };
 
     const sfnClient = xraysdkHelper(new SFNClient({
@@ -123,20 +160,20 @@ class RendersOp extends BaseOp {
       input: JSON.stringify(sfnInput),
     }));
 
-    return super.onPOST({
+    return {
       renderId,
       editProjectId,
       executionArn: response.executionArn,
       startDate: response.startDate,
       status: 'queued',
-    });
+      ...(template ? { template } : {}),
+    };
   }
 
-  async onGET() {
-    const captured = (this.request.pathParameters || {}).uuid;
-    const renderId = captured && captured.split('/').filter(Boolean)[0];
-    const queryEditProjectId = (this.request.queryString || {}).editProjectId;
-
+  async _getRender(renderId) {
+    const qs = this.request.queryString || {};
+    const queryEditProjectId = qs.editProjectId;
+    const queryUuid = qs.uuid;
     const doc = ddbDocClient();
 
     if (!renderId && queryEditProjectId) {
@@ -151,10 +188,42 @@ class RendersOp extends BaseOp {
           ':v': queryEditProjectId,
         },
       }));
-      return super.onGET({
+      return {
         editProjectId: queryEditProjectId,
         renders: res.Items || [],
-      });
+      };
+    }
+
+    // List all renders for an asset by fanning out across its edit projects.
+    // OutputTab + HighlightEditorModal create separate edit projects per
+    // highlight set, so listing by editProjectId would hide history from
+    // other modes; aggregate by asset uuid instead.
+    if (!renderId && queryUuid) {
+      if (!CommonUtils.validateUuid(queryUuid)) {
+        throw new M2CException('invalid uuid');
+      }
+      const eps = await doc.send(new QueryCommand({
+        TableName: EditProjectsTable,
+        IndexName: EditProjectsUuidGsiName,
+        KeyConditionExpression: '#k = :v',
+        ExpressionAttributeNames: { '#k': EditProjectsUuidGsiKey },
+        ExpressionAttributeValues: { ':v': queryUuid },
+      }));
+      const editProjectIds = ((eps && eps.Items) || [])
+        .map((it) => it && it.editProjectId)
+        .filter((id) => typeof id === 'string' && id.length > 0);
+      const buckets = await Promise.all(editProjectIds.map((id) => doc.send(new QueryCommand({
+        TableName: RendersTable,
+        IndexName: RendersEditProjectGsiName,
+        KeyConditionExpression: '#k = :v',
+        ExpressionAttributeNames: { '#k': RendersEditProjectGsiKey },
+        ExpressionAttributeValues: { ':v': id },
+      })).then((r) => (r && r.Items) || []).catch(() => [])));
+      const renders = [].concat(...buckets);
+      return {
+        uuid: queryUuid,
+        renders,
+      };
     }
 
     if (!renderId) {
@@ -170,16 +239,13 @@ class RendersOp extends BaseOp {
     if (!res.Item) {
       throw new M2CException('render not found');
     }
-    return super.onGET(res.Item);
+    return res.Item;
   }
 
-  async onDELETE() {
-    const captured = (this.request.pathParameters || {}).uuid;
-    const renderId = captured && captured.split('/').filter(Boolean)[0];
+  async _deleteRender(renderId) {
     if (!renderId) {
       throw new M2CException('missing renderId');
     }
-
     const doc = ddbDocClient();
 
     // Look up the row first so we know which S3 prefix to clean up.
@@ -193,7 +259,7 @@ class RendersOp extends BaseOp {
 
     let objectsDeleted = 0;
     if (item && item.uuid) {
-      const prefix = `renders/${item.uuid}/${renderId}/`;
+      const prefix = `${item.uuid}/output/${renderId}/`;
       let token;
       do {
         const page = await CommonUtils.listObjects(ProxyBucket, prefix, {
@@ -220,12 +286,13 @@ class RendersOp extends BaseOp {
       },
     }));
 
-    return super.onDELETE({
+    return {
       renderId,
       deleted: true,
       objectsDeleted,
-    });
+    };
   }
+
 }
 
 module.exports = RendersOp;

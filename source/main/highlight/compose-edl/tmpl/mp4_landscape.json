@@ -1,5 +1,5 @@
 {
-  "Description": "Media2Cloud VOD portrait publish (5 HLS + 1 MP4, subtitle burn-in, logo overlay, 9:16). Conformed to Elemental-Inference job-settings_inference01.json reference.",
+  "Description": "Media2Cloud landscape output (5 HLS + 1 MP4, optional subtitle burn-in, optional logo overlay, 16:9). Conformed to Elemental-Inference job-settings_vod01.json reference.",
   "OutputGroups": [
     {
       "Name": "Apple HLS",
@@ -20,13 +20,13 @@
             }
           },
           "VideoDescription": {
-            "Width": 270,
-            "ScalingBehavior": "SMART_CROP",
-            "Height": 480,
+            "Width": 480,
+            "ScalingBehavior": "DEFAULT",
+            "Height": 270,
             "VideoPreprocessors": {
               "ImageInserter": {
                 "InsertableImages": [
-                  { "ImageX": 219, "ImageY": 5, "Layer": 0, "ImageInserterInput": "##LOGO_48##", "Opacity": 100 }
+                  { "ImageX": 427, "ImageY": 5, "Layer": 0, "ImageInserterInput": "##LOGO_48##", "Opacity": 100 }
                 ]
               }
             },
@@ -71,7 +71,7 @@
               "CaptionSelectorName": "##CAPTION_SOURCE##",
               "DestinationSettings": {
                 "DestinationType": "BURN_IN",
-                "BurninDestinationSettings": { "YPosition": 432, "FontSize": 14, "FontScript": "##FONT_SCRIPT##" }
+                "BurninDestinationSettings": { "Alignment": "CENTERED", "OutlineSize": 2, "OutlineColor": "BLACK", "XPosition": 48, "Width": 384, "YPosition": 248, "FontScript": "##FONT_SCRIPT##" }
               }
             }
           ]
@@ -86,11 +86,11 @@
             }
           },
           "VideoDescription": {
-            "Width": 360, "ScalingBehavior": "SMART_CROP", "Height": 640,
+            "Width": 640, "ScalingBehavior": "DEFAULT", "Height": 360,
             "VideoPreprocessors": {
               "ImageInserter": {
                 "InsertableImages": [
-                  { "ImageX": 292, "ImageY": 6, "Layer": 0, "ImageInserterInput": "##LOGO_64##", "Opacity": 100 }
+                  { "ImageX": 570, "ImageY": 6, "Layer": 0, "ImageInserterInput": "##LOGO_64##", "Opacity": 100 }
                 ]
               }
             },
@@ -132,7 +132,7 @@
               "CaptionSelectorName": "##CAPTION_SOURCE##",
               "DestinationSettings": {
                 "DestinationType": "BURN_IN",
-                "BurninDestinationSettings": { "YPosition": 576, "FontSize": 19, "FontScript": "##FONT_SCRIPT##" }
+                "BurninDestinationSettings": { "Alignment": "CENTERED", "OutlineSize": 2, "OutlineColor": "BLACK", "XPosition": 64, "Width": 512, "YPosition": 330, "FontScript": "##FONT_SCRIPT##" }
               }
             }
           ]
@@ -147,11 +147,11 @@
             }
           },
           "VideoDescription": {
-            "Width": 540, "ScalingBehavior": "SMART_CROP", "Height": 960,
+            "Width": 960, "ScalingBehavior": "DEFAULT", "Height": 540,
             "VideoPreprocessors": {
               "ImageInserter": {
                 "InsertableImages": [
-                  { "ImageX": 439, "ImageY": 10, "Layer": 0, "ImageInserterInput": "##LOGO_96##", "Opacity": 100 }
+                  { "ImageX": 854, "ImageY": 10, "Layer": 0, "ImageInserterInput": "##LOGO_96##", "Opacity": 100 }
                 ]
               }
             },
@@ -193,7 +193,7 @@
               "CaptionSelectorName": "##CAPTION_SOURCE##",
               "DestinationSettings": {
                 "DestinationType": "BURN_IN",
-                "BurninDestinationSettings": { "YPosition": 864, "FontSize": 29, "FontScript": "##FONT_SCRIPT##" }
+                "BurninDestinationSettings": { "Alignment": "CENTERED", "OutlineSize": 2, "OutlineColor": "BLACK", "XPosition": 96, "Width": 768, "YPosition": 495, "FontScript": "##FONT_SCRIPT##" }
               }
             }
           ]
@@ -208,11 +208,11 @@
             }
           },
           "VideoDescription": {
-            "Width": 720, "ScalingBehavior": "SMART_CROP", "Height": 1280,
+            "Width": 1280, "ScalingBehavior": "DEFAULT", "Height": 720,
             "VideoPreprocessors": {
               "ImageInserter": {
                 "InsertableImages": [
-                  { "ImageX": 585, "ImageY": 13, "Layer": 0, "ImageInserterInput": "##LOGO_128##", "Opacity": 100 }
+                  { "ImageX": 1139, "ImageY": 13, "Layer": 0, "ImageInserterInput": "##LOGO_128##", "Opacity": 100 }
                 ]
               }
             },
@@ -254,7 +254,7 @@
               "CaptionSelectorName": "##CAPTION_SOURCE##",
               "DestinationSettings": {
                 "DestinationType": "BURN_IN",
-                "BurninDestinationSettings": { "YPosition": 1152, "FontSize": 38, "FontScript": "##FONT_SCRIPT##" }
+                "BurninDestinationSettings": { "Alignment": "CENTERED", "OutlineSize": 2, "OutlineColor": "BLACK", "XPosition": 128, "Width": 1024, "YPosition": 660, "FontScript": "##FONT_SCRIPT##" }
               }
             }
           ]
@@ -269,11 +269,11 @@
             }
           },
           "VideoDescription": {
-            "Width": 1080, "ScalingBehavior": "SMART_CROP", "Height": 1920,
+            "Width": 1920, "ScalingBehavior": "DEFAULT", "Height": 1080,
             "VideoPreprocessors": {
               "ImageInserter": {
                 "InsertableImages": [
-                  { "ImageX": 877, "ImageY": 19, "Layer": 0, "ImageInserterInput": "##LOGO_192##", "Opacity": 100 }
+                  { "ImageX": 1708, "ImageY": 20, "Layer": 0, "ImageInserterInput": "##LOGO_192##", "Opacity": 100 }
                 ]
               }
             },
@@ -315,7 +315,7 @@
               "CaptionSelectorName": "##CAPTION_SOURCE##",
               "DestinationSettings": {
                 "DestinationType": "BURN_IN",
-                "BurninDestinationSettings": { "YPosition": 1728, "FontSize": 58, "FontScript": "##FONT_SCRIPT##" }
+                "BurninDestinationSettings": { "Alignment": "CENTERED", "OutlineSize": 2, "OutlineColor": "BLACK", "XPosition": 192, "Width": 1536, "YPosition": 990, "FontScript": "##FONT_SCRIPT##" }
               }
             }
           ]
@@ -352,11 +352,11 @@
             "Mp4Settings": { "CslgAtom": "INCLUDE", "FreeSpaceBox": "EXCLUDE", "MoovPlacement": "PROGRESSIVE_DOWNLOAD" }
           },
           "VideoDescription": {
-            "Width": 1080, "ScalingBehavior": "SMART_CROP", "Height": 1920,
+            "Width": 1920, "ScalingBehavior": "DEFAULT", "Height": 1080,
             "VideoPreprocessors": {
               "ImageInserter": {
                 "InsertableImages": [
-                  { "ImageX": 877, "ImageY": 19, "Layer": 0, "ImageInserterInput": "##LOGO_192##", "Opacity": 100 }
+                  { "ImageX": 1708, "ImageY": 20, "Layer": 0, "ImageInserterInput": "##LOGO_192##", "Opacity": 100 }
                 ]
               }
             },
@@ -399,7 +399,7 @@
               "CaptionSelectorName": "##CAPTION_SOURCE##",
               "DestinationSettings": {
                 "DestinationType": "BURN_IN",
-                "BurninDestinationSettings": { "YPosition": 1728, "FontSize": 58, "FontScript": "##FONT_SCRIPT##" }
+                "BurninDestinationSettings": { "Alignment": "CENTERED", "OutlineSize": 2, "OutlineColor": "BLACK", "XPosition": 192, "Width": 1536, "YPosition": 990, "FontScript": "##FONT_SCRIPT##" }
               }
             }
           ]

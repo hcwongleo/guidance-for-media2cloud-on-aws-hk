@@ -147,13 +147,13 @@ module.exports = {
   Subtitle: 'subtitle',
 
   /**
-   * @description Production VOD publish (HLS + MP4 with logo + subtitle burn-in)
-   * /publish/{uuid}            POST: start publish, GET: status
-   * /publish/{uuid}/settings   GET, POST
-   * /publish/{uuid}/logo       POST: presigned logo upload URL
-   * method: GET, POST
+   * @description Output-tab assets that don't fit /edits or /renders.
+   * /output/{uuid}/logo            POST: presigned logo upload URL
+   * /output/{uuid}/logo/{size}     DELETE: drop a logo at a given size
+   * Settings live on the EditProject row (template, fontScript, mode, logos,
+   * burnSubtitles). Render lifecycle lives on /renders.
    */
-  Publish: 'publish',
+  Output: 'output',
 
   /**
    * @description manage highlight detection runs
@@ -184,4 +184,22 @@ module.exports = {
    * /renders/{renderId}                        GET:  status of a single render
    */
   Renders: 'renders',
+
+  /**
+   * @description shared MediaConvert job template store (publish + render)
+   * /mc-templates                              GET:  list available templates
+   * /mc-templates/{name}                       GET:  fetch one template's JSON
+   * /mc-templates/{name}                       POST: upload override / new
+   * /mc-templates/{name}                       DELETE: drop a custom override
+   */
+  McTemplates: 'mc-templates',
+
+  /**
+   * @description shared library of named AI-edit prompts (Transcribe tab)
+   * /subtitle-prompts                          GET:    list prompts
+   * /subtitle-prompts/{name}                   GET:    fetch one prompt
+   * /subtitle-prompts/{name}                   POST:   upsert prompt body
+   * /subtitle-prompts/{name}                   DELETE: drop a prompt
+   */
+  SubtitlePrompts: 'subtitle-prompts',
 };

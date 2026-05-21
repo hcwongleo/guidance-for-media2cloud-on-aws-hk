@@ -378,10 +378,10 @@ Resources:
                             Bool:
                                 aws:SecureTransport: false
                     -
-                        Sid: AllowPublishCloudFrontReadPublishPrefix
+                        Sid: AllowPublishCloudFrontReadOutputPrefix
                         Effect: Allow
                         Action: s3:GetObject
-                        Resource: !Sub ${ProxyBucket.Arn}/*/publish/*
+                        Resource: !Sub ${ProxyBucket.Arn}/*/output/*
                         Principal:
                             Service: cloudfront.amazonaws.com
                         Condition:
@@ -1117,10 +1117,10 @@ Resources:
 
     ################################################################################
     #
-    # CloudFront Distribution (Publish VOD)
-    # * Dedicated distribution for publish outputs in the ProxyBucket
+    # CloudFront Distribution (Output VOD)
+    # * Dedicated distribution for render outputs in the ProxyBucket
     # * Mirrors the VOD Foundation pattern exactly: private S3 + OAC + managed
-    #   CachingOptimized policy. Only paths matching */publish/* are exposed.
+    #   CachingOptimized policy. Only paths matching */output/* are exposed.
     #
     ################################################################################
     PublishOAC:
@@ -1143,7 +1143,7 @@ Resources:
                         reason: Will revisit to enable MinimumProtocolVersion to TLS1.2
         Properties:
             DistributionConfig:
-                Comment: !Sub ${AWS::StackName} Publish VOD distribution
+                Comment: !Sub ${AWS::StackName} Output VOD distribution (renders + logo overlays)
                 Origins:
                     -
                         Id: !Sub S3-${ProxyBucket}-publish

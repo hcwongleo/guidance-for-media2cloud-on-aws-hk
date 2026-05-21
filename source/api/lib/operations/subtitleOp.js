@@ -52,9 +52,6 @@ class SubtitleOp extends BaseOp {
     if (subOp === 'srt' || subOp === '') {
       return super.onGET(await this._getSrt(uuid));
     }
-    if (subOp === 'prompt') {
-      return super.onGET(await this._getPrompt(uuid));
-    }
     if (subOp === 'ai-edit-status') {
       return super.onGET(await this._getAiEditStatus(uuid));
     }
@@ -68,9 +65,6 @@ class SubtitleOp extends BaseOp {
     }
     if (subOp === 'ai-edit') {
       return super.onPOST(await this._aiEditSubtitle(uuid));
-    }
-    if (subOp === 'prompt') {
-      return super.onPOST(await this._savePrompt(uuid));
     }
     if (subOp === 'save-srt') {
       return super.onPOST(await this._saveSrt(uuid));
@@ -227,32 +221,6 @@ class SubtitleOp extends BaseOp {
     ]);
 
     return this._generateSrt(uuid);
-  }
-
-  async _savePrompt(uuid) {
-    const body = this.request.body || {};
-    const { prompt } = body;
-    if (!prompt) {
-      throw new M2CException('prompt is required');
-    }
-    const key = `${uuid}/${SUBTITLE_PREFIX}/prompt.json`;
-    await CommonUtils.uploadFile(
-      ProxyBucket,
-      PATH.dirname(key),
-      PATH.basename(key),
-      Buffer.from(JSON.stringify({ prompt, updatedAt: Date.now() }), 'utf8')
-    );
-    return { uuid, prompt };
-  }
-
-  async _getPrompt(uuid) {
-    const key = `${uuid}/${SUBTITLE_PREFIX}/prompt.json`;
-    const exists = await CommonUtils.headObject(ProxyBucket, key).catch(() => undefined);
-    if (!exists) {
-      return { uuid, prompt: DEFAULT_PROMPT, isDefault: true };
-    }
-    const data = JSON.parse((await CommonUtils.download(ProxyBucket, key)).toString('utf8'));
-    return { uuid, prompt: data.prompt, isDefault: false };
   }
 
   async _aiEditSubtitle(uuid) {

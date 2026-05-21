@@ -12,6 +12,7 @@ const BaseOp = require('./baseOp');
 const REGION = process.env.ENV_BEDROCK_REGION;
 const PROVIDER_WHITELIST = [
   'Amazon',
+  'Anthropic',
   'DeepSeek',
   'MiniMax',
   'Moonshot AI',
@@ -103,6 +104,16 @@ function _group(models) {
       name: m.modelName,
       modalities: m.inputModalities,
     });
+  }
+  // ListFoundationModels has no published-date field, so within each provider
+  // we sort by modelName alphanumerically. Providers themselves are sorted A-Z
+  // by the picker UI when it renders optgroups.
+  const cmp = new Intl.Collator(undefined, {
+    numeric: true,
+    sensitivity: 'base',
+  }).compare;
+  for (const provider of Object.keys(out)) {
+    out[provider].sort((a, b) => cmp(String(a.name), String(b.name)));
   }
   return { providers: out };
 }

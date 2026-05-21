@@ -39,12 +39,14 @@ const ENDPOINTS = {
   Custom: `${ApiEndpoint}/${ApiOps.Custom}`,
   Models: `${ApiEndpoint}/models`,
   Subtitle: `${ApiEndpoint}/subtitle`,
-  Publish: `${ApiEndpoint}/publish`,
+  Output: `${ApiEndpoint}/output`,
   Workflow: `${ApiEndpoint}/${ApiOps.Execution}`,
   Highlights: `${ApiEndpoint}/${ApiOps.Highlights}`,
   HighlightSettings: `${ApiEndpoint}/${ApiOps.HighlightSettings}`,
   Edits: `${ApiEndpoint}/${ApiOps.Edits}`,
   Renders: `${ApiEndpoint}/${ApiOps.Renders}`,
+  McTemplates: `${ApiEndpoint}/mc-templates`,
+  SubtitlePrompts: `${ApiEndpoint}/subtitle-prompts`,
 };
 
 let GRAPH_ENDPOINT;
@@ -538,19 +540,34 @@ export default class ApiHelper {
     );
   }
 
-  static async getSubtitlePrompt(uuid) {
+  // Shared AI-edit prompt library (used by Settings + Transcribe)
+  static async listSubtitlePrompts() {
     return _authHttpRequest.send(
       'GET',
-      `${ENDPOINTS.Subtitle}/${uuid}/prompt`
+      ENDPOINTS.SubtitlePrompts
     );
   }
 
-  static async saveSubtitlePrompt(uuid, prompt) {
+  static async getSubtitlePrompt(name) {
+    return _authHttpRequest.send(
+      'GET',
+      `${ENDPOINTS.SubtitlePrompts}/${encodeURIComponent(name)}`
+    );
+  }
+
+  static async saveSubtitlePrompt(name, prompt) {
     return _authHttpRequest.send(
       'POST',
-      `${ENDPOINTS.Subtitle}/${uuid}/prompt`,
+      `${ENDPOINTS.SubtitlePrompts}/${encodeURIComponent(name)}`,
       undefined,
       { prompt }
+    );
+  }
+
+  static async deleteSubtitlePrompt(name) {
+    return _authHttpRequest.send(
+      'DELETE',
+      `${ENDPOINTS.SubtitlePrompts}/${encodeURIComponent(name)}`
     );
   }
 
@@ -577,89 +594,22 @@ export default class ApiHelper {
     );
   }
 
-  // Publish (Sub-Project D)
-  static async getPublishStatus(uuid) {
-    return _authHttpRequest.send(
-      'GET',
-      `${ENDPOINTS.Publish}/${uuid}/status`
-    );
-  }
-
-  static async getPublishSettings(uuid) {
-    return _authHttpRequest.send(
-      'GET',
-      `${ENDPOINTS.Publish}/${uuid}/settings`
-    );
-  }
-
-  static async savePublishSettings(uuid, settings) {
+  // Output tab (Sub-Project D)
+  // Settings live on the EditProject row, lifecycle on /renders. The only
+  // /output route is logo upload presigning.
+  static async presignLogoUpload(uuid, payload) {
     return _authHttpRequest.send(
       'POST',
-      `${ENDPOINTS.Publish}/${uuid}/settings`,
+      `${ENDPOINTS.Output}/${uuid}/logo`,
       undefined,
-      settings
+      payload || {}
     );
   }
 
-  static async startPublish(uuid, settings) {
-    return _authHttpRequest.send(
-      'POST',
-      `${ENDPOINTS.Publish}/${uuid}/start`,
-      undefined,
-      settings || {}
-    );
-  }
-
-  static async getPublishLogoUploadUrl(uuid, size, ext) {
-    return _authHttpRequest.send(
-      'POST',
-      `${ENDPOINTS.Publish}/${uuid}/logo`,
-      undefined,
-      { size, ext }
-    );
-  }
-
-  static async getPublishOutputs(uuid) {
-    return _authHttpRequest.send(
-      'GET',
-      `${ENDPOINTS.Publish}/${uuid}/outputs`
-    );
-  }
-
-  static async listPublishTemplates() {
-    return _authHttpRequest.send(
-      'GET',
-      `${ENDPOINTS.Publish}/templates`
-    );
-  }
-
-  static async getPublishTemplate(name) {
-    return _authHttpRequest.send(
-      'GET',
-      `${ENDPOINTS.Publish}/templates/${encodeURIComponent(name)}`
-    );
-  }
-
-  static async savePublishTemplate(name, content) {
-    return _authHttpRequest.send(
-      'POST',
-      `${ENDPOINTS.Publish}/templates/${encodeURIComponent(name)}`,
-      undefined,
-      { content }
-    );
-  }
-
-  static async deletePublishOutput(uuid, outputId) {
+  static async deleteLogo(uuid, size) {
     return _authHttpRequest.send(
       'DELETE',
-      `${ENDPOINTS.Publish}/${uuid}/outputs/${encodeURIComponent(outputId)}`
-    );
-  }
-
-  static async deletePublishTemplate(name) {
-    return _authHttpRequest.send(
-      'DELETE',
-      `${ENDPOINTS.Publish}/templates/${encodeURIComponent(name)}`
+      `${ENDPOINTS.Output}/${uuid}/logo/${encodeURIComponent(size)}`
     );
   }
 
@@ -763,11 +713,23 @@ export default class ApiHelper {
     );
   }
 
-  static async listRenders(editProjectId) {
+  // Pass either { editProjectId } or { uuid } to scope the listing. Listing by
+  // uuid fans out across all edit projects for an asset (OutputTab full vs
+  // highlight-set-as-edit-project both create separate rows but share an
+  // asset uuid).
+  static async listRenders(query) {
+    let q;
+    if (typeof query === 'string') {
+      q = { editProjectId: query };
+    } else if (query && typeof query === 'object') {
+      q = { ...query };
+    } else {
+      q = {};
+    }
     return _authHttpRequest.send(
       'GET',
       ENDPOINTS.Renders,
-      { editProjectId }
+      q
     );
   }
 
@@ -775,6 +737,37 @@ export default class ApiHelper {
     return _authHttpRequest.send(
       'DELETE',
       `${ENDPOINTS.Renders}/${renderId}`
+    );
+  }
+
+  // Shared MediaConvert templates (used by both Publish and Render)
+  static async listMcTemplates() {
+    return _authHttpRequest.send(
+      'GET',
+      ENDPOINTS.McTemplates
+    );
+  }
+
+  static async getMcTemplate(name) {
+    return _authHttpRequest.send(
+      'GET',
+      `${ENDPOINTS.McTemplates}/${encodeURIComponent(name)}`
+    );
+  }
+
+  static async saveMcTemplate(name, content) {
+    return _authHttpRequest.send(
+      'POST',
+      `${ENDPOINTS.McTemplates}/${encodeURIComponent(name)}`,
+      undefined,
+      { content }
+    );
+  }
+
+  static async deleteMcTemplate(name) {
+    return _authHttpRequest.send(
+      'DELETE',
+      `${ENDPOINTS.McTemplates}/${encodeURIComponent(name)}`
     );
   }
 }

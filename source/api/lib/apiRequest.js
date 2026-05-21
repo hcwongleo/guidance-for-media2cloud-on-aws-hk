@@ -21,11 +21,13 @@ const GenAIOp = require('./operations/genaiOp');
 const ModelsOp = require('./operations/modelsOp');
 const FaceIndexerOp = require('./operations/faceIndexerOp');
 const SubtitleOp = require('./operations/subtitleOp');
-const PublishOp = require('./operations/publishOp');
+const OutputOp = require('./operations/outputOp');
 const HighlightOp = require('./operations/highlightOp');
 const HighlightSettingsOp = require('./operations/highlightSettingsOp');
 const EditsOp = require('./operations/editsOp');
 const RendersOp = require('./operations/rendersOp');
+const McTemplatesOp = require('./operations/mcTemplatesOp');
+const SubtitlePromptsOp = require('./operations/subtitlePromptsOp');
 
 const OP_REKOGNITION = 'rekognition';
 const OP_TRANSCRIBE = 'transcribe';
@@ -34,7 +36,7 @@ const OP_SETTINGS = ApiOps.AIOptionsSettings.split('/')[0];
 const OP_GENAI = 'genai';
 const OP_MODELS = 'models';
 const OP_SUBTITLE = 'subtitle';
-const OP_PUBLISH = 'publish';
+const OP_OUTPUT = 'output';
 
 class ApiRequest {
   constructor(event, context) {
@@ -149,8 +151,8 @@ class ApiRequest {
     if (op === OP_SUBTITLE) {
       return new SubtitleOp(this);
     }
-    if (op === OP_PUBLISH) {
-      return new PublishOp(this);
+    if (op === OP_OUTPUT) {
+      return new OutputOp(this);
     }
     if (op === ApiOps.FaceIndexer) {
       return new FaceIndexerOp(this);
@@ -166,6 +168,12 @@ class ApiRequest {
     }
     if (op === ApiOps.Renders) {
       return new RendersOp(this);
+    }
+    if (op === 'mc-templates' || op === ApiOps.McTemplates) {
+      return new McTemplatesOp(this);
+    }
+    if (op === 'subtitle-prompts' || op === ApiOps.SubtitlePrompts) {
+      return new SubtitlePromptsOp(this);
     }
     throw new M2CException(`operation '${(this.pathParameters || {}).operation}' not supported`);
   }

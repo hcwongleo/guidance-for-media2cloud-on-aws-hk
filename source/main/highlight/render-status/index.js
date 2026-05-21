@@ -123,7 +123,7 @@ exports.handler = async (event) => {
   const job = (res || {}).Job || {};
 
   const phase = job.Status || 'UNKNOWN';
-  const percent = Number(job.JobPercentComplete || 0);
+  let percent = Number(job.JobPercentComplete || 0);
   const errorMessage = job.ErrorMessage;
 
   let status = 'progressing';
@@ -131,6 +131,8 @@ exports.handler = async (event) => {
   if (TERMINAL_OK.has(phase)) {
     status = 'completed';
     isDone = true;
+    // MediaConvert sometimes leaves JobPercentComplete at 0 on COMPLETE.
+    percent = 100;
   } else if (TERMINAL_ERR.has(phase)) {
     status = 'error';
     isDone = true;

@@ -231,11 +231,20 @@ export default class TranscribeTab extends mxAlert(BaseAnalysisTab) {
       .html('Prompt');
     editForm.append(promptLabel);
 
+    const promptSelect = $('<select/>')
+      .addClass('custom-select custom-select-sm mb-2');
+    editForm.append(promptSelect);
+
     const promptInput = $('<textarea/>')
       .addClass('form-control form-control-sm')
-      .attr('rows', 4)
+      .attr('rows', 6)
       .val(DEFAULT_AI_PROMPT);
     editForm.append(promptInput);
+
+    const promptHint = $('<div/>')
+      .addClass('lead-xxs text-muted mt-1')
+      .html('Edits here are one-shot. Manage the library under Settings &rarr; Subtitle AI-edit prompts.');
+    editForm.append(promptHint);
 
     const runBtn = $('<button/>')
       .addClass('btn btn-sm btn-success mt-2')
@@ -393,15 +402,21 @@ export default class TranscribeTab extends mxAlert(BaseAnalysisTab) {
     };
 
     const setCues = (cues, { dirty = false, keepAi = false } = {}) => {
+      let anyAi = false;
       state.cues = (cues || []).map((c, i) => {
         const out = { start: c.start, end: c.end, text: c.text || '' };
-        if (keepAi && state.cues[i] && state.cues[i].aiText) {
+        // Carry aiText from the input first (e.g. merged from a draft),
+        // then fall back to keepAi which preserves prior in-memory state.
+        if (c && c.aiText) {
+          out.aiText = c.aiText;
+        } else if (keepAi && state.cues[i] && state.cues[i].aiText) {
           out.aiText = state.cues[i].aiText;
         }
+        if (out.aiText) anyAi = true;
         return out;
       });
       state.dirty = dirty;
-      if (!keepAi) state.hasAi = false;
+      state.hasAi = anyAi;
       renderCues();
     };
 
@@ -443,8 +458,6 @@ export default class TranscribeTab extends mxAlert(BaseAnalysisTab) {
             return out;
           });
           setCues(merged, { dirty: mergedCount > 0, keepAi: false });
-          state.hasAi = aiCount > 0;
-          renderCues();
           if (this.previewComponent && this.previewComponent.setSubtitleVttKey) {
             await this.previewComponent.setSubtitleVttKey(res.vttKey);
           }
@@ -452,6 +465,30 @@ export default class TranscribeTab extends mxAlert(BaseAnalysisTab) {
           if (mergedCount > 0) parts.push(`restored ${mergedCount} unsaved`);
           if (aiCount > 0) parts.push(`${aiCount} AI drafts`);
           status.html(parts.join(' · '));
+
+          // Resume AI job from server (status doc is the source of truth across refresh)
+          try {
+            const ai = await ApiHelper.getAiEditStatus(uuid);
+            if (ai && ai.status === 'processing') {
+              status.removeClass('text-danger text-success').addClass('text-muted')
+                .html('Resuming AI edit in progress...');
+              const polled = await pollAiEditStatus(uuid);
+              if (polled && Array.isArray(polled.cues)) {
+                applyAiCues(polled.cues);
+                status.removeClass('text-muted text-danger').addClass('text-success')
+                  .html(`AI suggestions ready (${polled.cues.length} cues) — review and Apply`);
+              }
+            } else if (ai && ai.status === 'completed' && Array.isArray(ai.cues)) {
+              // Server is the source of truth for completed jobs — re-apply
+              // even if a stale draft already populated some aiText cells.
+              applyAiCues(ai.cues);
+              status.removeClass('text-muted text-danger').addClass('text-success')
+                .html(`AI suggestions ready (${ai.cues.length} cues) — review and Apply`);
+            }
+          } catch (e) {
+            // status check is best-effort; don't surface failure to the user
+            console.error('ai-edit-status check failed', e);
+          }
         } else {
           status.html('No subtitles available');
         }
@@ -615,7 +652,7 @@ export default class TranscribeTab extends mxAlert(BaseAnalysisTab) {
         try {
           const models = await ApiHelper.getModels();
           const providers = (models || {}).providers || {};
-          Object.keys(providers).forEach((provider) => {
+          Object.keys(providers).sort().forEach((provider) => {
             const group = $('<optgroup/>').attr('label', provider);
             providers[provider].forEach((m) => {
               const opt = $('<option/>').attr('value', m.id).text(m.name);
@@ -626,6 +663,34 @@ export default class TranscribeTab extends mxAlert(BaseAnalysisTab) {
         } catch (e) {
           console.error(e);
         }
+      }
+
+      if (isHidden && promptSelect.children().length === 0) {
+        try {
+          const res = await ApiHelper.listSubtitlePrompts();
+          const prompts = (res && res.prompts) || [];
+          prompts.forEach((p) => {
+            promptSelect.append($('<option/>').attr('value', p.name).text(p.name));
+          });
+          const initial = prompts.find((p) => p.name === 'default') || prompts[0];
+          if (initial) {
+            promptSelect.val(initial.name);
+            promptInput.val(initial.prompt);
+          }
+        } catch (e) {
+          console.error(e);
+        }
+      }
+    });
+
+    promptSelect.on('change', async () => {
+      const name = promptSelect.val();
+      if (!name) return;
+      try {
+        const res = await ApiHelper.getSubtitlePrompt(name);
+        promptInput.val((res && res.prompt) || '');
+      } catch (e) {
+        console.error(e);
       }
     });
 

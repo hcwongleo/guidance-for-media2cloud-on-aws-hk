@@ -100,6 +100,9 @@ Parameters:
     ServiceDataAccessRoleArn:
         Type: String
         Description: ARN of the MediaConvert service role (passed to CreateJob via iam:PassRole)
+    PublishCloudFrontDistributionDomainName:
+        Type: String
+        Description: CloudFront distribution domain that fronts ProxyBucket /*/output/* — used by compose-edl to convert s3:// logo URIs to HTTPS for SMART_CROP+ImageInserter compatibility
 
 Resources:
     ################################################################################
@@ -462,9 +465,12 @@ Resources:
                     ENV_SOLUTION_UUID: !Ref SolutionUuid
                     ENV_SOLUTION_ID: !Ref SolutionId
                     ENV_RESOURCE_PREFIX: !Ref ResourcePrefix
-                    # Bedrock is fronted from us-west-2 in this deployment;
-                    # see CLAUDE.md memory `m2c-deployment-region`.
-                    ENV_BEDROCK_REGION: us-west-2
+                    # Bedrock calls are issued in the same region as the
+                    # stack. This solution targets us-west-2 today; if a
+                    # future deploy lands in a region without all required
+                    # model IDs, plumb a BedrockRegion parameter through
+                    # the parent stack instead of hardcoding here.
+                    ENV_BEDROCK_REGION: !Ref AWS::Region
                     ENV_PROXY_BUCKET: !Ref ProxyBucket
                     ENV_HIGHLIGHT_SETS_TABLE: !Ref HighlightSetsTable
                     ENV_IOT_HOST: !Ref IotHost
@@ -670,6 +676,13 @@ Resources:
                             -
                                 Effect: Allow
                                 Action:
+                                    - s3:PutObject
+                                Resource:
+                                    - !Sub arn:aws:s3:::${ProxyBucket}/*/output/*/captions.srt
+                                    - !Sub arn:aws:s3:::${ProxyBucket}/*/output/*/captions-*.srt
+                            -
+                                Effect: Allow
+                                Action:
                                     - dynamodb:GetItem
                                 Resource:
                                     - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${IngestTable}
@@ -733,6 +746,7 @@ Resources:
                     ENV_EDIT_PROJECTS_TABLE: !Ref EditProjectsTable
                     ENV_RENDERS_TABLE: !Ref RendersTable
                     ENV_DATA_ACCESS_ROLE: !Ref ServiceDataAccessRoleArn
+                    ENV_PUBLISH_CLOUDFRONT_DOMAIN: !Ref PublishCloudFrontDistributionDomainName
 
     ################################################################################
     #

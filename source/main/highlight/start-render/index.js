@@ -89,7 +89,7 @@ exports.handler = async (event) => {
     mediaConvertParams,
     publishToLibrary,
     aspectRatio,
-    burnCaptions,
+    burnSubtitles,
     destinationPrefix,
   } = event;
 
@@ -158,7 +158,7 @@ exports.handler = async (event) => {
     mediaConvertJobId,
     publishToLibrary: !!publishToLibrary,
     aspectRatio,
-    burnCaptions: !!burnCaptions,
+    burnSubtitles: !!burnSubtitles,
     destinationPrefix,
   };
 };

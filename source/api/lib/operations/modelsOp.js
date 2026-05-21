@@ -12,6 +12,7 @@ const BaseOp = require('./baseOp');
 const REGION = process.env.ENV_BEDROCK_REGION;
 const PROVIDER_WHITELIST = [
   'Amazon',
+  'Anthropic',
   'DeepSeek',
   'MiniMax',
   'Moonshot AI',

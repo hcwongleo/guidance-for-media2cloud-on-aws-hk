@@ -11,6 +11,7 @@ const {
 const {
   S3Client,
   PutObjectCommand,
+  DeleteObjectsCommand,
 } = require('@aws-sdk/client-s3');
 const {
   getSignedUrl: presignerGetSignedUrl,
@@ -136,8 +137,11 @@ class PublishOp extends BaseOp {
     const status = await _readStatus(uuid);
 
     // Delete every object under {uuid}/publish/{outputId}/ — handles HLS
-    // master/variants/segments and the MP4 group together.
+    // master/variants/segments and the MP4 group together. HLS outputs can
+    // have hundreds of segments; serial deleteObject blows the Lambda timeout,
+    // so batch via DeleteObjectsCommand (1000 keys per call).
     const prefix = `${uuid}/${PUBLISH_PREFIX}/${outputId}/`;
+    const s3 = new S3Client({});
     let deleted = 0;
     let token;
     do {
@@ -145,13 +149,19 @@ class PublishOp extends BaseOp {
         ContinuationToken: token,
       });
       const contents = (page && page.Contents) || [];
-      for (const obj of contents) {
-        if (!obj || !obj.Key) continue;
-        try {
-          await CommonUtils.deleteObject(ProxyBucket, obj.Key);
-          deleted += 1;
-        } catch (e) {
-          console.error(`deleteObject ${obj.Key} failed:`, e.message);
+      const objects = contents
+        .filter((o) => o && o.Key)
+        .map((o) => ({ Key: o.Key }));
+      if (objects.length > 0) {
+        const res = await s3.send(new DeleteObjectsCommand({
+          Bucket: ProxyBucket,
+          Delete: { Objects: objects, Quiet: true },
+        }));
+        deleted += objects.length - ((res && res.Errors) || []).length;
+        if (res && Array.isArray(res.Errors)) {
+          for (const err of res.Errors) {
+            console.error(`DeleteObjects ${err.Key}: ${err.Code} ${err.Message}`);
+          }
         }
       }
       token = (page && page.IsTruncated) ? page.NextContinuationToken : undefined;

@@ -452,6 +452,28 @@ export default class TranscribeTab extends mxAlert(BaseAnalysisTab) {
           if (mergedCount > 0) parts.push(`restored ${mergedCount} unsaved`);
           if (aiCount > 0) parts.push(`${aiCount} AI drafts`);
           status.html(parts.join(' · '));
+
+          // Resume AI job from server (status doc is the source of truth across refresh)
+          try {
+            const ai = await ApiHelper.getAiEditStatus(uuid);
+            if (ai && ai.status === 'processing') {
+              status.removeClass('text-danger text-success').addClass('text-muted')
+                .html('Resuming AI edit in progress...');
+              const polled = await pollAiEditStatus(uuid);
+              if (polled && Array.isArray(polled.cues)) {
+                applyAiCues(polled.cues);
+                status.removeClass('text-muted text-danger').addClass('text-success')
+                  .html(`AI suggestions ready (${polled.cues.length} cues) — review and Apply`);
+              }
+            } else if (ai && ai.status === 'completed' && Array.isArray(ai.cues) && !state.hasAi) {
+              applyAiCues(ai.cues);
+              status.removeClass('text-muted text-danger').addClass('text-success')
+                .html(`AI suggestions ready (${ai.cues.length} cues) — review and Apply`);
+            }
+          } catch (e) {
+            // status check is best-effort; don't surface failure to the user
+            console.error('ai-edit-status check failed', e);
+          }
         } else {
           status.html('No subtitles available');
         }

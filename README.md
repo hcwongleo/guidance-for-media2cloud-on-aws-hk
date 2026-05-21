@@ -261,6 +261,8 @@ __
 
 ## Building Media2Cloud V4 on your environment
 
+> **Supported region.** This fork is validated and deployed in **`us-west-2`** only. The Bedrock model IDs, Elemental Inference features (SMART_CROP, MediaConvert image-inserter HTTPS), and Cognito-hosted UI URLs all assume `us-west-2`. To deploy in another region, update the artefact bucket region below, set `--region` accordingly in every `aws` and `bash deploy-s3-dist.sh` invocation, and confirm the chosen Bedrock model IDs are GA in your target region. The CFN template now passes `AWS::Region` into Lambdas, so a region change is a one-line readiness check, not a code change.
+
 #### _Prerequisites_
 Make sure you have the following tools installed on your environment:
 - [NodeJS 20.x](https://nodejs.org/en/download/current/)
@@ -276,7 +278,7 @@ Skip this step if you already have a S3 bucket that you plan to use.
 
 ```sh
 
-aws s3api create-bucket --bucket yourname-artefact-bucket --region us-east-1
+aws s3api create-bucket --bucket yourname-artefact-bucket --region us-west-2 --create-bucket-configuration LocationConstraint=us-west-2
 
 ```
 

@@ -13,48 +13,29 @@ const {
   },
 } = Localization;
 
-const BUILTIN_TEMPLATES = [
-  { value: 'vod_landscape', label: 'Landscape 16:9 (built-in)' },
-  { value: 'vod_portrait', label: 'Portrait 9:16 (built-in)' },
+const ORIENTATIONS = [
+  { value: 'landscape', label: 'Landscape (16:9, 1920×1080)' },
+  { value: 'portrait', label: 'Portrait (9:16, 1080×1920)' },
 ];
-
-const FONT_SCRIPTS = [
-  { value: 'HANT', label: 'Traditional Chinese (HANT)' },
-  { value: 'HANS', label: 'Simplified Chinese (HANS)' },
-  { value: 'JPAN', label: 'Japanese (JPAN)' },
-  { value: 'KORE', label: 'Korean (KORE)' },
-  { value: 'AUTO', label: 'Auto-detect' },
-];
-
-const LOGO_SIZES = ['48', '64', '96', '128', '192'];
 
 const POLL_MS = 5000;
-const MAX_POLLS = 720; // up to 1 hour
+const MAX_POLLS = 720;
 
 export default class PublishTab extends mxAlert(BaseAnalysisTab) {
   constructor(previewComponent) {
     super(TITLE, previewComponent);
     Spinner.useSpinner();
-    this.$state = {
-      settings: null,
-      logos: {},
-      polling: false,
-    };
+    this.$state = { polling: false };
   }
 
   async createContent() {
-    const container = $('<div/>')
-      .addClass('col-11 my-4 max-h36r');
-
+    const container = $('<div/>').addClass('col-11 my-4 max-h36r');
     container.append(this.createIntro());
-    container.append(this.createTemplateSection());
-    container.append(this.createLogoSection());
+    container.append(this.createOrientationSection());
     container.append(this.createControls());
     container.append(this.createStatusSection());
     container.append(this.createOutputSection());
-
     container.ready(() => this.loadSettings());
-
     return container;
   }
 
@@ -62,289 +43,57 @@ export default class PublishTab extends mxAlert(BaseAnalysisTab) {
     const wrap = $('<div/>').addClass('mb-3');
     wrap.append($('<p/>').addClass('lead mb-1').html('Publish'));
     wrap.append($('<p/>').addClass('lead-xs text-muted mb-0').html(
-      'Produces an HLS adaptive bitrate stream and a 1080p MP4 with the latest subtitle SRT burned in. '
-      + 'Logo overlay is optional. Run this after reviewing the transcript and (optionally) editing the SRT.'
+      'Generates landscape and/or portrait 1080p MP4s from the source video. '
+      + 'Subtitle burn-in and logo overlay are out of scope here — download the SRT '
+      + 'from the Transcribe tab and the MP4 below, then hand both off to your editor.'
     ));
     return wrap;
   }
 
-  createTemplateSection() {
+  createOrientationSection() {
     const section = $('<div/>').addClass('form-group px-0 mt-3 mb-3');
-    section.append($('<p/>').addClass('lead-s mb-2').html('1. Output template'));
+    section.append($('<p/>').addClass('lead-s mb-2').html('Orientations'));
 
-    const row = $('<div/>').addClass('d-flex flex-wrap align-items-center');
-    const templateSelect = $('<select/>').addClass('custom-select custom-select-sm w-auto mr-2 mb-1').attr('data-role', 'template');
-    BUILTIN_TEMPLATES.forEach((t) => {
-      templateSelect.append($('<option/>').attr('value', t.value).text(t.label));
+    const row = $('<div/>').addClass('d-flex flex-wrap');
+    ORIENTATIONS.forEach((o) => {
+      const cell = $('<div/>').addClass('custom-control custom-checkbox mr-4 mb-1');
+      const id = `publish-orient-${o.value}`;
+      cell.append($('<input/>')
+        .attr('type', 'checkbox')
+        .attr('id', id)
+        .attr('data-role', 'orientation')
+        .attr('data-value', o.value)
+        .addClass('custom-control-input')
+        .prop('checked', true));
+      cell.append($('<label/>')
+        .addClass('custom-control-label')
+        .attr('for', id)
+        .text(o.label));
+      row.append(cell);
     });
-    row.append(templateSelect);
-
-    const downloadBtn = $('<button/>').attr('type', 'button')
-      .addClass('btn btn-sm btn-outline-secondary mr-1 mb-1')
-      .attr('data-role', 'tmpl-download').html('Download');
-    const uploadBtn = $('<button/>').attr('type', 'button')
-      .addClass('btn btn-sm btn-outline-secondary mr-1 mb-1')
-      .attr('data-role', 'tmpl-upload').html('Upload override');
-    const newBtn = $('<button/>').attr('type', 'button')
-      .addClass('btn btn-sm btn-outline-secondary mr-1 mb-1')
-      .attr('data-role', 'tmpl-new').html('Upload as new');
-    const deleteBtn = $('<button/>').attr('type', 'button')
-      .addClass('btn btn-sm btn-outline-danger mr-2 mb-1')
-      .attr('data-role', 'tmpl-delete').html('Delete custom');
-    const refreshBtn = $('<button/>').attr('type', 'button')
-      .addClass('btn btn-sm btn-link mb-1')
-      .attr('data-role', 'tmpl-refresh').html('Refresh list');
-    row.append(downloadBtn).append(uploadBtn).append(newBtn).append(deleteBtn).append(refreshBtn);
-
-    const hiddenFile = $('<input/>').attr('type', 'file').attr('accept', 'application/json,.json')
-      .css('display', 'none').attr('data-role', 'tmpl-file');
-    row.append(hiddenFile);
-
-    const status = $('<span/>').addClass('lead-xs text-muted ml-2 mb-1').attr('data-role', 'tmpl-status');
-    row.append(status);
-
     section.append(row);
-
-    downloadBtn.on('click', () => this.downloadTemplate());
-    uploadBtn.on('click', () => {
-      hiddenFile.data('mode', 'override');
-      hiddenFile.trigger('click');
-    });
-    newBtn.on('click', () => {
-      // Pick the file first; prompt for the name on change. window.prompt()
-      // before .click() breaks the user-gesture chain so Chrome silently
-      // refuses to open the file picker.
-      hiddenFile.data('mode', 'new');
-      hiddenFile.removeData('newName');
-      hiddenFile.trigger('click');
-    });
-    deleteBtn.on('click', () => this.deleteSelectedTemplate());
-    refreshBtn.on('click', () => this.refreshTemplateList());
-    hiddenFile.on('change', () => {
-      const file = hiddenFile[0].files[0];
-      const mode = hiddenFile.data('mode');
-      hiddenFile.val('');
-      let newName;
-      if (mode === 'new' && file) {
-        newName = (file.name || '').replace(/\.json$/i, '').replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 64);
-        if (!/^[A-Za-z0-9_-]{1,64}$/.test(newName)) {
-          this.setTemplateStatus('Filename must yield A-Z, a-z, 0-9, _, - (max 64 chars).', 'err');
-          return;
-        }
-      }
-      this.uploadTemplateFile(file, mode, newName).catch((e) => {
-        console.error(e);
-        this.setTemplateStatus(`Upload failed: ${e.message}`, 'err');
-      });
-    });
-
-    const fontLabel = $('<label/>').addClass('lead-xs mb-1 mt-3 d-block').html('Subtitle font script');
-    section.append(fontLabel);
-
-    const fontSelect = $('<select/>').addClass('custom-select custom-select-sm w-auto').attr('data-role', 'fontScript');
-    FONT_SCRIPTS.forEach((f) => {
-      fontSelect.append($('<option/>').attr('value', f.value).text(f.label));
-    });
-    section.append(fontSelect);
-
-    return section;
-  }
-
-  setTemplateStatus(text, kind) {
-    const el = this.$root().find('[data-role="tmpl-status"]');
-    el.removeClass('text-muted text-success text-danger');
-    if (kind === 'ok') el.addClass('text-success');
-    else if (kind === 'err') el.addClass('text-danger');
-    else el.addClass('text-muted');
-    el.html(text || '');
-  }
-
-  async refreshTemplateList(preferredValue) {
-    try {
-      this.setTemplateStatus('Loading templates...');
-      const res = await ApiHelper.listPublishTemplates();
-      const templates = (res && res.templates) || [];
-      const root = this.$root();
-      const select = root.find('[data-role="template"]');
-      const current = preferredValue || select.val() || 'vod_landscape';
-      select.empty();
-      templates
-        .slice()
-        .sort((a, b) => a.name.localeCompare(b.name))
-        .forEach((t) => {
-          const tags = [];
-          if (t.builtin && t.custom) tags.push('built-in, overridden');
-          else if (t.builtin) tags.push('built-in');
-          else if (t.custom) tags.push('custom');
-          const label = `${t.name}${tags.length ? ` (${tags.join(', ')})` : ''}`;
-          select.append($('<option/>').attr('value', t.name).text(label));
-        });
-      // Restore selection if still present
-      if (templates.find((t) => t.name === current)) {
-        select.val(current);
-      }
-      this.setTemplateStatus(`${templates.length} template(s) available.`, 'ok');
-    } catch (e) {
-      console.error(e);
-      this.setTemplateStatus(`Error loading templates: ${e.message}`, 'err');
-    }
-  }
-
-  async downloadTemplate() {
-    const name = this.$root().find('[data-role="template"]').val();
-    if (!name) return;
-    try {
-      this.setTemplateStatus(`Downloading ${name}...`);
-      const res = await ApiHelper.getPublishTemplate(name);
-      const content = (res && res.content) || res;
-      const blob = new Blob([JSON.stringify(content, null, 2)], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${name}.json`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-      this.setTemplateStatus(`Downloaded ${name}.json`, 'ok');
-    } catch (e) {
-      console.error(e);
-      this.setTemplateStatus(`Download failed: ${e.message}`, 'err');
-    }
-  }
-
-  async uploadTemplateFile(file, mode, newName) {
-    if (!file) return;
-    const root = this.$root();
-    const targetName = mode === 'new'
-      ? newName
-      : root.find('[data-role="template"]').val();
-    if (!targetName) {
-      this.setTemplateStatus('No target template selected.', 'err');
-      return;
-    }
-    this.setTemplateStatus(`Reading ${file.name}...`);
-    const text = await file.text();
-    let parsed;
-    try {
-      parsed = JSON.parse(text);
-    } catch (e) {
-      this.setTemplateStatus(`Invalid JSON: ${e.message}`, 'err');
-      return;
-    }
-    if (!parsed || !Array.isArray(parsed.OutputGroups) || parsed.OutputGroups.length === 0) {
-      this.setTemplateStatus('Template must have an OutputGroups array.', 'err');
-      return;
-    }
-    this.setTemplateStatus(`Uploading ${targetName}...`);
-    await ApiHelper.savePublishTemplate(targetName, parsed);
-    this.setTemplateStatus(`Saved ${targetName}.`, 'ok');
-    await this.refreshTemplateList(targetName);
-  }
-
-  async deleteSelectedTemplate() {
-    const root = this.$root();
-    const name = root.find('[data-role="template"]').val();
-    if (!name) return;
-    if (!window.confirm(`Delete custom version of "${name}"? Built-in templates revert to the packaged default.`)) {
-      return;
-    }
-    try {
-      this.setTemplateStatus(`Deleting ${name}...`);
-      const res = await ApiHelper.deletePublishTemplate(name);
-      if (res && res.deleted) {
-        this.setTemplateStatus(`Deleted ${name}.`, 'ok');
-      } else {
-        this.setTemplateStatus(`No custom override for ${name}.`, 'ok');
-      }
-      await this.refreshTemplateList(BUILTIN_TEMPLATES.find((b) => b.value === name) ? name : 'vod_landscape');
-    } catch (e) {
-      console.error(e);
-      this.setTemplateStatus(`Delete failed: ${e.message}`, 'err');
-    }
-  }
-
-  createLogoSection() {
-    const section = $('<div/>').addClass('form-group px-0 mt-3 mb-3');
-    section.append($('<p/>').addClass('lead-s mb-1').html('2. Logo overlay (optional)'));
-    section.append($('<p/>').addClass('lead-xs text-muted mb-2').html(
-      'Upload PNG/JPG logos at one or more sizes. The renderer picks the largest logo that fits each output rendition.'
-    ));
-
-    const grid = $('<div/>').addClass('d-flex flex-wrap');
-    LOGO_SIZES.forEach((size) => {
-      const cell = $('<div/>')
-        .addClass('mr-3 mb-2 border rounded p-2')
-        .css({ width: '12rem' })
-        .attr('data-logo-size', size);
-
-      cell.append($('<div/>').addClass('lead-xs mb-1').html(`<strong>${size}px</strong> tall`));
-
-      const preview = $('<div/>')
-        .addClass('mb-1 d-flex align-items-center justify-content-center')
-        .css({ height: '3rem', background: '#f8f9fa' })
-        .attr('data-role', 'preview');
-      preview.append($('<span/>').addClass('text-muted lead-xxs').html('(no logo)'));
-      cell.append(preview);
-
-      const fileInput = $('<input/>')
-        .attr('type', 'file')
-        .attr('accept', 'image/png,image/jpeg')
-        .addClass('lead-xxs w-100')
-        .attr('data-role', 'file');
-      cell.append(fileInput);
-
-      const status = $('<div/>')
-        .addClass('lead-xxs text-muted mt-1')
-        .attr('data-role', 'status');
-      cell.append(status);
-
-      const clearBtn = $('<button/>')
-        .attr('type', 'button')
-        .addClass('btn btn-link btn-sm lead-xxs p-0 mt-1')
-        .css('display', 'none')
-        .attr('data-role', 'clear')
-        .html('Remove');
-      cell.append(clearBtn);
-
-      fileInput.on('change', () => this.uploadLogo(size, fileInput[0].files[0], cell));
-      clearBtn.on('click', () => this.clearLogo(size, cell));
-
-      grid.append(cell);
-    });
-    section.append(grid);
-
     return section;
   }
 
   createControls() {
     const wrap = $('<div/>').addClass('form-group px-0 mt-3 mb-3 d-flex flex-wrap align-items-center');
 
-    const saveBtn = $('<button/>')
-      .attr('type', 'button')
+    const saveBtn = $('<button/>').attr('type', 'button')
       .addClass('btn btn-sm btn-outline-primary mr-2 mb-1')
       .attr('data-role', 'save')
       .html('Save Settings');
-    wrap.append(saveBtn);
-
-    const publishBtn = $('<button/>')
-      .attr('type', 'button')
+    const publishBtn = $('<button/>').attr('type', 'button')
       .addClass('btn btn-sm btn-primary mr-2 mb-1')
       .attr('data-role', 'publish')
-      .html('Publish');
-    wrap.append(publishBtn);
-
-    const refreshBtn = $('<button/>')
-      .attr('type', 'button')
+      .html('Generate Bundle');
+    const refreshBtn = $('<button/>').attr('type', 'button')
       .addClass('btn btn-sm btn-outline-secondary mr-2 mb-1')
       .attr('data-role', 'refresh')
       .html('Refresh Status');
-    wrap.append(refreshBtn);
-
-    const status = $('<span/>')
-      .addClass('lead-xs text-muted ml-2 mb-1')
+    const status = $('<span/>').addClass('lead-xs text-muted ml-2 mb-1')
       .attr('data-role', 'controls-status');
-    wrap.append(status);
+
+    wrap.append(saveBtn).append(publishBtn).append(refreshBtn).append(status);
 
     saveBtn.on('click', () => this.saveSettings());
     publishBtn.on('click', () => this.startPublish());
@@ -375,8 +124,6 @@ export default class PublishTab extends mxAlert(BaseAnalysisTab) {
     return section;
   }
 
-  // ---------- helpers ----------
-
   $root() {
     return this.tabContent.find('.col-11');
   }
@@ -394,14 +141,10 @@ export default class PublishTab extends mxAlert(BaseAnalysisTab) {
     this.$root().find('[data-role="status-body"]').html(html);
   }
 
-  // ---------- settings ----------
-
   async loadSettings() {
     const uuid = this.media.uuid;
     try {
       this.setControlsStatus('Loading settings...');
-      // Refresh template list first so the dropdown shows custom templates before applying saved selection
-      await this.refreshTemplateList().catch(() => {});
       const res = await ApiHelper.getPublishSettings(uuid);
       this.applySettings(res || {});
       this.setControlsStatus(res && res.isDefault ? 'Defaults loaded.' : 'Settings loaded.', 'ok');
@@ -414,30 +157,33 @@ export default class PublishTab extends mxAlert(BaseAnalysisTab) {
 
   applySettings(s) {
     const root = this.$root();
-    root.find('[data-role="template"]').val(s.template || 'vod_landscape');
-    root.find('[data-role="fontScript"]').val(s.fontScript || 'HANT');
-
-    this.$state.logos = (s.logos && typeof s.logos === 'object') ? { ...s.logos } : {};
-    LOGO_SIZES.forEach((size) => {
-      const cell = root.find(`[data-logo-size="${size}"]`);
-      this.renderLogoCell(size, cell);
+    const enabled = Array.isArray(s.orientations) && s.orientations.length > 0
+      ? s.orientations
+      : ORIENTATIONS.map((o) => o.value);
+    root.find('[data-role="orientation"]').each(function () {
+      const v = $(this).attr('data-value');
+      $(this).prop('checked', enabled.includes(v));
     });
   }
 
   collectSettings() {
     const root = this.$root();
-    return {
-      template: root.find('[data-role="template"]').val(),
-      fontScript: root.find('[data-role="fontScript"]').val(),
-      logos: this.$state.logos || {},
-    };
+    const orientations = [];
+    root.find('[data-role="orientation"]').each(function () {
+      if ($(this).prop('checked')) orientations.push($(this).attr('data-value'));
+    });
+    return { orientations };
   }
 
   async saveSettings() {
     const uuid = this.media.uuid;
     try {
-      this.setControlsStatus('Saving...');
       const settings = this.collectSettings();
+      if (!settings.orientations.length) {
+        this.setControlsStatus('Pick at least one orientation.', 'err');
+        return;
+      }
+      this.setControlsStatus('Saving...');
       await ApiHelper.savePublishSettings(uuid, settings);
       this.setControlsStatus('Settings saved.', 'ok');
     } catch (e) {
@@ -446,78 +192,18 @@ export default class PublishTab extends mxAlert(BaseAnalysisTab) {
     }
   }
 
-  // ---------- logo upload ----------
-
-  renderLogoCell(size, cell) {
-    const preview = cell.find('[data-role="preview"]');
-    const clearBtn = cell.find('[data-role="clear"]');
-    const status = cell.find('[data-role="status"]');
-    const uri = (this.$state.logos || {})[size];
-
-    preview.empty();
-    if (uri) {
-      preview.append($('<span/>').addClass('lead-xxs text-success').html('✔ uploaded'));
-      clearBtn.css('display', '');
-      status.html(uri);
-    } else {
-      preview.append($('<span/>').addClass('text-muted lead-xxs').html('(no logo)'));
-      clearBtn.css('display', 'none');
-      status.html('');
-    }
-  }
-
-  async uploadLogo(size, file, cell) {
-    if (!file) return;
-    const uuid = this.media.uuid;
-    const status = cell.find('[data-role="status"]');
-    const fileInput = cell.find('[data-role="file"]');
-    const ext = (file.name.split('.').pop() || 'png').toLowerCase();
-    const validExt = ['png', 'jpg', 'jpeg'].includes(ext) ? ext : 'png';
-
-    try {
-      fileInput.prop('disabled', true);
-      status.removeClass('text-danger text-success').addClass('text-muted').html('Requesting upload URL...');
-      const presign = await ApiHelper.getPublishLogoUploadUrl(uuid, size, validExt);
-      if (!presign || !presign.url) throw new Error('no presign URL returned');
-
-      status.html('Uploading...');
-      const putRes = await fetch(presign.url, {
-        method: 'PUT',
-        headers: { 'Content-Type': presign.contentType || file.type || 'image/png' },
-        body: file,
-      });
-      if (!putRes.ok) throw new Error(`HTTP ${putRes.status}`);
-
-      this.$state.logos[size] = presign.s3uri;
-      this.renderLogoCell(size, cell);
-      status.removeClass('text-muted text-danger').addClass('text-success').html('Uploaded. Remember to Save Settings.');
-    } catch (e) {
-      console.error(e);
-      status.removeClass('text-muted text-success').addClass('text-danger').html(`Error: ${e.message}`);
-    } finally {
-      fileInput.prop('disabled', false);
-      fileInput.val('');
-    }
-  }
-
-  clearLogo(size, cell) {
-    if (!this.$state.logos) return;
-    delete this.$state.logos[size];
-    this.renderLogoCell(size, cell);
-    cell.find('[data-role="status"]').removeClass('text-success text-danger').addClass('text-muted')
-      .html('Removed. Remember to Save Settings.');
-  }
-
-  // ---------- publish ----------
-
   async startPublish() {
     const uuid = this.media.uuid;
     try {
-      this.setControlsStatus('Saving and starting publish...');
       const settings = this.collectSettings();
+      if (!settings.orientations.length) {
+        this.setControlsStatus('Pick at least one orientation.', 'err');
+        return;
+      }
+      this.setControlsStatus('Saving and submitting jobs...');
       await ApiHelper.savePublishSettings(uuid, settings);
       const job = await ApiHelper.startPublish(uuid, settings);
-      this.setControlsStatus(`Submitted: ${job.jobId || job.outputId}`, 'ok');
+      this.setControlsStatus(`Submitted ${settings.orientations.length} job(s) · output ${job.outputId}`, 'ok');
       this.renderStatus(job);
       this.startPolling();
     } catch (e) {
@@ -546,33 +232,43 @@ export default class PublishTab extends mxAlert(BaseAnalysisTab) {
       this.renderOutputs(null, (status && status.history) || []);
       return;
     }
-    const rows = [];
     const escape = (s) => String(s == null ? '' : s)
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     const fmt = (k, v) => `<div><strong>${k}</strong>: <code>${escape(v)}</code></div>`;
-    if (status.status) rows.push(fmt('Status', status.status));
-    if (status.jobId) rows.push(fmt('Job ID', status.jobId));
+    const rows = [];
+    rows.push(fmt('Status', status.status || 'unknown'));
     if (status.outputId) rows.push(fmt('Output ID', status.outputId));
-    if (status.template) rows.push(fmt('Template', status.template));
-    if (typeof status.jobPercentComplete === 'number') {
-      rows.push(fmt('Progress', `${status.jobPercentComplete}%`));
-    }
-    if (status.currentPhase) rows.push(fmt('Phase', status.currentPhase));
     if (status.sourceUri) rows.push(fmt('Source video', status.sourceUri));
-    if (status.captionsSource) {
-      const cs = status.captionsSource;
-      if (cs.origin === 'none') {
-        rows.push(fmt('Captions', 'none — no SRT bundled'));
-      } else {
-        const label = cs.origin === 'edited' ? 'edited' : 'original';
-        const path = cs.snapshotKey ? `s3://...${cs.snapshotKey}` : '';
-        rows.push(fmt('Captions', `${label}${path ? ` · snapshot ${path}` : ''}`));
-      }
-    }
-    if (status.errorCode) rows.push(fmt('Error code', status.errorCode));
-    if (status.errorMessage) rows.push(fmt('Error', status.errorMessage));
     if (status.submittedAt) rows.push(fmt('Submitted', new Date(status.submittedAt).toISOString()));
-    if (status.finishedAt) rows.push(fmt('Finished', new Date(status.finishedAt).toISOString()));
+
+    // Per-orientation job rows.
+    const jobs = status.jobs || {};
+    const orients = Object.keys(jobs);
+    if (orients.length > 0) {
+      rows.push('<div class="mt-2"><strong>Jobs</strong></div>');
+      orients.forEach((orient) => {
+        const j = jobs[orient] || {};
+        const parts = [];
+        parts.push(`<strong>${escape(orient)}</strong>`);
+        parts.push(escape(j.status || 'unknown'));
+        if (typeof j.jobPercentComplete === 'number') parts.push(`${j.jobPercentComplete}%`);
+        if (j.currentPhase) parts.push(escape(j.currentPhase));
+        if (j.errorCode) parts.push(`<span class="text-danger">err ${escape(j.errorCode)}</span>`);
+        if (j.errorMessage) parts.push(`<span class="text-danger">${escape(j.errorMessage)}</span>`);
+        if (j.jobId) parts.push(`<code class="lead-xxs">${escape(j.jobId)}</code>`);
+        rows.push(`<div class="ml-2">${parts.join(' · ')}</div>`);
+      });
+    } else if (status.jobId) {
+      // Legacy single-job status doc.
+      rows.push(fmt('Job ID', status.jobId));
+      if (typeof status.jobPercentComplete === 'number') {
+        rows.push(fmt('Progress', `${status.jobPercentComplete}%`));
+      }
+      if (status.currentPhase) rows.push(fmt('Phase', status.currentPhase));
+      if (status.errorCode) rows.push(fmt('Error code', status.errorCode));
+      if (status.errorMessage) rows.push(fmt('Error', status.errorMessage));
+    }
+
     this.setStatusBody(rows.join('\n'));
 
     const isComplete = status.status === 'COMPLETE';
@@ -583,15 +279,16 @@ export default class PublishTab extends mxAlert(BaseAnalysisTab) {
     const section = this.$root().find('[data-role="outputs-section"]');
     const body = this.$root().find('[data-role="outputs-body"]');
     body.empty();
-    const hasCurrent = outputs && (outputs.hlsMaster || outputs.mp4);
+    const hasCurrent = outputs && Object.keys(outputs).some((k) => outputs[k] && outputs[k].url);
+    const hasLegacyCurrent = outputs && (outputs.hlsMaster || outputs.mp4);
     const hasHistory = Array.isArray(history) && history.length > 0;
-    if (!hasCurrent && !hasHistory) {
+    if (!hasCurrent && !hasLegacyCurrent && !hasHistory) {
       section.css('display', 'none');
       this.renderHistory([]);
       return;
     }
     section.css('display', '');
-    if (hasCurrent) {
+    if (hasCurrent || hasLegacyCurrent) {
       body.append(this.buildOutputRow(outputs, {
         outputId: currentStatus && currentStatus.outputId,
       }));
@@ -605,23 +302,15 @@ export default class PublishTab extends mxAlert(BaseAnalysisTab) {
 
     const headingRow = $('<div/>').addClass('d-flex align-items-center mb-1');
     if (opts2.heading) {
-      headingRow.append($('<div/>')
-        .addClass('lead-xs text-muted mr-auto')
-        .html(opts2.heading));
+      headingRow.append($('<div/>').addClass('lead-xs text-muted mr-auto').html(opts2.heading));
     } else {
       headingRow.append($('<div/>').addClass('mr-auto'));
     }
-
     if (opts2.outputId) {
-      const delBtn = $('<button/>')
-        .attr('type', 'button')
-        .addClass('btn btn-sm btn-outline-danger')
-        .html('Delete files');
+      const delBtn = $('<button/>').attr('type', 'button')
+        .addClass('btn btn-sm btn-outline-danger').html('Delete files');
       delBtn.on('click', () => {
-        if (!window.confirm(
-          'Delete the HLS and MP4 files for this output?\n\n'
-          + 'This permanently removes the rendered files from S3.'
-        )) return;
+        if (!window.confirm('Delete the rendered MP4(s) for this output?\n\nThis permanently removes the files from S3.')) return;
         delBtn.prop('disabled', true);
         this.deletePublishOutput(opts2.outputId).catch((e) => {
           console.error(e);
@@ -632,23 +321,37 @@ export default class PublishTab extends mxAlert(BaseAnalysisTab) {
     }
     wrap.append(headingRow);
 
-    if (outputs.hlsMaster) {
+    // Per-orientation MP4 rows.
+    ORIENTATIONS.forEach((o) => {
+      const entry = outputs && outputs[o.value];
+      if (!entry || !entry.url) return;
       const row = $('<div/>').addClass('mb-2');
-      row.append($('<strong/>').html('HLS master: '));
-      row.append($('<a/>').attr('href', outputs.hlsMaster).attr('target', '_blank').text('Open'));
+      row.append($('<strong/>').html(`${o.label}: `));
+      const filename = (entry.key || '').split('/').pop() || `${o.value}.mp4`;
+      row.append($('<a/>').attr('href', entry.url).attr('download', filename).text('Download MP4'));
+      if (typeof entry.size === 'number') {
+        const mb = (entry.size / (1024 * 1024)).toFixed(1);
+        row.append($('<span/>').addClass('lead-xxs text-muted ml-2').text(`${mb} MB`));
+      }
       row.append($('<div/>').addClass('lead-xxs text-muted text-break').html(
-        `<a href="${outputs.hlsMaster}" target="_blank">${outputs.hlsMaster}</a>`
+        `<a href="${entry.url}" target="_blank">${entry.url}</a>`
       ));
       wrap.append(row);
-    }
-    if (outputs.mp4) {
+    });
+
+    // Legacy outputs (HLS master + single MP4) — keeps history rows from old
+    // jobs viewable until the user deletes them.
+    if (outputs && outputs.hlsMaster) {
       const row = $('<div/>').addClass('mb-2');
-      row.append($('<strong/>').html('MP4 (1080p): '));
+      row.append($('<strong/>').html('HLS master (legacy): '));
+      row.append($('<a/>').attr('href', outputs.hlsMaster).attr('target', '_blank').text('Open'));
+      wrap.append(row);
+    }
+    if (outputs && outputs.mp4 && !outputs.landscape && !outputs.portrait) {
+      const row = $('<div/>').addClass('mb-2');
+      row.append($('<strong/>').html('MP4 (legacy): '));
       const filename = (outputs.mp4Key || '').split('/').pop() || 'video.mp4';
       row.append($('<a/>').attr('href', outputs.mp4).attr('download', filename).text('Download'));
-      row.append($('<div/>').addClass('lead-xxs text-muted text-break').html(
-        `<a href="${outputs.mp4}" target="_blank">${outputs.mp4}</a>`
-      ));
       wrap.append(row);
     }
     return wrap;
@@ -659,7 +362,9 @@ export default class PublishTab extends mxAlert(BaseAnalysisTab) {
     const title = this.$root().find('[data-role="history-title"]');
     const body = this.$root().find('[data-role="history-body"]');
     body.empty();
-    const items = (history || []).filter((h) => h && h.outputs && (h.outputs.hlsMaster || h.outputs.mp4));
+    const items = (history || []).filter((h) => h && h.outputs
+      && (Object.keys(h.outputs).some((k) => h.outputs[k] && h.outputs[k].url)
+        || h.outputs.hlsMaster || h.outputs.mp4));
     if (items.length === 0) {
       divider.css('display', 'none');
       title.css('display', 'none');
@@ -669,9 +374,10 @@ export default class PublishTab extends mxAlert(BaseAnalysisTab) {
     title.css('display', '');
     items.forEach((h) => {
       const ts = h.finishedAt ? new Date(h.finishedAt).toLocaleString()
-        : h.submittedAt ? new Date(h.submittedAt).toLocaleString()
-        : '';
-      const heading = `<strong>${h.template || ''}</strong> · ${ts || h.outputId || ''}`;
+        : h.submittedAt ? new Date(h.submittedAt).toLocaleString() : '';
+      const orients = Array.isArray(h.orientations) ? h.orientations.join(', ')
+        : (h.template || '');
+      const heading = `<strong>${orients}</strong> · ${ts || h.outputId || ''}`;
       body.append(this.buildOutputRow(h.outputs, { heading, outputId: h.outputId }));
     });
   }
@@ -683,7 +389,6 @@ export default class PublishTab extends mxAlert(BaseAnalysisTab) {
       const res = await ApiHelper.deletePublishOutput(uuid, outputId);
       const n = (res && res.deleted) || 0;
       this.setControlsStatus(`Deleted ${n} file(s) for ${outputId}.`, 'ok');
-      // Re-fetch status so the row(s) disappear from the UI.
       await this.refreshStatus();
     } catch (e) {
       console.error(e);

@@ -610,15 +610,6 @@ export default class ApiHelper {
     );
   }
 
-  static async getPublishLogoUploadUrl(uuid, size, ext) {
-    return _authHttpRequest.send(
-      'POST',
-      `${ENDPOINTS.Publish}/${uuid}/logo`,
-      undefined,
-      { size, ext }
-    );
-  }
-
   static async getPublishOutputs(uuid) {
     return _authHttpRequest.send(
       'GET',
@@ -626,40 +617,10 @@ export default class ApiHelper {
     );
   }
 
-  static async listPublishTemplates() {
-    return _authHttpRequest.send(
-      'GET',
-      `${ENDPOINTS.Publish}/templates`
-    );
-  }
-
-  static async getPublishTemplate(name) {
-    return _authHttpRequest.send(
-      'GET',
-      `${ENDPOINTS.Publish}/templates/${encodeURIComponent(name)}`
-    );
-  }
-
-  static async savePublishTemplate(name, content) {
-    return _authHttpRequest.send(
-      'POST',
-      `${ENDPOINTS.Publish}/templates/${encodeURIComponent(name)}`,
-      undefined,
-      { content }
-    );
-  }
-
   static async deletePublishOutput(uuid, outputId) {
     return _authHttpRequest.send(
       'DELETE',
       `${ENDPOINTS.Publish}/${uuid}/outputs/${encodeURIComponent(outputId)}`
-    );
-  }
-
-  static async deletePublishTemplate(name) {
-    return _authHttpRequest.send(
-      'DELETE',
-      `${ENDPOINTS.Publish}/templates/${encodeURIComponent(name)}`
     );
   }
 

@@ -608,7 +608,12 @@ export default class TranscribeTab extends mxAlert(BaseAnalysisTab) {
         const res = await pollAiEditStatus(uuid);
         if (res && Array.isArray(res.cues)) {
           if (state.cues.length === 0) {
-            setCues(res.cues);
+            // Seed with the ORIGINAL cues (not AI), otherwise both columns
+            // show the AI text and changes look auto-applied.
+            const orig = await ApiHelper.getSrt(uuid);
+            if (orig && Array.isArray(orig.cues)) {
+              setCues(orig.cues);
+            }
           }
           applyAiCues(res.cues);
           status.removeClass('text-muted text-danger').addClass('text-success').html(`AI suggestions ready (${res.cues.length} cues) — review and Apply`);

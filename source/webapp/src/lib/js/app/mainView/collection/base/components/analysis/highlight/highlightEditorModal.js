@@ -62,7 +62,6 @@ export default class HighlightEditorModal {
       history: _id('he-history'),
       template: _id('he-template'),
       tmplStatus: _id('he-tmpl-status'),
-      tmplFile: _id('he-tmpl-file'),
     };
     this.$iotReceiverName = `highlight-editor-${this.$ids.modal}`;
     this.$activeRenderId = null;
@@ -315,18 +314,12 @@ export default class HighlightEditorModal {
                   <p class="lead-xs text-muted mb-1">Render template</p>
                   <p class="lead-xs text-muted mb-2">
                     The selected MediaConvert template defines orientation, scaling and codec.
-                    Built-ins encode at QVBR-9 / HIGH profile / SINGLE_PASS_HQ — same quality as
-                    Publish. Use Download to grab the JSON, edit, then Upload override (same name)
-                    or Upload as new (custom name).
+                    Built-ins encode at QVBR-9 / HIGH profile / SINGLE_PASS_HQ. Custom templates
+                    are managed under Settings &rarr; MediaConvert templates.
                   </p>
                   <div class="d-flex flex-wrap align-items-center mb-2">
                     <select id="${ids.template}" class="custom-select custom-select-sm w-auto mr-2 mb-1" data-role="he-template"></select>
-                    <button type="button" class="btn btn-sm btn-outline-secondary mr-1 mb-1" data-role="tmpl-download">Download</button>
-                    <button type="button" class="btn btn-sm btn-outline-secondary mr-1 mb-1" data-role="tmpl-upload">Upload override</button>
-                    <button type="button" class="btn btn-sm btn-outline-secondary mr-1 mb-1" data-role="tmpl-new">Upload as new</button>
-                    <button type="button" class="btn btn-sm btn-outline-danger mr-2 mb-1" data-role="tmpl-delete">Delete custom</button>
                     <button type="button" class="btn btn-sm btn-link mb-1" data-role="tmpl-refresh">Refresh list</button>
-                    <input id="${ids.tmplFile}" type="file" accept="application/json,.json" data-role="tmpl-file" style="display:none" />
                     <span id="${ids.tmplStatus}" class="lead-xs text-muted ml-2 mb-1"></span>
                   </div>
                 </div>
@@ -359,40 +352,7 @@ export default class HighlightEditorModal {
 
     modal.find('button[data-role="save"]').on('click', () => this._onSave());
     modal.find('button[data-role="render"]').on('click', () => this._onRender());
-    modal.find('button[data-role="tmpl-download"]').on('click', () => this._onTemplateDownload());
-    modal.find('button[data-role="tmpl-upload"]').on('click', () => {
-      const input = modal.find(`#${ids.tmplFile}`);
-      input.data('mode', 'override');
-      input.trigger('click');
-    });
-    modal.find('button[data-role="tmpl-new"]').on('click', () => {
-      const input = modal.find(`#${ids.tmplFile}`);
-      input.data('mode', 'new');
-      input.trigger('click');
-    });
-    modal.find('button[data-role="tmpl-delete"]').on('click', () => this._onTemplateDelete());
     modal.find('button[data-role="tmpl-refresh"]').on('click', () => this._refreshTemplateList());
-    modal.find(`#${ids.tmplFile}`).on('change', (evt) => {
-      const file = evt.target.files && evt.target.files[0];
-      const input = $(evt.target);
-      const mode = input.data('mode');
-      input.val('');
-      let newName;
-      if (mode === 'new' && file) {
-        newName = (file.name || '')
-          .replace(/\.json$/i, '')
-          .replace(/[^A-Za-z0-9_-]/g, '_')
-          .slice(0, 64);
-        if (!/^[A-Za-z0-9_-]{1,64}$/.test(newName)) {
-          this._setTemplateStatus('Filename must yield A-Z, a-z, 0-9, _, - (max 64 chars).', 'err');
-          return;
-        }
-      }
-      this._uploadTemplateFile(file, mode, newName).catch((e) => {
-        console.error(e);
-        this._setTemplateStatus(`Upload failed: ${e.message}`, 'err');
-      });
-    });
     modal.on('hidden.bs.modal', () => this._onHidden());
 
     RegisterIotMessageEvent(this.$iotReceiverName, async (msg) => this._onIotMessage(msg));
@@ -577,7 +537,7 @@ export default class HighlightEditorModal {
     const select = this.$modal.find(`#${this.$ids.template}`);
     try {
       this._setTemplateStatus('Loading templates...');
-      const res = await ApiHelper.listRenderTemplates();
+      const res = await ApiHelper.listMcTemplates();
       const templates = (res && res.templates) || [];
       const current = preferredValue
         || select.val()
@@ -608,80 +568,6 @@ export default class HighlightEditorModal {
         select.val(DEFAULT_RENDER_TEMPLATE);
       }
       this._setTemplateStatus(`Error loading templates: ${e.message}`, 'err');
-    }
-  }
-
-  async _onTemplateDownload() {
-    const name = this._selectedTemplate();
-    if (!name) return;
-    try {
-      this._setTemplateStatus(`Downloading ${name}...`);
-      const res = await ApiHelper.getRenderTemplate(name);
-      const content = (res && res.content) || res;
-      const blob = new Blob([JSON.stringify(content, null, 2)], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${name}.json`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-      this._setTemplateStatus(`Downloaded ${name}.json`, 'ok');
-    } catch (e) {
-      console.error(e);
-      this._setTemplateStatus(`Download failed: ${e.message}`, 'err');
-    }
-  }
-
-  async _uploadTemplateFile(file, mode, newName) {
-    if (!file) return;
-    const targetName = mode === 'new'
-      ? newName
-      : this._selectedTemplate();
-    if (!targetName) {
-      this._setTemplateStatus('No target template selected.', 'err');
-      return;
-    }
-    this._setTemplateStatus(`Reading ${file.name}...`);
-    const text = await file.text();
-    let parsed;
-    try {
-      parsed = JSON.parse(text);
-    } catch (e) {
-      this._setTemplateStatus(`Invalid JSON: ${e.message}`, 'err');
-      return;
-    }
-    if (!parsed || !Array.isArray(parsed.OutputGroups) || parsed.OutputGroups.length === 0) {
-      this._setTemplateStatus('Template must have an OutputGroups array.', 'err');
-      return;
-    }
-    this._setTemplateStatus(`Uploading ${targetName}...`);
-    await ApiHelper.saveRenderTemplate(targetName, parsed);
-    this._setTemplateStatus(`Saved ${targetName}.`, 'ok');
-    await this._refreshTemplateList(targetName);
-  }
-
-  async _onTemplateDelete() {
-    const name = this._selectedTemplate();
-    if (!name) return;
-    if (!window.confirm(`Delete custom version of "${name}"? Built-in templates revert to the packaged default.`)) {
-      return;
-    }
-    try {
-      this._setTemplateStatus(`Deleting ${name}...`);
-      const res = await ApiHelper.deleteRenderTemplate(name);
-      if (res && res.deleted) {
-        this._setTemplateStatus(`Deleted ${name}.`, 'ok');
-      } else {
-        this._setTemplateStatus(`No custom override for ${name}.`, 'ok');
-      }
-      const fallback = BUILTIN_RENDER_TEMPLATES.find((b) => b.value === name)
-        ? name : DEFAULT_RENDER_TEMPLATE;
-      await this._refreshTemplateList(fallback);
-    } catch (e) {
-      console.error(e);
-      this._setTemplateStatus(`Delete failed: ${e.message}`, 'err');
     }
   }
 

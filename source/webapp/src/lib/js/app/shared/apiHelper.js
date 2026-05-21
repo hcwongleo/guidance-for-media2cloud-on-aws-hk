@@ -45,6 +45,7 @@ const ENDPOINTS = {
   HighlightSettings: `${ApiEndpoint}/${ApiOps.HighlightSettings}`,
   Edits: `${ApiEndpoint}/${ApiOps.Edits}`,
   Renders: `${ApiEndpoint}/${ApiOps.Renders}`,
+  McTemplates: `${ApiEndpoint}/mc-templates`,
 };
 
 let GRAPH_ENDPOINT;
@@ -624,36 +625,6 @@ export default class ApiHelper {
     );
   }
 
-  static async listPublishTemplates() {
-    return _authHttpRequest.send(
-      'GET',
-      `${ENDPOINTS.Publish}/templates`
-    );
-  }
-
-  static async getPublishTemplate(name) {
-    return _authHttpRequest.send(
-      'GET',
-      `${ENDPOINTS.Publish}/templates/${encodeURIComponent(name)}`
-    );
-  }
-
-  static async savePublishTemplate(name, content) {
-    return _authHttpRequest.send(
-      'POST',
-      `${ENDPOINTS.Publish}/templates/${encodeURIComponent(name)}`,
-      undefined,
-      { content }
-    );
-  }
-
-  static async deletePublishTemplate(name) {
-    return _authHttpRequest.send(
-      'DELETE',
-      `${ENDPOINTS.Publish}/templates/${encodeURIComponent(name)}`
-    );
-  }
-
   // Highlight detection
   static async startHighlightDetection(uuid, body) {
     return _authHttpRequest.send(
@@ -769,34 +740,34 @@ export default class ApiHelper {
     );
   }
 
-  // Render templates (mirrors publish templates)
-  static async listRenderTemplates() {
+  // Shared MediaConvert templates (used by both Publish and Render)
+  static async listMcTemplates() {
     return _authHttpRequest.send(
       'GET',
-      `${ENDPOINTS.Renders}/templates`
+      ENDPOINTS.McTemplates
     );
   }
 
-  static async getRenderTemplate(name) {
+  static async getMcTemplate(name) {
     return _authHttpRequest.send(
       'GET',
-      `${ENDPOINTS.Renders}/templates/${encodeURIComponent(name)}`
+      `${ENDPOINTS.McTemplates}/${encodeURIComponent(name)}`
     );
   }
 
-  static async saveRenderTemplate(name, content) {
+  static async saveMcTemplate(name, content) {
     return _authHttpRequest.send(
       'POST',
-      `${ENDPOINTS.Renders}/templates/${encodeURIComponent(name)}`,
+      `${ENDPOINTS.McTemplates}/${encodeURIComponent(name)}`,
       undefined,
       { content }
     );
   }
 
-  static async deleteRenderTemplate(name) {
+  static async deleteMcTemplate(name) {
     return _authHttpRequest.send(
       'DELETE',
-      `${ENDPOINTS.Renders}/templates/${encodeURIComponent(name)}`
+      `${ENDPOINTS.McTemplates}/${encodeURIComponent(name)}`
     );
   }
 }

@@ -26,6 +26,7 @@ const HighlightOp = require('./operations/highlightOp');
 const HighlightSettingsOp = require('./operations/highlightSettingsOp');
 const EditsOp = require('./operations/editsOp');
 const RendersOp = require('./operations/rendersOp');
+const McTemplatesOp = require('./operations/mcTemplatesOp');
 
 const OP_REKOGNITION = 'rekognition';
 const OP_TRANSCRIBE = 'transcribe';
@@ -166,6 +167,9 @@ class ApiRequest {
     }
     if (op === ApiOps.Renders) {
       return new RendersOp(this);
+    }
+    if (op === 'mc-templates' || op === ApiOps.McTemplates) {
+      return new McTemplatesOp(this);
     }
     throw new M2CException(`operation '${(this.pathParameters || {}).operation}' not supported`);
   }

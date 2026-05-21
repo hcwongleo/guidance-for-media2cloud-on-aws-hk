@@ -36,7 +36,9 @@ const REQUIRED_ENVS = [
 ];
 
 const FPS = 25;
-const TEMPLATES_PREFIX = '_render_templates';
+// Shared MediaConvert template store; the api Lambda's /mc-templates endpoint
+// writes here, and PublishOp reads from the same prefix.
+const TEMPLATES_PREFIX = '_mc_templates';
 const TEMPLATE_NAME_RE = /^[A-Za-z0-9_-]{1,64}$/;
 const SUPPORTED_TEMPLATES = ['mp4_landscape', 'mp4_portrait'];
 const DEFAULT_TEMPLATE = 'mp4_landscape';

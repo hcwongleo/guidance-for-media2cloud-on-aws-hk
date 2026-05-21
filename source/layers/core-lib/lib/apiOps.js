@@ -184,4 +184,13 @@ module.exports = {
    * /renders/{renderId}                        GET:  status of a single render
    */
   Renders: 'renders',
+
+  /**
+   * @description shared MediaConvert job template store (publish + render)
+   * /mc-templates                              GET:  list available templates
+   * /mc-templates/{name}                       GET:  fetch one template's JSON
+   * /mc-templates/{name}                       POST: upload override / new
+   * /mc-templates/{name}                       DELETE: drop a custom override
+   */
+  McTemplates: 'mc-templates',
 };

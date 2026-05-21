@@ -100,6 +100,9 @@ Parameters:
     ServiceDataAccessRoleArn:
         Type: String
         Description: ARN of the MediaConvert service role (passed to CreateJob via iam:PassRole)
+    PublishCloudFrontDistributionDomainName:
+        Type: String
+        Description: CloudFront distribution domain that fronts ProxyBucket /*/output/* — used by compose-edl to convert s3:// logo URIs to HTTPS for SMART_CROP+ImageInserter compatibility
 
 Resources:
     ################################################################################
@@ -670,6 +673,11 @@ Resources:
                             -
                                 Effect: Allow
                                 Action:
+                                    - s3:PutObject
+                                Resource: !Sub arn:aws:s3:::${ProxyBucket}/*/output/*/captions.srt
+                            -
+                                Effect: Allow
+                                Action:
                                     - dynamodb:GetItem
                                 Resource:
                                     - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${IngestTable}
@@ -733,6 +741,7 @@ Resources:
                     ENV_EDIT_PROJECTS_TABLE: !Ref EditProjectsTable
                     ENV_RENDERS_TABLE: !Ref RendersTable
                     ENV_DATA_ACCESS_ROLE: !Ref ServiceDataAccessRoleArn
+                    ENV_PUBLISH_CLOUDFRONT_DOMAIN: !Ref PublishCloudFrontDistributionDomainName
 
     ################################################################################
     #

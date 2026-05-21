@@ -37,12 +37,19 @@ const REQUIRED_ENVS = [
 
 const FPS = 25;
 // Shared MediaConvert template store; the api Lambda's /mc-templates endpoint
-// writes here, and PublishOp reads from the same prefix.
+// writes here, and outputOp reads from the same prefix.
 const TEMPLATES_PREFIX = '_mc_templates';
 const TEMPLATE_NAME_RE = /^[A-Za-z0-9_-]{1,64}$/;
 const SUPPORTED_TEMPLATES = ['mp4_landscape', 'mp4_portrait'];
 const DEFAULT_TEMPLATE = 'mp4_landscape';
 const AUDIO_SOURCE_NAME = 'Audio Selector 1';
+const CAPTION_SOURCE_NAME = 'Captions Selector 1';
+const SUBTITLE_PREFIX = 'transcode/subtitle';
+// Empty string is the documented sentinel for "no logo at this size"; stripping
+// the InsertableImage in that case prevents MediaConvert from refusing the job.
+const LOGO_SIZES = ['48', '64', '96', '128', '192'];
+
+const PUBLISH_CLOUDFRONT_DOMAIN = process.env.ENV_PUBLISH_CLOUDFRONT_DOMAIN || '';
 
 function ddb() {
   const client = xraysdkHelper(new DynamoDBClient({
@@ -67,7 +74,7 @@ function secondsToTimecode(seconds, fps = FPS) {
     .join(':');
 }
 
-function buildInputs(sourceUri, segments) {
+function buildHighlightInputs(sourceUri, segments) {
   return segments.map((seg) => ({
     FileInput: sourceUri,
     InputClippings: [
@@ -94,6 +101,42 @@ function buildInputs(sourceUri, segments) {
   }));
 }
 
+function buildSingleInput(sourceUri, inputClipping, captionSelectors) {
+  const input = {
+    FileInput: sourceUri,
+    TimecodeSource: 'ZEROBASED',
+    VideoSelector: {
+      AlphaBehavior: 'DISCARD',
+      ColorSpace: 'FOLLOW',
+      Rotate: 'DEGREE_0',
+    },
+    AudioSelectors: {
+      [AUDIO_SOURCE_NAME]: {
+        Offset: 0,
+        DefaultSelection: 'DEFAULT',
+        ProgramSelection: 1,
+      },
+    },
+    FilterEnable: 'AUTO',
+    PsiControl: 'USE_PSI',
+    FilterStrength: 0,
+    DeblockFilter: 'DISABLED',
+    DenoiseFilter: 'DISABLED',
+  };
+  if (inputClipping
+    && inputClipping.StartTimecode
+    && inputClipping.EndTimecode) {
+    input.InputClippings = [{
+      StartTimecode: inputClipping.StartTimecode,
+      EndTimecode: inputClipping.EndTimecode,
+    }];
+  }
+  if (captionSelectors && Object.keys(captionSelectors).length > 0) {
+    input.CaptionSelectors = captionSelectors;
+  }
+  return [input];
+}
+
 async function loadEditProject(table, editProjectId) {
   const doc = ddb();
   const res = await doc.send(new GetCommand({
@@ -118,9 +161,9 @@ async function loadIngestRow(table, uuid) {
   return res.Item;
 }
 
-// Mirrors publishOp._resolveSourceUri: prefer the originally ingested file so
-// MediaConvert isn't asked to upscale a downscaled aiml proxy. Fall back to a
-// "prod" mp4 proxy if no original is on the row; never the aiml inference proxy.
+// Use the originally ingested file when available so MediaConvert isn't asked
+// to upscale a downscaled aiml inference proxy. Fall back to a "prod" mp4
+// proxy if the original is gone; never the aiml proxy.
 function resolveSourceUri(ingestRow, proxyBucket) {
   if (ingestRow && ingestRow.bucket && ingestRow.key) {
     return `s3://${ingestRow.bucket}/${ingestRow.key}`;
@@ -139,7 +182,6 @@ async function loadTemplate(proxyBucket, name) {
   if (!TEMPLATE_NAME_RE.test(name)) {
     throw new M2CException(`invalid template name: ${name}`);
   }
-  // S3 override (uploaded via API) wins over the packaged built-in.
   const s3Key = `${TEMPLATES_PREFIX}/${name}.json`;
   const exists = await CommonUtils.headObject(proxyBucket, s3Key).catch(() => undefined);
   if (exists) {
@@ -153,26 +195,128 @@ async function loadTemplate(proxyBucket, name) {
   return JSON.parse(FS.readFileSync(file, 'utf8'));
 }
 
-function applyTemplate(template, mp4Destination) {
-  // Deep clone before mutating; the loaded template may be a packaged JSON
-  // we don't want to keep mutating across warm invocations.
+async function resolveSrtKey(proxyBucket, uuid) {
+  const editedKey = `${uuid}/${SUBTITLE_PREFIX}/${uuid}_edited.srt`;
+  const plainKey = `${uuid}/${SUBTITLE_PREFIX}/${uuid}.srt`;
+  let exists = await CommonUtils.headObject(proxyBucket, editedKey).catch(() => undefined);
+  if (exists) return editedKey;
+  exists = await CommonUtils.headObject(proxyBucket, plainKey).catch(() => undefined);
+  if (exists) return plainKey;
+  return undefined;
+}
+
+// Snapshot the chosen SRT into the output folder so the MediaConvert job is
+// self-contained — later Reset / Save / AI Edit cannot yank the file out from
+// under an in-flight job (was the cause of MediaConvert error 1040).
+async function snapshotSrt(proxyBucket, uuid, outputBaseKey) {
+  const srcKey = await resolveSrtKey(proxyBucket, uuid);
+  if (!srcKey) return undefined;
+  const destKey = `${outputBaseKey}/captions.srt`;
+  await CommonUtils.copyObject(
+    `${proxyBucket}/${srcKey}`,
+    proxyBucket,
+    destKey
+  );
+  return {
+    uri: `s3://${proxyBucket}/${destKey}`,
+    sourceKey: srcKey,
+    snapshotKey: destKey,
+    origin: srcKey.endsWith('_edited.srt') ? 'edited' : 'original',
+  };
+}
+
+// SMART_CROP + ImageInserter requires HTTP(S) URLs — s3:// silently fails
+// with warning 250000. We front the bucket via the publish CloudFront
+// distribution and convert s3://<ProxyBucket>/<key> → https://<cf>/<key>.
+function toCloudFrontUrl(uri, proxyBucket) {
+  if (!PUBLISH_CLOUDFRONT_DOMAIN
+    || typeof uri !== 'string'
+    || !uri.startsWith('s3://')) {
+    return uri;
+  }
+  const rest = uri.slice('s3://'.length);
+  const slash = rest.indexOf('/');
+  if (slash <= 0) return uri;
+  const bucket = rest.slice(0, slash);
+  const key = rest.slice(slash + 1);
+  if (bucket !== proxyBucket) return uri;
+  return `https://${PUBLISH_CLOUDFRONT_DOMAIN}/${key}`;
+}
+
+function applyTemplate(template, opts) {
+  const {
+    hlsDestination,
+    mp4Destination,
+    fontScript,
+    captionSourceName,
+    hasSubtitles,
+    logos,
+    proxyBucket,
+  } = opts;
+
   const groups = JSON.parse(JSON.stringify(template.OutputGroups || []));
   if (!Array.isArray(groups) || groups.length === 0) {
     throw new M2CException('template must have non-empty OutputGroups');
   }
+
   groups.forEach((og) => {
     const settings = og.OutputGroupSettings || {};
-    if (settings.Type === 'FILE_GROUP_SETTINGS' && settings.FileGroupSettings) {
+    if (settings.Type === 'HLS_GROUP_SETTINGS' && settings.HlsGroupSettings) {
+      settings.HlsGroupSettings.Destination = hlsDestination;
+    } else if (settings.Type === 'FILE_GROUP_SETTINGS' && settings.FileGroupSettings) {
       settings.FileGroupSettings.Destination = mp4Destination;
     }
+
     (og.Outputs || []).forEach((o) => {
       (o.AudioDescriptions || []).forEach((a) => {
         if (a.AudioSourceName === '##AUDIO_SOURCE##') {
           a.AudioSourceName = AUDIO_SOURCE_NAME;
         }
       });
+
+      if (hasSubtitles) {
+        (o.CaptionDescriptions || []).forEach((c) => {
+          if (c.CaptionSelectorName === '##CAPTION_SOURCE##') {
+            c.CaptionSelectorName = captionSourceName;
+          }
+          const burn = (c.DestinationSettings || {}).BurninDestinationSettings;
+          if (burn && burn.FontScript === '##FONT_SCRIPT##') {
+            burn.FontScript = fontScript;
+          }
+        });
+      } else {
+        delete o.CaptionDescriptions;
+      }
+
+      const inserter = ((o.VideoDescription || {}).VideoPreprocessors || {}).ImageInserter;
+      if (inserter && Array.isArray(inserter.InsertableImages)) {
+        const resolved = [];
+        inserter.InsertableImages.forEach((img) => {
+          const m = (img.ImageInserterInput || '').match(/^##LOGO_(\d+)##$/);
+          if (!m) {
+            resolved.push(img);
+            return;
+          }
+          const size = m[1];
+          if (logos && logos[size]) {
+            resolved.push({
+              ...img,
+              ImageInserterInput: toCloudFrontUrl(logos[size], proxyBucket),
+            });
+          }
+        });
+        if (resolved.length > 0) {
+          inserter.InsertableImages = resolved;
+        } else {
+          delete o.VideoDescription.VideoPreprocessors.ImageInserter;
+          if (Object.keys(o.VideoDescription.VideoPreprocessors).length === 0) {
+            delete o.VideoDescription.VideoPreprocessors;
+          }
+        }
+      }
     });
   });
+
   return groups;
 }
 
@@ -197,6 +341,23 @@ async function persistRenderRow(table, renderId, attrs) {
   }));
 }
 
+function deriveMode(editProject) {
+  if (editProject.mode && ['full', 'trim', 'highlights'].includes(editProject.mode)) {
+    return editProject.mode;
+  }
+  if (Array.isArray(editProject.segments) && editProject.segments.some(
+    (s) => Number(s.endSec) > Number(s.startSec)
+  )) {
+    return 'highlights';
+  }
+  if (editProject.inputClipping
+    && editProject.inputClipping.StartTimecode
+    && editProject.inputClipping.EndTimecode) {
+    return 'trim';
+  }
+  return 'full';
+}
+
 exports.handler = async (event) => {
   console.log('event:', JSON.stringify(event));
 
@@ -218,26 +379,16 @@ exports.handler = async (event) => {
   }
 
   const editProject = await loadEditProject(editTable, editProjectId);
-  const segments = (editProject.segments || []).filter(
-    (s) => Number(s.endSec) > Number(s.startSec)
-  );
-  if (segments.length === 0) {
-    throw new M2CException('edit project has no usable segments');
-  }
-
   const ingestRow = await loadIngestRow(ingestTable, editProject.uuid);
   const sourceUri = resolveSourceUri(ingestRow, proxyBucket);
 
-  // Use the renderId minted by the API at POST time (it pre-created the row
-  // with status='queued' so the webapp could poll). Falling back to a fresh
-  // uuid would orphan that row and produce duplicate render entries.
   const renderId = event.renderId || CRYPTO.randomUUID();
   const startedAt = new Date().toISOString();
-  const destinationPrefix = `s3://${proxyBucket}/renders/${editProject.uuid}/${renderId}/`;
+  const outputBaseKey = `${editProject.uuid}/output/${renderId}`;
+  const destinationPrefix = `s3://${proxyBucket}/${outputBaseKey}/`;
+  const hlsDestination = `${destinationPrefix}hls/`;
   const mp4Destination = `${destinationPrefix}mp4/`;
 
-  // Template precedence: SFN event > editProject row > default. Persisted on the
-  // editProject row so re-renders pick up the same orientation by default.
   const templateName = event.template
     || editProject.template
     || DEFAULT_TEMPLATE;
@@ -246,7 +397,61 @@ exports.handler = async (event) => {
   }
   const template = await loadTemplate(proxyBucket, templateName);
 
-  const outputGroups = applyTemplate(template, mp4Destination);
+  const mode = deriveMode(editProject);
+  const burnSubtitles = !!(editProject.burnSubtitles || editProject.burnCaptions);
+  const fontScript = editProject.fontScript || 'HANT';
+  const logos = editProject.logos || {};
+
+  let captionSnapshot;
+  let captionSelectors;
+  if (burnSubtitles) {
+    captionSnapshot = await snapshotSrt(proxyBucket, editProject.uuid, outputBaseKey);
+    if (captionSnapshot) {
+      captionSelectors = {
+        [CAPTION_SOURCE_NAME]: {
+          SourceSettings: {
+            SourceType: 'SRT',
+            FileSourceSettings: {
+              SourceFile: captionSnapshot.uri,
+            },
+          },
+        },
+      };
+    }
+  }
+  const hasSubtitles = !!captionSnapshot;
+
+  let inputs;
+  if (mode === 'highlights') {
+    const segments = (editProject.segments || []).filter(
+      (s) => Number(s.endSec) > Number(s.startSec)
+    );
+    if (segments.length === 0) {
+      throw new M2CException('highlights mode requires at least one segment');
+    }
+    inputs = buildHighlightInputs(sourceUri, segments);
+    // Highlights mode is N inputs each with their own InputClippings; SRT
+    // burn-in across re-stitched segments is not currently supported because
+    // captions would need re-timing per clip. Strip captions in this mode.
+    if (hasSubtitles) {
+      console.warn('highlights mode does not support caption burn-in; ignoring');
+    }
+    inputs.forEach((i) => { delete i.CaptionSelectors; });
+  } else if (mode === 'trim') {
+    inputs = buildSingleInput(sourceUri, editProject.inputClipping, captionSelectors);
+  } else {
+    inputs = buildSingleInput(sourceUri, undefined, captionSelectors);
+  }
+
+  const outputGroups = applyTemplate(template, {
+    hlsDestination,
+    mp4Destination,
+    fontScript,
+    captionSourceName: CAPTION_SOURCE_NAME,
+    hasSubtitles: mode === 'highlights' ? false : hasSubtitles,
+    logos,
+    proxyBucket,
+  });
 
   const mediaConvertParams = {
     Role: roleArn,
@@ -256,13 +461,15 @@ exports.handler = async (event) => {
       m2cEditProjectId: editProjectId,
       m2cRenderId: renderId,
       m2cTemplate: templateName,
+      m2cMode: mode,
     },
     StatusUpdateInterval: 'SECONDS_12',
     AccelerationSettings: { Mode: 'DISABLED' },
     BillingTagsSource: 'JOB',
     Settings: {
       AdAvailOffset: 0,
-      Inputs: buildInputs(sourceUri, segments),
+      FollowSource: 1,
+      Inputs: inputs,
       OutputGroups: outputGroups,
     },
   };
@@ -273,11 +480,14 @@ exports.handler = async (event) => {
     status: 'composing',
     publishToLibrary: !!editProject.publishToLibrary,
     aspectRatio: editProject.aspectRatio || '16:9',
-    burnCaptions: !!editProject.burnCaptions,
-    segmentCount: segments.length,
+    mode,
+    burnSubtitles: hasSubtitles && mode !== 'highlights',
+    fontScript,
     template: templateName,
+    segmentCount: mode === 'highlights' ? inputs.length : 0,
     sourceUri,
     destinationPrefix,
+    captionSnapshotKey: (captionSnapshot && captionSnapshot.snapshotKey) || undefined,
     startedAt,
     updatedAt: startedAt,
   });
@@ -288,9 +498,14 @@ exports.handler = async (event) => {
     uuid: editProject.uuid,
     publishToLibrary: !!editProject.publishToLibrary,
     aspectRatio: editProject.aspectRatio || '16:9',
-    burnCaptions: !!editProject.burnCaptions,
+    burnCaptions: hasSubtitles && mode !== 'highlights',
     template: templateName,
+    mode,
     destinationPrefix,
     mediaConvertParams,
   };
 };
+
+module.exports.SUPPORTED_TEMPLATES = SUPPORTED_TEMPLATES;
+module.exports.DEFAULT_TEMPLATE = DEFAULT_TEMPLATE;
+module.exports.LOGO_SIZES = LOGO_SIZES;

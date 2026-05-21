@@ -1781,6 +1781,7 @@ Resources:
                 IotHost: !GetAtt CoreStack.Outputs.IotHost
                 IotTopic: !GetAtt CoreStack.Outputs.IotTopic
                 ServiceDataAccessRoleArn: !GetAtt BackendStack.Outputs.ServiceDataAccessRoleArn
+                PublishCloudFrontDistributionDomainName: !GetAtt CoreStack.Outputs.PublishCloudFrontDistributionDomainName
 
     ShoppableStack:
         Condition: bEnableShoppable

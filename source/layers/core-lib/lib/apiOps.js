@@ -151,7 +151,7 @@ module.exports = {
    * /output/{uuid}/logo            POST: presigned logo upload URL
    * /output/{uuid}/logo/{size}     DELETE: drop a logo at a given size
    * Settings live on the EditProject row (template, fontScript, mode, logos,
-   * burnSubtitles, inputClipping). Render lifecycle lives on /renders.
+   * burnSubtitles). Render lifecycle lives on /renders.
    */
   Output: 'output',
 

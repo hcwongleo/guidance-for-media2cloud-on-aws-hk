@@ -5,13 +5,6 @@ import Localization from '../../../../../../shared/localization.js';
 import ApiHelper from '../../../../../../shared/apiHelper.js';
 import Spinner from '../../../../../../shared/spinner.js';
 import mxAlert from '../../../../../../mixins/mxAlert.js';
-import {
-  RegisterIotMessageEvent,
-  UnregisterIotMessageEvent,
-} from '../../../../../../shared/iotSubscriber.js';
-import {
-  GetS3Utils,
-} from '../../../../../../shared/s3utils.js';
 import EditorTracks from './editorTracks.js';
 
 class AlertHelper extends mxAlert(class {}) {}
@@ -24,7 +17,6 @@ const {
   Buttons: {
     SaveHighlightEdit: BTN_SAVE,
     CloseHighlightEditor: BTN_CLOSE,
-    RenderAndPublish: BTN_RENDER,
   },
   Alerts: {
     Oops: OOPS,
@@ -32,20 +24,12 @@ const {
     HighlightEditSaveFailed: ALERT_SAVE_FAILED,
     HighlightEditLoadFailed: ALERT_LOAD_FAILED,
     HighlightEditEmptyEdit: ALERT_EMPTY_EDIT,
-    HighlightRenderQueued: ALERT_RENDER_QUEUED,
-    HighlightRenderFailed: ALERT_RENDER_FAILED,
   },
 } = Localization;
 
 function _id(prefix) {
   return `${prefix}-${Math.random().toString(36).slice(2, 9)}`;
 }
-
-const BUILTIN_RENDER_TEMPLATES = [
-  { value: 'mp4_landscape', label: 'Landscape MP4 (built-in)' },
-  { value: 'mp4_portrait', label: 'Portrait MP4 (built-in)' },
-];
-const DEFAULT_RENDER_TEMPLATE = 'mp4_landscape';
 
 export default class HighlightEditorModal {
   constructor(previewComponent, highlightSet, options = {}) {
@@ -57,14 +41,7 @@ export default class HighlightEditorModal {
     this.$modal = null;
     this.$ids = {
       modal: _id('he-modal'),
-      render: _id('he-render'),
-      progress: _id('he-progress'),
-      history: _id('he-history'),
-      template: _id('he-template'),
-      tmplStatus: _id('he-tmpl-status'),
     };
-    this.$iotReceiverName = `highlight-editor-${this.$ids.modal}`;
-    this.$activeRenderId = null;
   }
 
   get media() {
@@ -114,139 +91,6 @@ export default class HighlightEditorModal {
         console.error('onSaved callback failed:', cbErr);
       }
     }
-    this._refreshRenderHistory().catch((e) => console.error(e));
-    this._refreshTemplateList().catch((e) => console.error(e));
-  }
-
-  async _refreshRenderHistory() {
-    const editProjectId = this.state.editProject.editProjectId;
-    let rows = [];
-    try {
-      const res = await ApiHelper.listRenders(editProjectId);
-      rows = (res && res.renders) || [];
-    } catch (e) {
-      console.error('listRenders failed:', e);
-    }
-    rows = rows.slice().sort((a, b) => {
-      const ta = (a && (a.updatedAt || a.submittedAt)) || '';
-      const tb = (b && (b.updatedAt || b.submittedAt)) || '';
-      return tb.localeCompare(ta);
-    });
-    this._renderHistoryList(rows);
-
-    // Resume tracking if any in-flight render is still active.
-    const inflight = rows.find((r) =>
-      r && r.status && r.status !== 'completed' && r.status !== 'error');
-    if (inflight && inflight.renderId) {
-      this.$activeRenderId = inflight.renderId;
-      this._setProgressLabel(inflight.status, inflight.percent || 0);
-      const renderBtn = this.$modal && this.$modal.find(`#${this.$ids.render}`);
-      if (renderBtn) renderBtn.prop('disabled', true);
-    }
-  }
-
-  _renderHistoryList(rows) {
-    if (!this.$modal) return;
-    const slot = this.$modal.find(`#${this.$ids.history}`);
-    slot.empty();
-    if (!rows || rows.length === 0) {
-      slot.append($('<p/>')
-        .addClass('text-muted font-italic mb-0')
-        .text('No renders yet.'));
-      return;
-    }
-
-    rows.forEach((row) => {
-      slot.append(this._buildHistoryRow(row));
-    });
-  }
-
-  _buildHistoryRow(row) {
-    const wrap = $('<div/>')
-      .addClass('d-flex align-items-center py-1 border-bottom')
-      .attr('data-render-id', row.renderId);
-
-    const status = row.status || 'unknown';
-    const submitted = row.submittedAt || row.updatedAt || '';
-    const ts = submitted ? new Date(submitted).toLocaleString() : '';
-    const idShort = (row.renderId || '').slice(0, 8);
-
-    const meta = $('<span/>')
-      .addClass('mr-auto text-truncate')
-      .css({ minWidth: 0 })
-      .text(`${idShort} · ${ts} · ${status}${row.percent ? ` (${row.percent}%)` : ''}`);
-    wrap.append(meta);
-
-    const actions = $('<span/>').addClass('ml-2');
-
-    if (status === 'completed') {
-      const playBtn = $('<a/>')
-        .attr('target', '_blank')
-        .attr('rel', 'noopener noreferrer')
-        .addClass('btn btn-sm btn-outline-primary mr-1 disabled')
-        .css({ pointerEvents: 'none' })
-        .text('▶ Play');
-      const dlBtn = $('<a/>')
-        .addClass('btn btn-sm btn-outline-secondary mr-1 disabled')
-        .css({ pointerEvents: 'none' })
-        .text('⬇ Download');
-      actions.append(playBtn).append(dlBtn);
-
-      // Resolve URLs async, enable buttons when ready.
-      this._signRenderUrls(row).then((urls) => {
-        if (!urls) return;
-        playBtn.attr('href', urls.playUrl)
-          .removeClass('disabled')
-          .css({ pointerEvents: '' });
-        dlBtn.attr('href', urls.downloadUrl)
-          .removeClass('disabled')
-          .css({ pointerEvents: '' });
-      }).catch((e) => {
-        console.error('failed to sign render output:', e);
-        meta.append($('<span/>')
-          .addClass('text-danger ml-2')
-          .text(' (output unavailable)'));
-      });
-    } else if (status === 'error') {
-      meta.addClass('text-danger');
-    }
-
-    const delBtn = $('<button/>')
-      .attr('type', 'button')
-      .addClass('btn btn-sm btn-outline-danger')
-      .text('Delete');
-    delBtn.on('click', async () => {
-      delBtn.prop('disabled', true);
-      try {
-        await ApiHelper.deleteRender(row.renderId);
-        wrap.remove();
-        if (this.$activeRenderId === row.renderId) {
-          this.$activeRenderId = null;
-          this._setProgressLabel('', 0);
-          const renderBtn = this.$modal && this.$modal.find(`#${this.$ids.render}`);
-          if (renderBtn) renderBtn.prop('disabled', false);
-        }
-        const slot = this.$modal.find(`#${this.$ids.history}`);
-        if (slot.children().length === 0) {
-          slot.append($('<p/>')
-            .addClass('text-muted font-italic mb-0')
-            .text('No renders yet.'));
-        }
-      } catch (e) {
-        console.error('deleteRender failed:', e);
-        delBtn.prop('disabled', false);
-      }
-    });
-    actions.append(delBtn);
-
-    wrap.append(actions);
-    return wrap;
-  }
-
-  async _signRenderUrls(row) {
-    const prefix = ((row || {}).outputs || {}).mp4;
-    if (!prefix) return null;
-    return this._signRenderedMp4(prefix);
   }
 
   async _loadOrSeedEditProject() {
@@ -309,34 +153,14 @@ export default class HighlightEditorModal {
                   <div data-role="inspector"></div>
                 </div>
               </div>
-              <div class="row mt-3">
-                <div class="col-12 px-2">
-                  <p class="lead-xs text-muted mb-1">Render template</p>
-                  <p class="lead-xs text-muted mb-2">
-                    The selected MediaConvert template defines orientation, scaling and codec.
-                    Built-ins encode at QVBR-9 / HIGH profile / SINGLE_PASS_HQ. Custom templates
-                    are managed under Settings &rarr; MediaConvert templates.
-                  </p>
-                  <div class="d-flex flex-wrap align-items-center mb-2">
-                    <select id="${ids.template}" class="custom-select custom-select-sm w-auto mr-2 mb-1" data-role="he-template"></select>
-                    <button type="button" class="btn btn-sm btn-link mb-1" data-role="tmpl-refresh">Refresh list</button>
-                    <span id="${ids.tmplStatus}" class="lead-xs text-muted ml-2 mb-1"></span>
-                  </div>
-                </div>
-              </div>
-              <div class="row mt-2">
-                <div class="col-12 px-2">
-                  <p class="lead-xs text-muted mb-1">Renders</p>
-                  <div id="${ids.history}" class="lead-xs"></div>
-                </div>
-              </div>
+              <p class="lead-xs text-muted mt-3 mb-0">
+                Render and publish from the Output tab once you're happy with the segments.
+              </p>
             </div>
             <div class="modal-footer flex-wrap">
-              <span class="lead-xs text-muted mr-auto" id="${ids.progress}"></span>
               <button type="button" class="btn btn-secondary btn-sm"
                       data-dismiss="modal">${BTN_CLOSE}</button>
               <button type="button" class="btn btn-primary btn-sm" data-role="save">${BTN_SAVE}</button>
-              <button type="button" class="btn btn-success btn-sm" data-role="render" id="${ids.render}">${BTN_RENDER}</button>
             </div>
           </div>
         </div>
@@ -351,11 +175,7 @@ export default class HighlightEditorModal {
     }
 
     modal.find('button[data-role="save"]').on('click', () => this._onSave());
-    modal.find('button[data-role="render"]').on('click', () => this._onRender());
-    modal.find('button[data-role="tmpl-refresh"]').on('click', () => this._refreshTemplateList());
     modal.on('hidden.bs.modal', () => this._onHidden());
-
-    RegisterIotMessageEvent(this.$iotReceiverName, async (msg) => this._onIotMessage(msg));
 
     $('body').append(modal);
     this.$modal = modal;
@@ -416,163 +236,7 @@ export default class HighlightEditorModal {
     }
   }
 
-  async _onRender() {
-    const ep = this.state.editProject;
-    if (!ep.segments || ep.segments.length === 0) {
-      await _alertAgent.showMessage(this.$modal, 'warning', OOPS, ALERT_EMPTY_EDIT, 4000);
-      return;
-    }
-
-    // Persist current state before kicking off the render so compose-edl
-    // sees the latest segments/flags from DDB.
-    await this._onSave();
-
-    const renderBtn = this.$modal.find(`#${this.$ids.render}`);
-    renderBtn.prop('disabled', true);
-
-    Spinner.loading(true);
-    try {
-      const template = this._selectedTemplate();
-      const res = await ApiHelper.startRender({
-        editProjectId: ep.editProjectId,
-        ...(template ? { template } : {}),
-      });
-      this.$activeRenderId = (res && res.renderId) || null;
-      this._setProgressLabel('queued', 0);
-      this._refreshRenderHistory().catch((e) => console.error(e));
-      await _alertAgent.showMessage(this.$modal, 'success', '', ALERT_RENDER_QUEUED, 5000);
-    } catch (e) {
-      console.error(e);
-      const msg = (ALERT_RENDER_FAILED || '').replace('{{ERROR}}', (e && e.message) || '');
-      await _alertAgent.showMessage(this.$modal, 'danger', OOPS, msg, 6000);
-      renderBtn.prop('disabled', false);
-    } finally {
-      Spinner.loading(false);
-    }
-  }
-
-  _setProgressLabel(status, percent) {
-    if (!this.$modal) return;
-    const label = this.$modal.find(`#${this.$ids.progress}`);
-    const pct = Number(percent || 0);
-    if (status === 'completed') {
-      label.text('Render completed.');
-    } else if (status === 'error') {
-      label.text('Render failed.');
-    } else if (status === 'queued' || status === 'submitted') {
-      label.text('Submitting render…');
-    } else {
-      label.text(`Rendering… ${pct}%`);
-    }
-  }
-
-  async _onIotMessage(msg) {
-    if (!msg || msg.type !== 'render') return;
-    if (!this.$activeRenderId) return;
-    if (msg.renderId && msg.renderId !== this.$activeRenderId) return;
-
-    this._setProgressLabel(msg.status, msg.percent);
-    this._patchHistoryRowStatus(this.$activeRenderId, msg.status, msg.percent);
-
-    if (msg.status === 'completed' || msg.status === 'error') {
-      const renderBtn = this.$modal && this.$modal.find(`#${this.$ids.render}`);
-      if (renderBtn) renderBtn.prop('disabled', false);
-      this.$activeRenderId = null;
-      this._refreshRenderHistory().catch((e) => console.error(e));
-    }
-  }
-
-  _patchHistoryRowStatus(renderId, status, percent) {
-    if (!this.$modal || !renderId) return;
-    const row = this.$modal.find(`[data-render-id="${renderId}"]`);
-    if (!row.length) return;
-    const meta = row.children().first();
-    const idShort = renderId.slice(0, 8);
-    const ts = meta.text().split(' · ')[1] || '';
-    const pct = Number(percent || 0);
-    const tail = pct ? ` (${pct}%)` : '';
-    meta.text(`${idShort} · ${ts} · ${status}${tail}`);
-  }
-
-  async _signRenderedMp4(s3Prefix) {
-    // s3Prefix is "s3://{bucket}/renders/{uuid}/{renderId}/mp4/"
-    const m = /^s3:\/\/([^/]+)\/(.+)$/.exec(s3Prefix);
-    if (!m) throw new Error(`unexpected output URI: ${s3Prefix}`);
-    const bucket = m[1];
-    const prefix = m[2];
-
-    const s3 = GetS3Utils();
-    const items = await s3.listObjects(bucket, prefix);
-    const mp4 = (items || []).find((it) =>
-      it && typeof it.Key === 'string' && it.Key.toLowerCase().endsWith('.mp4'));
-    if (!mp4) throw new Error('no .mp4 found under render output');
-    const filename = mp4.Key.split('/').pop() || 'render.mp4';
-    const [playUrl, downloadUrl] = await Promise.all([
-      s3.signUrl(bucket, mp4.Key),
-      s3.signUrl(bucket, mp4.Key, {
-        responseContentDisposition: `attachment; filename="${filename}"`,
-      }),
-    ]);
-    return { playUrl, downloadUrl };
-  }
-
-  _selectedTemplate() {
-    if (!this.$modal) return undefined;
-    const v = this.$modal.find(`#${this.$ids.template}`).val();
-    return v || undefined;
-  }
-
-  _setTemplateStatus(text, kind) {
-    if (!this.$modal) return;
-    const el = this.$modal.find(`#${this.$ids.tmplStatus}`);
-    el.removeClass('text-muted text-success text-danger');
-    if (kind === 'ok') el.addClass('text-success');
-    else if (kind === 'err') el.addClass('text-danger');
-    else el.addClass('text-muted');
-    el.html(text || '');
-  }
-
-  async _refreshTemplateList(preferredValue) {
-    if (!this.$modal) return;
-    const select = this.$modal.find(`#${this.$ids.template}`);
-    try {
-      this._setTemplateStatus('Loading templates...');
-      const res = await ApiHelper.listMcTemplates();
-      const templates = (res && res.templates) || [];
-      const current = preferredValue
-        || select.val()
-        || (this.state.editProject && this.state.editProject.template)
-        || DEFAULT_RENDER_TEMPLATE;
-      select.empty();
-      templates
-        .slice()
-        .sort((a, b) => a.name.localeCompare(b.name))
-        .forEach((t) => {
-          const tags = [];
-          if (t.builtin && t.custom) tags.push('built-in, overridden');
-          else if (t.builtin) tags.push('built-in');
-          else if (t.custom) tags.push('custom');
-          const label = `${t.name}${tags.length ? ` (${tags.join(', ')})` : ''}`;
-          select.append($('<option/>').attr('value', t.name).text(label));
-        });
-      if (templates.find((t) => t.name === current)) {
-        select.val(current);
-      }
-      this._setTemplateStatus(`${templates.length} template(s) available.`, 'ok');
-    } catch (e) {
-      console.error(e);
-      // Fall back to built-in list so the picker is usable even if list fails.
-      if (select.children().length === 0) {
-        BUILTIN_RENDER_TEMPLATES.forEach((t) =>
-          select.append($('<option/>').attr('value', t.value).text(t.label)));
-        select.val(DEFAULT_RENDER_TEMPLATE);
-      }
-      this._setTemplateStatus(`Error loading templates: ${e.message}`, 'err');
-    }
-  }
-
   _onHidden() {
-    UnregisterIotMessageEvent(this.$iotReceiverName);
     if (this.$tracks) {
       this.$tracks.destroy();
       this.$tracks = null;

@@ -713,11 +713,23 @@ export default class ApiHelper {
     );
   }
 
-  static async listRenders(editProjectId) {
+  // Pass either { editProjectId } or { uuid } to scope the listing. Listing by
+  // uuid fans out across all edit projects for an asset (OutputTab full vs
+  // highlight-set-as-edit-project both create separate rows but share an
+  // asset uuid).
+  static async listRenders(query) {
+    let q;
+    if (typeof query === 'string') {
+      q = { editProjectId: query };
+    } else if (query && typeof query === 'object') {
+      q = { ...query };
+    } else {
+      q = {};
+    }
     return _authHttpRequest.send(
       'GET',
       ENDPOINTS.Renders,
-      { editProjectId }
+      q
     );
   }
 

@@ -71,7 +71,7 @@
               "CaptionSelectorName": "##CAPTION_SOURCE##",
               "DestinationSettings": {
                 "DestinationType": "BURN_IN",
-                "BurninDestinationSettings": { "YPosition": 432, "FontSize": 14, "FontScript": "##FONT_SCRIPT##" }
+                "BurninDestinationSettings": { "Alignment": "CENTERED", "OutlineSize": 2, "OutlineColor": "BLACK", "XPosition": 27, "Width": 216, "YPosition": 432, "FontSize": 14, "FontScript": "##FONT_SCRIPT##" }
               }
             }
           ]
@@ -132,7 +132,7 @@
               "CaptionSelectorName": "##CAPTION_SOURCE##",
               "DestinationSettings": {
                 "DestinationType": "BURN_IN",
-                "BurninDestinationSettings": { "YPosition": 576, "FontSize": 19, "FontScript": "##FONT_SCRIPT##" }
+                "BurninDestinationSettings": { "Alignment": "CENTERED", "OutlineSize": 2, "OutlineColor": "BLACK", "XPosition": 36, "Width": 288, "YPosition": 576, "FontSize": 19, "FontScript": "##FONT_SCRIPT##" }
               }
             }
           ]
@@ -193,7 +193,7 @@
               "CaptionSelectorName": "##CAPTION_SOURCE##",
               "DestinationSettings": {
                 "DestinationType": "BURN_IN",
-                "BurninDestinationSettings": { "YPosition": 864, "FontSize": 29, "FontScript": "##FONT_SCRIPT##" }
+                "BurninDestinationSettings": { "Alignment": "CENTERED", "OutlineSize": 2, "OutlineColor": "BLACK", "XPosition": 54, "Width": 432, "YPosition": 864, "FontSize": 29, "FontScript": "##FONT_SCRIPT##" }
               }
             }
           ]
@@ -254,7 +254,7 @@
               "CaptionSelectorName": "##CAPTION_SOURCE##",
               "DestinationSettings": {
                 "DestinationType": "BURN_IN",
-                "BurninDestinationSettings": { "YPosition": 1152, "FontSize": 38, "FontScript": "##FONT_SCRIPT##" }
+                "BurninDestinationSettings": { "Alignment": "CENTERED", "OutlineSize": 2, "OutlineColor": "BLACK", "XPosition": 72, "Width": 576, "YPosition": 1152, "FontSize": 38, "FontScript": "##FONT_SCRIPT##" }
               }
             }
           ]
@@ -315,7 +315,7 @@
               "CaptionSelectorName": "##CAPTION_SOURCE##",
               "DestinationSettings": {
                 "DestinationType": "BURN_IN",
-                "BurninDestinationSettings": { "YPosition": 1728, "FontSize": 58, "FontScript": "##FONT_SCRIPT##" }
+                "BurninDestinationSettings": { "Alignment": "CENTERED", "OutlineSize": 2, "OutlineColor": "BLACK", "XPosition": 108, "Width": 864, "YPosition": 1728, "FontSize": 58, "FontScript": "##FONT_SCRIPT##" }
               }
             }
           ]
@@ -399,7 +399,7 @@
               "CaptionSelectorName": "##CAPTION_SOURCE##",
               "DestinationSettings": {
                 "DestinationType": "BURN_IN",
-                "BurninDestinationSettings": { "YPosition": 1728, "FontSize": 58, "FontScript": "##FONT_SCRIPT##" }
+                "BurninDestinationSettings": { "Alignment": "CENTERED", "OutlineSize": 2, "OutlineColor": "BLACK", "XPosition": 108, "Width": 864, "YPosition": 1728, "FontSize": 58, "FontScript": "##FONT_SCRIPT##" }
               }
             }
           ]

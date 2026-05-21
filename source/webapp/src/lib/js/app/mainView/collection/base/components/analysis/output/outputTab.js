@@ -29,16 +29,23 @@ const BUILTIN_TEMPLATES = [
 ];
 const LOGO_SIZES = ['48', '64', '96', '128', '192'];
 const ALLOWED_LOGO_EXT = ['png', 'jpg', 'jpeg'];
+const STRATEGIES = [
+  { value: 'auto', label: 'Auto (transcript first, fallback to multimodal)' },
+  { value: 'transcript-llm', label: 'Transcript LLM (text-only)' },
+  { value: 'multimodal', label: 'Multimodal VLM (sees video + audio)' },
+];
+// 'auto' may use either path; multimodal sends a video block to Bedrock, so
+// only models that accept video input qualify.
+const STRATEGY_CAPABILITY = {
+  auto: 'video',
+  'transcript-llm': 'text',
+  multimodal: 'video',
+};
 const MODES = [
   {
     value: 'full',
     label: 'Full video',
     desc: 'Re-encode the full source video with the chosen template.',
-  },
-  {
-    value: 'trim',
-    label: 'Trim range',
-    desc: 'Encode a single contiguous clip between two timecodes (HH:MM:SS:FF).',
   },
   {
     value: 'highlights',
@@ -56,9 +63,14 @@ export default class OutputTab extends mxAlert(BaseAnalysisTab) {
       template: DEFAULT_TEMPLATE,
       burnSubtitles: false,
       logos: {},
-      inputClipping: null,
       editProjectId: null,
       activeRenderId: null,
+      detect: {
+        strategy: 'auto',
+        modelId: '',
+        prompt: '',
+        maxSegments: 10,
+      },
     };
     this.$iotReceiverName = `output-tab-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
   }
@@ -71,11 +83,10 @@ export default class OutputTab extends mxAlert(BaseAnalysisTab) {
   }
 
   async createContent() {
-    const container = $('<div/>').addClass('col-11 my-4 max-h36r');
+    const container = $('<div/>').addClass('col-11 my-4');
     container.append(this.createIntro());
     container.append(this.createModeSection());
     container.append(this.createTemplateSection());
-    container.append(this.createTrimSection());
     container.append(this.createHighlightSection());
     container.append(this.createAddonsSection());
     container.append(this.createControls());
@@ -102,10 +113,9 @@ export default class OutputTab extends mxAlert(BaseAnalysisTab) {
     wrap.append($('<p/>').addClass('lead mb-1').html('Output'));
     wrap.append($('<p/>').addClass('lead-xs text-muted mb-0').html(
       'Render and publish this video. By default the full source is re-encoded '
-      + 'with the chosen MediaConvert template (HLS + MP4). Switch to <em>Trim '
-      + 'range</em> for a single clip, or <em>Highlight cuts</em> to stitch '
-      + 'segments from a highlight set. Burn-in subtitles and per-resolution '
-      + 'logo overlays are optional add-ons.'
+      + 'with the chosen MediaConvert template (HLS + MP4). Switch to '
+      + '<em>Highlight cuts</em> to stitch segments from a highlight set. '
+      + 'Burn-in subtitles and per-resolution logo overlays are optional add-ons.'
     ));
     return wrap;
   }
@@ -141,7 +151,6 @@ export default class OutputTab extends mxAlert(BaseAnalysisTab) {
 
   setMode(mode) {
     this.$state.mode = mode;
-    this.$root().find('[data-role="trim-section"]').css('display', mode === 'trim' ? '' : 'none');
     this.$root().find('[data-role="highlight-section"]').css('display', mode === 'highlights' ? '' : 'none');
   }
 
@@ -221,39 +230,6 @@ export default class OutputTab extends mxAlert(BaseAnalysisTab) {
     }
   }
 
-  createTrimSection() {
-    const section = $('<div/>')
-      .addClass('form-group px-0 mt-3 mb-3 border rounded p-3')
-      .attr('data-role', 'trim-section')
-      .css('display', 'none');
-    section.append($('<p/>').addClass('lead-s mb-2').html('Trim range'));
-    section.append($('<p/>').addClass('lead-xs text-muted mb-2').html(
-      'Enter timecodes as <code>HH:MM:SS:FF</code> (frames). Leave blank to '
-      + 'fall back to the full video.'
-    ));
-    const row = $('<div/>').addClass('d-flex flex-wrap align-items-center');
-    const startInput = $('<input/>')
-      .addClass('form-control form-control-sm mr-2 mb-1').css('width', '12em')
-      .attr('data-role', 'trim-start')
-      .attr('placeholder', '00:00:00:00');
-    const endInput = $('<input/>')
-      .addClass('form-control form-control-sm mr-2 mb-1').css('width', '12em')
-      .attr('data-role', 'trim-end')
-      .attr('placeholder', '00:00:10:00');
-    row.append($('<span/>').addClass('lead-xs text-muted mr-2 mb-1').text('Start')).append(startInput);
-    row.append($('<span/>').addClass('lead-xs text-muted mr-2 mb-1').text('End')).append(endInput);
-    section.append(row);
-    return section;
-  }
-
-  collectInputClipping() {
-    if (this.$state.mode !== 'trim') return null;
-    const start = String(this.$root().find('[data-role="trim-start"]').val() || '').trim();
-    const end = String(this.$root().find('[data-role="trim-end"]').val() || '').trim();
-    if (!start || !end) return null;
-    return { StartTimecode: start, EndTimecode: end };
-  }
-
   createHighlightSection() {
     const section = $('<div/>')
       .addClass('form-group px-0 mt-3 mb-3 border rounded p-3')
@@ -286,12 +262,13 @@ export default class OutputTab extends mxAlert(BaseAnalysisTab) {
     refreshBtn.on('click', () => this.refreshHighlightSets());
     row.append(refreshBtn);
 
-    const detectBtn = $('<button/>').attr('type', 'button')
-      .addClass('btn btn-sm btn-outline-primary mb-1')
-      .attr('data-role', 'detect-highlights')
-      .html('Detect highlights');
-    detectBtn.on('click', () => this.runHighlightDetection());
-    row.append(detectBtn);
+    const deleteBtn = $('<button/>').attr('type', 'button')
+      .addClass('btn btn-sm btn-outline-danger mb-1')
+      .attr('data-role', 'highlights-delete')
+      .attr('title', 'Delete the selected highlight set')
+      .html('✖ Delete');
+    deleteBtn.on('click', () => this.deleteSelectedHighlightSet());
+    row.append(deleteBtn);
 
     section.append(row);
 
@@ -299,7 +276,118 @@ export default class OutputTab extends mxAlert(BaseAnalysisTab) {
       .attr('data-role', 'highlights-status');
     section.append(status);
 
+    section.append(this.createDetectForm());
+
     return section;
+  }
+
+  createDetectForm() {
+    const wrap = $('<div/>')
+      .addClass('mt-3 pt-3 border-top')
+      .attr('data-role', 'detect-form');
+
+    wrap.append($('<p/>').addClass('lead-s mb-1').html('Run detection'));
+    wrap.append($('<p/>').addClass('lead-xs text-muted mb-2').html(
+      'Pick a strategy and Bedrock model, optionally tune the prompt and segment cap. '
+      + 'Results land as a new highlight set in the dropdown above.'
+    ));
+
+    const grid = $('<div/>').addClass('d-flex flex-wrap');
+    wrap.append(grid);
+
+    const strategyGroup = this.makeFormGroup('Strategy');
+    const strategySelect = $('<select/>').addClass('custom-select custom-select-sm')
+      .attr('data-role', 'detect-strategy');
+    STRATEGIES.forEach((s) => {
+      strategySelect.append($('<option/>').attr('value', s.value).text(s.label));
+    });
+    strategySelect.val(this.$state.detect.strategy);
+    strategySelect.on('change', () => {
+      this.$state.detect.strategy = strategySelect.val();
+      this.reloadDetectModelOptions();
+    });
+    strategyGroup.append(strategySelect);
+    grid.append(strategyGroup);
+
+    const modelGroup = this.makeFormGroup('Model');
+    const modelSelect = $('<select/>').addClass('custom-select custom-select-sm')
+      .attr('data-role', 'detect-model');
+    modelSelect.append($('<option/>').attr('value', '').text('(default)'));
+    modelSelect.on('change', () => {
+      this.$state.detect.modelId = modelSelect.val();
+    });
+    modelGroup.append(modelSelect);
+    grid.append(modelGroup);
+
+    const maxGroup = this.makeFormGroup('Max segments');
+    const maxInput = $('<input/>').addClass('form-control form-control-sm')
+      .attr('type', 'number').attr('min', '1').attr('max', '50')
+      .attr('data-role', 'detect-max')
+      .val(this.$state.detect.maxSegments);
+    maxInput.on('input', () => {
+      const v = Number(maxInput.val()) || 10;
+      this.$state.detect.maxSegments = Math.max(1, Math.min(50, v));
+    });
+    maxGroup.append(maxInput);
+    grid.append(maxGroup);
+
+    const promptGroup = $('<div/>').addClass('w-100 px-0 mt-2 mb-2');
+    promptGroup.append($('<label/>').addClass('lead-xs text-muted mb-1')
+      .text('Custom prompt (optional)'));
+    const promptInput = $('<textarea/>').addClass('form-control form-control-sm')
+      .attr('rows', '2').attr('data-role', 'detect-prompt')
+      .attr('placeholder', 'Override the default highlight prompt — e.g. "find dramatic moments in this lecture"')
+      .val(this.$state.detect.prompt);
+    promptInput.on('input', () => {
+      this.$state.detect.prompt = promptInput.val();
+    });
+    promptGroup.append(promptInput);
+    wrap.append(promptGroup);
+
+    const submitRow = $('<div/>').addClass('d-flex align-items-center mt-2');
+    const submitBtn = $('<button/>').attr('type', 'button')
+      .addClass('btn btn-sm btn-primary mr-2')
+      .attr('data-role', 'detect-submit')
+      .html('Detect highlights');
+    submitBtn.on('click', () => this.runHighlightDetection());
+    submitRow.append(submitBtn);
+    wrap.append(submitRow);
+
+    return wrap;
+  }
+
+  makeFormGroup(label) {
+    const group = $('<div/>').addClass('form-group mr-3 mb-2');
+    group.append($('<label/>').addClass('lead-xs text-muted mb-1 d-block').text(label));
+    return group;
+  }
+
+  async reloadDetectModelOptions() {
+    const select = this.$root().find('[data-role="detect-model"]');
+    if (select.length === 0) return;
+    const capability = STRATEGY_CAPABILITY[this.$state.detect.strategy] || 'text';
+    const previous = this.$state.detect.modelId;
+    select.empty();
+    select.append($('<option/>').attr('value', '').text('(default)'));
+    try {
+      const res = await ApiHelper.getModels(capability);
+      const providers = (res && res.providers) || {};
+      Object.keys(providers).sort().forEach((provider) => {
+        const optgroup = $('<optgroup/>').attr('label', provider);
+        (providers[provider] || []).forEach((m) => {
+          optgroup.append($('<option/>').attr('value', m.id).text(m.name));
+        });
+        if (optgroup.children().length > 0) select.append(optgroup);
+      });
+    } catch (e) {
+      console.error('getModels failed:', e);
+    }
+    if (previous && select.find(`option[value="${previous}"]`).length > 0) {
+      select.val(previous);
+    } else {
+      this.$state.detect.modelId = '';
+      select.val('');
+    }
   }
 
   async refreshHighlightSets(preferredId) {
@@ -321,13 +409,16 @@ export default class OutputTab extends mxAlert(BaseAnalysisTab) {
         const label = `${ts} · ${s.strategy || '-'} · ${cnt} seg`;
         select.append($('<option/>').attr('value', s.highlightSetId).text(label));
       });
+      // Pick the dropdown selection without clobbering $state.editProjectId.
+      // editProjectId is the user's last-saved edit project (full mode by
+      // default); we only set it to a highlight-set id when the user
+      // actually starts a highlights render.
       const target = preferredId
-        || (this.$state.editProjectId
+        || (this.$state.mode === 'highlights' && this.$state.editProjectId
           && sets.find((s) => s.highlightSetId === this.$state.editProjectId)
           && this.$state.editProjectId)
         || sets[0].highlightSetId;
       select.val(target);
-      this.$state.editProjectId = target;
       status.text(`${sets.length} set(s) available.`);
     } catch (e) {
       console.error(e);
@@ -335,15 +426,51 @@ export default class OutputTab extends mxAlert(BaseAnalysisTab) {
     }
   }
 
+  async deleteSelectedHighlightSet() {
+    const select = this.$root().find('[data-role="highlight-set-select"]');
+    const status = this.$root().find('[data-role="highlights-status"]');
+    const highlightSetId = select.val();
+    if (!highlightSetId) {
+      status.text('No highlight set selected.');
+      return;
+    }
+    const label = select.find(`option[value="${highlightSetId}"]`).text() || highlightSetId;
+    if (!window.confirm(`Delete highlight set:\n\n${label}\n\nThis cannot be undone.`)) return;
+    try {
+      status.text('Deleting…');
+      await ApiHelper.deleteHighlightSet(this.media.uuid, highlightSetId);
+      // If the user had this set selected as their active edit project, clear
+      // it so the next render doesn't try to read a deleted row.
+      if (this.$state.editProjectId === highlightSetId) {
+        this.$state.editProjectId = null;
+      }
+      await this.refreshHighlightSets();
+    } catch (e) {
+      console.error(e);
+      status.text(`Failed to delete: ${e.message}`);
+    }
+  }
+
   async runHighlightDetection() {
     const status = this.$root().find('[data-role="highlights-status"]');
+    const submitBtn = this.$root().find('[data-role="detect-submit"]');
+    const body = {
+      strategy: this.$state.detect.strategy,
+      maxSegments: Number(this.$state.detect.maxSegments) || 10,
+    };
+    if (this.$state.detect.modelId) body.modelId = this.$state.detect.modelId;
+    const trimmed = (this.$state.detect.prompt || '').trim();
+    if (trimmed.length > 0) body.prompt = trimmed;
     try {
+      submitBtn.attr('disabled', 'disabled');
       status.text('Submitting detection…');
-      await ApiHelper.startHighlightDetection(this.media.uuid, {});
+      await ApiHelper.startHighlightDetection(this.media.uuid, body);
       status.text('Detection submitted. The new set will appear here when the workflow completes.');
     } catch (e) {
       console.error(e);
       status.text(`Failed to start detection: ${e.message}`);
+    } finally {
+      submitBtn.removeAttr('disabled');
     }
   }
 
@@ -564,11 +691,11 @@ export default class OutputTab extends mxAlert(BaseAnalysisTab) {
     // Pre-load highlight set list so the dropdown isn't empty when user flips
     // to highlights mode.
     this.refreshHighlightSets().catch(() => {});
+    this.reloadDetectModelOptions().catch(() => {});
 
-    // Pull render history if we have an edit project.
-    if (this.$state.editProjectId) {
-      this.refreshHistory().catch(() => {});
-    }
+    // Pull render history scoped to the asset uuid — works whether or not
+    // an edit project has been created yet.
+    this.refreshHistory().catch(() => {});
   }
 
   applyEditProject(ep) {
@@ -600,31 +727,23 @@ export default class OutputTab extends mxAlert(BaseAnalysisTab) {
         }
       });
     }
-    if (ep.inputClipping && typeof ep.inputClipping === 'object') {
-      this.$state.inputClipping = ep.inputClipping;
-      this.$root().find('[data-role="trim-start"]').val(ep.inputClipping.StartTimecode || '');
-      this.$root().find('[data-role="trim-end"]').val(ep.inputClipping.EndTimecode || '');
-    }
   }
 
   buildPayload() {
+    // Segments are managed by HighlightEditorModal and live on the same
+    // edit-project row (editProjectId === highlightSetId). The api merges
+    // by editProjectId, so omitting segments here preserves whatever the
+    // modal saved. Compose-edl ignores segments in full mode, so we never
+    // need to overwrite them from this tab.
     const payload = {
       uuid: this.media.uuid,
       mode: this.$state.mode,
       template: this.$state.template || DEFAULT_TEMPLATE,
       burnSubtitles: !!this.$state.burnSubtitles,
       logos: this.$state.logos || {},
-      segments: [],
     };
     if (this.$state.editProjectId) {
       payload.editProjectId = this.$state.editProjectId;
-    }
-    if (this.$state.mode === 'trim') {
-      const clip = this.collectInputClipping();
-      if (!clip) {
-        throw new Error('Trim mode requires both Start and End timecodes (HH:MM:SS:FF).');
-      }
-      payload.inputClipping = clip;
     }
     return payload;
   }
@@ -686,12 +805,16 @@ export default class OutputTab extends mxAlert(BaseAnalysisTab) {
   }
 
   async refreshHistory() {
-    if (!this.$state.editProjectId) {
+    // Scope by asset uuid so history is consistent across modes — each mode
+    // creates a separate edit project (full = generated id, highlights =
+    // highlight-set id), so an editProjectId-scoped listing would hide the
+    // other mode's renders.
+    if (!this.media || !this.media.uuid) {
       this.$root().find('[data-role="history-body"]').text('No renders yet.');
       return;
     }
     try {
-      const res = await ApiHelper.listRenders(this.$state.editProjectId);
+      const res = await ApiHelper.listRenders({ uuid: this.media.uuid });
       const rows = ((res && res.renders) || []).slice().sort((a, b) =>
         String(b.updatedAt || b.submittedAt || '').localeCompare(
           String(a.updatedAt || a.submittedAt || '')));
@@ -720,8 +843,15 @@ export default class OutputTab extends mxAlert(BaseAnalysisTab) {
     const e = (s) => String(s == null ? '' : s)
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     const parts = [];
-    parts.push(`<strong>Status</strong>: <code>${e(row.status || 'unknown')}</code>`);
-    if (typeof row.percent === 'number') parts.push(`${row.percent}%`);
+    const status = row.status || 'unknown';
+    parts.push(`<strong>Status</strong>: <code>${e(status)}</code>`);
+    // Only show percent while in flight — MediaConvert can return 0 on
+    // COMPLETE, and "completed · 0%" reads as a stalled job.
+    if (typeof row.percent === 'number'
+      && status !== 'completed'
+      && status !== 'error') {
+      parts.push(`${row.percent}%`);
+    }
     if (row.template) parts.push(`template <code>${e(row.template)}</code>`);
     if (row.renderId) parts.push(`<code class="lead-xxs">${e(row.renderId)}</code>`);
     if (row.errorMessage) parts.push(`<span class="text-danger">${e(row.errorMessage)}</span>`);
@@ -744,8 +874,12 @@ export default class OutputTab extends mxAlert(BaseAnalysisTab) {
     const ts = (row.updatedAt || row.submittedAt) ? new Date(row.updatedAt || row.submittedAt).toLocaleString() : '';
     const idShort = (row.renderId || '').slice(0, 8);
     const status = row.status || 'unknown';
+    const showPct = typeof row.percent === 'number'
+      && row.percent > 0
+      && status !== 'completed'
+      && status !== 'error';
     const meta = $('<span/>').addClass('mr-auto text-truncate').css('minWidth', 0)
-      .text(`${idShort} · ${ts} · ${status}${row.percent ? ` (${row.percent}%)` : ''}`);
+      .text(`${idShort} · ${ts} · ${status}${showPct ? ` (${row.percent}%)` : ''}`);
     wrap.append(meta);
 
     const actions = $('<span/>').addClass('ml-2');

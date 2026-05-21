@@ -36,18 +36,12 @@ const REQUIRED_ENVS = [
 ];
 
 const FPS = 25;
-// Shared MediaConvert template store; the api Lambda's /mc-templates endpoint
-// writes here, and outputOp reads from the same prefix.
 const TEMPLATES_PREFIX = '_mc_templates';
 const TEMPLATE_NAME_RE = /^[A-Za-z0-9_-]{1,64}$/;
-const SUPPORTED_TEMPLATES = ['mp4_landscape', 'mp4_portrait'];
 const DEFAULT_TEMPLATE = 'mp4_landscape';
 const AUDIO_SOURCE_NAME = 'Audio Selector 1';
 const CAPTION_SOURCE_NAME = 'Captions Selector 1';
 const SUBTITLE_PREFIX = 'transcode/subtitle';
-// Empty string is the documented sentinel for "no logo at this size"; stripping
-// the InsertableImage in that case prevents MediaConvert from refusing the job.
-const LOGO_SIZES = ['48', '64', '96', '128', '192'];
 
 const PUBLISH_CLOUDFRONT_DOMAIN = process.env.ENV_PUBLISH_CLOUDFRONT_DOMAIN || '';
 
@@ -74,34 +68,41 @@ function secondsToTimecode(seconds, fps = FPS) {
     .join(':');
 }
 
-function buildHighlightInputs(sourceUri, segments) {
-  return segments.map((seg) => ({
-    FileInput: sourceUri,
-    InputClippings: [
-      {
-        StartTimecode: secondsToTimecode(seg.startSec),
-        EndTimecode: secondsToTimecode(seg.endSec),
+function buildHighlightInputs(sourceUri, segments, perClipCaptionSelectors) {
+  return segments.map((seg, idx) => {
+    const input = {
+      FileInput: sourceUri,
+      InputClippings: [
+        {
+          StartTimecode: secondsToTimecode(seg.startSec),
+          EndTimecode: secondsToTimecode(seg.endSec),
+        },
+      ],
+      TimecodeSource: 'ZEROBASED',
+      VideoSelector: {
+        ColorSpace: 'FOLLOW',
+        Rotate: 'AUTO',
       },
-    ],
-    TimecodeSource: 'ZEROBASED',
-    VideoSelector: {
-      ColorSpace: 'FOLLOW',
-      Rotate: 'AUTO',
-    },
-    AudioSelectors: {
-      [AUDIO_SOURCE_NAME]: {
-        DefaultSelection: 'DEFAULT',
-        Offset: 0,
+      AudioSelectors: {
+        [AUDIO_SOURCE_NAME]: {
+          DefaultSelection: 'DEFAULT',
+          Offset: 0,
+        },
       },
-    },
-    FilterEnable: 'AUTO',
-    PsiControl: 'USE_PSI',
-    DeblockFilter: 'DISABLED',
-    DenoiseFilter: 'DISABLED',
-  }));
+      FilterEnable: 'AUTO',
+      PsiControl: 'USE_PSI',
+      DeblockFilter: 'DISABLED',
+      DenoiseFilter: 'DISABLED',
+    };
+    const sel = perClipCaptionSelectors && perClipCaptionSelectors[idx];
+    if (sel && Object.keys(sel).length > 0) {
+      input.CaptionSelectors = sel;
+    }
+    return input;
+  });
 }
 
-function buildSingleInput(sourceUri, inputClipping, captionSelectors) {
+function buildSingleInput(sourceUri, captionSelectors) {
   const input = {
     FileInput: sourceUri,
     TimecodeSource: 'ZEROBASED',
@@ -123,14 +124,6 @@ function buildSingleInput(sourceUri, inputClipping, captionSelectors) {
     DeblockFilter: 'DISABLED',
     DenoiseFilter: 'DISABLED',
   };
-  if (inputClipping
-    && inputClipping.StartTimecode
-    && inputClipping.EndTimecode) {
-    input.InputClippings = [{
-      StartTimecode: inputClipping.StartTimecode,
-      EndTimecode: inputClipping.EndTimecode,
-    }];
-  }
   if (captionSelectors && Object.keys(captionSelectors).length > 0) {
     input.CaptionSelectors = captionSelectors;
   }
@@ -223,6 +216,180 @@ async function snapshotSrt(proxyBucket, uuid, outputBaseKey) {
     snapshotKey: destKey,
     origin: srcKey.endsWith('_edited.srt') ? 'edited' : 'original',
   };
+}
+
+function srtTimestampToSeconds(ts) {
+  const m = /^(\d{2}):(\d{2}):(\d{2}),(\d{3})$/.exec(ts.trim());
+  if (!m) return NaN;
+  return (Number(m[1]) * 3600) + (Number(m[2]) * 60) + Number(m[3]) + (Number(m[4]) / 1000);
+}
+
+function secondsToSrtTimestamp(sec) {
+  const total = Math.max(0, sec);
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = Math.floor(total % 60);
+  const ms = Math.round((total - Math.floor(total)) * 1000);
+  const pad = (n, w) => String(n).padStart(w, '0');
+  return `${pad(h, 2)}:${pad(m, 2)}:${pad(s, 2)},${pad(ms, 3)}`;
+}
+
+function parseSrt(srtText) {
+  const blocks = srtText.replace(/\r\n/g, '\n').trim().split(/\n\s*\n/);
+  const cues = [];
+  for (const b of blocks) {
+    const lines = b.split('\n');
+    if (lines.length < 2) continue;
+    const tsLine = lines[1];
+    const m = /(\d{2}:\d{2}:\d{2},\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2},\d{3})/.exec(tsLine);
+    if (!m) continue;
+    const start = srtTimestampToSeconds(m[1]);
+    const end = srtTimestampToSeconds(m[2]);
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) continue;
+    cues.push({ start, end, text: lines.slice(2).join('\n') });
+  }
+  return cues;
+}
+
+function frameAlignedSec(sec, fps = FPS) {
+  return Math.round(Math.max(0, sec) * fps) / fps;
+}
+
+const ONE_FRAME_SEC = 1 / FPS;
+// MediaConvert drops cues whose start equals the InputClipping start (the
+// window check is exclusive on the lower edge). Nudge any cue that starts
+// at-or-before the window start one frame inside.
+const CUE_LEAD_SEC = ONE_FRAME_SEC * 1.5;
+
+// MediaConvert's BurninDestinationSettings.Width is a positioning bounding
+// box, not a word-wrap directive — long lines still overflow. Pre-wrap in
+// JS using width units (CJK = 2, Latin = 1) so the rendered text fits.
+const WRAP_MAX_LINES = 2;
+const WRAP_DEFAULT = 22;
+const WRAP_PER_TEMPLATE = {
+  mp4_portrait: 16,
+  mp4_landscape: 28,
+};
+
+function charWidthUnits(ch) {
+  const cp = ch.codePointAt(0);
+  if (cp === undefined) return 1;
+  if (
+    (cp >= 0x1100 && cp <= 0x115f)
+    || (cp >= 0x2e80 && cp <= 0x303e)
+    || (cp >= 0x3041 && cp <= 0x33ff)
+    || (cp >= 0x3400 && cp <= 0x4dbf)
+    || (cp >= 0x4e00 && cp <= 0x9fff)
+    || (cp >= 0xa000 && cp <= 0xa4cf)
+    || (cp >= 0xac00 && cp <= 0xd7a3)
+    || (cp >= 0xf900 && cp <= 0xfaff)
+    || (cp >= 0xfe30 && cp <= 0xfe4f)
+    || (cp >= 0xff00 && cp <= 0xff60)
+    || (cp >= 0xffe0 && cp <= 0xffe6)
+  ) return 2;
+  return 1;
+}
+
+// Kinsoku: punctuation that must not appear at the *start* of a line.
+// If the next-line first char would be one of these, pull it onto the
+// previous line (over budget by one char is fine — looks better than an
+// orphan comma).
+const NO_LINE_START = new Set([
+  ',', '.', '!', '?', ':', ';', ')', ']', '}', '"', "'", '”', '’',
+  '，', '。', '、', '！', '？', '：', '；', '）', '］', '｝', '」', '』', '〉', '》', '〕', '〗', '〙', '〛',
+  '…', '‥', '·', '・', '°', '％', '％', '‰',
+]);
+
+function wrapCueText(text, maxUnits, maxLines = WRAP_MAX_LINES) {
+  const flat = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!flat) return '';
+  const chars = Array.from(flat);
+  const lines = [];
+  let i = 0;
+  while (i < chars.length && lines.length < maxLines) {
+    let used = 0;
+    let j = i;
+    while (j < chars.length) {
+      const w = charWidthUnits(chars[j]);
+      if (used + w > maxUnits) break;
+      used += w;
+      j += 1;
+    }
+    if (j === i) j = i + 1; // always advance at least one char
+    // Pull trailing kinsoku punctuation onto this line so it doesn't
+    // start the next one. Allow a small overflow.
+    while (j < chars.length && NO_LINE_START.has(chars[j])) j += 1;
+    lines.push(chars.slice(i, j).join(''));
+    i = j;
+  }
+  return lines.join('\n');
+}
+
+// MediaConvert keeps SRT timestamps on the source timeline and filters cues
+// by the InputClipping window. Cues whose start falls *before* the window
+// silently drop. The window edges must match what InputClipping actually
+// uses — secondsToTimecode rounds to the nearest frame, so clamp to the
+// same frame-aligned values, not the raw seg.startSec/endSec.
+function sliceSrtToWindow(cues, startSec, endSec, wrapUnits) {
+  const winStart = frameAlignedSec(startSec);
+  const winEnd = frameAlignedSec(endSec);
+  const minStart = winStart + CUE_LEAD_SEC;
+  const out = [];
+  let counter = 1;
+  for (const cue of cues) {
+    if (cue.end <= winStart || cue.start >= winEnd) continue;
+    const start = Math.max(cue.start, minStart);
+    const end = Math.max(start + 0.05, Math.min(cue.end, winEnd));
+    out.push(
+      `${counter}`,
+      `${secondsToSrtTimestamp(start)} --> ${secondsToSrtTimestamp(end)}`,
+      wrapCueText(cue.text, wrapUnits),
+      ''
+    );
+    counter += 1;
+  }
+  return out.join('\n');
+}
+
+// MediaConvert rejects the job if an output references a CaptionSelector
+// the input doesn't have. For windows with no overlapping cue, emit a
+// 1-frame placeholder timed *inside* the clip window so the selector binds.
+function placeholderSrt(startSec) {
+  const a = secondsToSrtTimestamp(startSec);
+  const b = secondsToSrtTimestamp(startSec + 0.04);
+  return `1\n${a} --> ${b}\n \n`;
+}
+
+async function buildPerClipCaptionSelectors(proxyBucket, outputBaseKey, snapshotKey, segments, templateName) {
+  const wrapUnits = WRAP_PER_TEMPLATE[templateName] || WRAP_DEFAULT;
+  const buf = await CommonUtils.download(proxyBucket, snapshotKey);
+  const cues = parseSrt(buf.toString('utf8'));
+  const selectors = [];
+  for (let i = 0; i < segments.length; i += 1) {
+    const seg = segments[i];
+    const startSec = Number(seg.startSec);
+    const endSec = Number(seg.endSec);
+    const sliced = sliceSrtToWindow(cues, startSec, endSec, wrapUnits);
+    const body = sliced.trim() ? sliced : placeholderSrt(frameAlignedSec(startSec));
+    const clipKey = `${outputBaseKey}/captions-${i}.srt`;
+    await CommonUtils.upload({
+      Bucket: proxyBucket,
+      Key: clipKey,
+      Body: body,
+      ContentType: 'application/x-subrip',
+    });
+    selectors.push({
+      [CAPTION_SOURCE_NAME]: {
+        SourceSettings: {
+          SourceType: 'SRT',
+          FileSourceSettings: {
+            SourceFile: `s3://${proxyBucket}/${clipKey}`,
+          },
+        },
+      },
+    });
+  }
+  return selectors;
 }
 
 // SMART_CROP + ImageInserter requires HTTP(S) URLs — s3:// silently fails
@@ -344,18 +511,13 @@ async function persistRenderRow(table, renderId, attrs) {
 }
 
 function deriveMode(editProject) {
-  if (editProject.mode && ['full', 'trim', 'highlights'].includes(editProject.mode)) {
+  if (editProject.mode === 'highlights' || editProject.mode === 'full') {
     return editProject.mode;
   }
   if (Array.isArray(editProject.segments) && editProject.segments.some(
     (s) => Number(s.endSec) > Number(s.startSec)
   )) {
     return 'highlights';
-  }
-  if (editProject.inputClipping
-    && editProject.inputClipping.StartTimecode
-    && editProject.inputClipping.EndTimecode) {
-    return 'trim';
   }
   return 'full';
 }
@@ -400,16 +562,16 @@ exports.handler = async (event) => {
   const template = await loadTemplate(proxyBucket, templateName);
 
   const mode = deriveMode(editProject);
-  const burnSubtitles = !!(editProject.burnSubtitles || editProject.burnCaptions);
+  const burnSubtitles = !!editProject.burnSubtitles;
   const fontScript = editProject.fontScript || 'HANT';
   const logos = editProject.logos || {};
 
   let captionSnapshot;
-  let captionSelectors;
+  let sharedCaptionSelectors;
   if (burnSubtitles) {
     captionSnapshot = await snapshotSrt(proxyBucket, editProject.uuid, outputBaseKey);
     if (captionSnapshot) {
-      captionSelectors = {
+      sharedCaptionSelectors = {
         [CAPTION_SOURCE_NAME]: {
           SourceSettings: {
             SourceType: 'SRT',
@@ -431,18 +593,19 @@ exports.handler = async (event) => {
     if (segments.length === 0) {
       throw new M2CException('highlights mode requires at least one segment');
     }
-    inputs = buildHighlightInputs(sourceUri, segments);
-    // Highlights mode is N inputs each with their own InputClippings; SRT
-    // burn-in across re-stitched segments is not currently supported because
-    // captions would need re-timing per clip. Strip captions in this mode.
+    let perClipSelectors;
     if (hasSubtitles) {
-      console.warn('highlights mode does not support caption burn-in; ignoring');
+      perClipSelectors = await buildPerClipCaptionSelectors(
+        proxyBucket,
+        outputBaseKey,
+        captionSnapshot.snapshotKey,
+        segments,
+        templateName
+      );
     }
-    inputs.forEach((i) => { delete i.CaptionSelectors; });
-  } else if (mode === 'trim') {
-    inputs = buildSingleInput(sourceUri, editProject.inputClipping, captionSelectors);
+    inputs = buildHighlightInputs(sourceUri, segments, perClipSelectors);
   } else {
-    inputs = buildSingleInput(sourceUri, undefined, captionSelectors);
+    inputs = buildSingleInput(sourceUri, sharedCaptionSelectors);
   }
 
   const outputGroups = applyTemplate(template, {
@@ -450,7 +613,7 @@ exports.handler = async (event) => {
     mp4Destination,
     fontScript,
     captionSourceName: CAPTION_SOURCE_NAME,
-    hasSubtitles: mode === 'highlights' ? false : hasSubtitles,
+    hasSubtitles,
     logos,
     proxyBucket,
   });
@@ -483,7 +646,7 @@ exports.handler = async (event) => {
     publishToLibrary: !!editProject.publishToLibrary,
     aspectRatio: editProject.aspectRatio || '16:9',
     mode,
-    burnSubtitles: hasSubtitles && mode !== 'highlights',
+    burnSubtitles: hasSubtitles,
     fontScript,
     template: templateName,
     segmentCount: mode === 'highlights' ? inputs.length : 0,
@@ -500,14 +663,10 @@ exports.handler = async (event) => {
     uuid: editProject.uuid,
     publishToLibrary: !!editProject.publishToLibrary,
     aspectRatio: editProject.aspectRatio || '16:9',
-    burnCaptions: hasSubtitles && mode !== 'highlights',
+    burnSubtitles: hasSubtitles,
     template: templateName,
     mode,
     destinationPrefix,
     mediaConvertParams,
   };
 };
-
-module.exports.SUPPORTED_TEMPLATES = SUPPORTED_TEMPLATES;
-module.exports.DEFAULT_TEMPLATE = DEFAULT_TEMPLATE;
-module.exports.LOGO_SIZES = LOGO_SIZES;

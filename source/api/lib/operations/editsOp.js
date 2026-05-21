@@ -39,7 +39,7 @@ const {
 const BaseOp = require('./baseOp');
 
 const VALID_KINDS = ['highlight', 'custom'];
-const VALID_MODES = ['full', 'trim', 'highlights'];
+const VALID_MODES = ['full', 'highlights'];
 const TEMPLATE_NAME_RE = /^[A-Za-z0-9_-]{1,64}$/;
 const LOGO_SIZES = ['48', '64', '96', '128', '192'];
 
@@ -51,14 +51,6 @@ function sanitizeLogos(logos) {
     if (typeof v === 'string' && v.length > 0) out[size] = v;
   }
   return out;
-}
-
-function sanitizeInputClipping(clip) {
-  if (!clip || typeof clip !== 'object') return null;
-  const start = String(clip.StartTimecode || '');
-  const end = String(clip.EndTimecode || '');
-  if (!start || !end) return null;
-  return { StartTimecode: start, EndTimecode: end };
 }
 
 function ddbDocClient() {
@@ -119,25 +111,43 @@ class EditsOp extends BaseOp {
       throw new M2CException('body.uuid (asset uuid) is required and must be a valid uuid');
     }
 
-    const segments = sanitizeSegments(body.segments || []);
     const owner = body.owner
       || this.request.cognitoIdentityId
       || 'anonymous';
+    const now = new Date().toISOString();
+    const doc = ddbDocClient();
+
+    // Fetch existing row so partial saves merge instead of overwriting other
+    // fields. OutputTab and HighlightEditorModal both write to the same row
+    // (when mode=highlights, editProjectId === highlightSetId): the modal
+    // saves segments only, OutputTab saves render add-ons only — without a
+    // merge they clobber each other.
+    const existing = await doc.send(new GetCommand({
+      TableName: EditProjectsTable,
+      Key: { [EditProjectsPartitionKey]: editProjectId },
+    })).then((r) => (r && r.Item) || undefined).catch(() => undefined);
 
     const item = {
+      ...(existing || {}),
       [EditProjectsPartitionKey]: editProjectId,
       uuid: assetUuid,
-      owner,
-      name: body.name ? String(body.name) : '',
-      segments,
-      publishToLibrary: !!body.publishToLibrary,
-      aspectRatio: body.aspectRatio ? String(body.aspectRatio) : '16:9',
-      burnCaptions: !!body.burnCaptions,
-      updatedAt: new Date().toISOString(),
+      owner: (existing && existing.owner) || owner,
+      updatedAt: now,
     };
+    if (!existing) {
+      item.name = body.name ? String(body.name) : '';
+      item.segments = sanitizeSegments(body.segments || []);
+      item.publishToLibrary = !!body.publishToLibrary;
+      item.aspectRatio = body.aspectRatio ? String(body.aspectRatio) : '16:9';
+      item.createdAt = body.createdAt ? String(body.createdAt) : now;
+    } else {
+      if (body.name !== undefined) item.name = String(body.name);
+      if (body.segments !== undefined) item.segments = sanitizeSegments(body.segments);
+      if (body.publishToLibrary !== undefined) item.publishToLibrary = !!body.publishToLibrary;
+      if (body.aspectRatio !== undefined) item.aspectRatio = String(body.aspectRatio);
+    }
 
-    // Output-tab fields read by compose-edl. Stored here so /renders POST
-    // doesn't need to repeat them; the user's last choice persists.
+    // Output-tab fields read by compose-edl.
     if (body.mode !== undefined) {
       const mode = String(body.mode);
       if (!VALID_MODES.includes(mode)) {
@@ -161,16 +171,7 @@ class EditsOp extends BaseOp {
     if (body.logos !== undefined) {
       item.logos = sanitizeLogos(body.logos);
     }
-    if (body.inputClipping !== undefined) {
-      item.inputClipping = sanitizeInputClipping(body.inputClipping);
-    }
-    if (body.createdAt) {
-      item.createdAt = String(body.createdAt);
-    } else {
-      item.createdAt = item.updatedAt;
-    }
 
-    const doc = ddbDocClient();
     await doc.send(new PutCommand({
       TableName: EditProjectsTable,
       Item: item,

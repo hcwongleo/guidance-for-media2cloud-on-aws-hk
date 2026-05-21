@@ -34,6 +34,15 @@ const {
           },
         },
       },
+      EditProjects: {
+        Table: EditProjectsTable,
+        GSI: {
+          Uuid: {
+            Name: EditProjectsUuidGsiName,
+            Key: EditProjectsUuidGsiKey,
+          },
+        },
+      },
     },
     StateMachines: {
       RenderPublish,
@@ -94,7 +103,6 @@ class RendersOp extends BaseOp {
       || 'anonymous';
     const publishToLibrary = !!body.publishToLibrary;
     const aspectRatio = body.aspectRatio ? String(body.aspectRatio) : '16:9';
-    const burnCaptions = !!body.burnCaptions;
     const submittedAt = new Date().toISOString();
 
     let template;
@@ -116,7 +124,6 @@ class RendersOp extends BaseOp {
         owner,
         publishToLibrary,
         aspectRatio,
-        burnCaptions,
         ...(template ? { template } : {}),
         status: 'queued',
         percent: 0,
@@ -139,7 +146,6 @@ class RendersOp extends BaseOp {
       editProjectId,
       publishToLibrary,
       aspectRatio,
-      burnCaptions,
       owner,
       ...(template ? { template } : {}),
     };
@@ -165,7 +171,9 @@ class RendersOp extends BaseOp {
   }
 
   async _getRender(renderId) {
-    const queryEditProjectId = (this.request.queryString || {}).editProjectId;
+    const qs = this.request.queryString || {};
+    const queryEditProjectId = qs.editProjectId;
+    const queryUuid = qs.uuid;
     const doc = ddbDocClient();
 
     if (!renderId && queryEditProjectId) {
@@ -183,6 +191,38 @@ class RendersOp extends BaseOp {
       return {
         editProjectId: queryEditProjectId,
         renders: res.Items || [],
+      };
+    }
+
+    // List all renders for an asset by fanning out across its edit projects.
+    // OutputTab + HighlightEditorModal create separate edit projects per
+    // highlight set, so listing by editProjectId would hide history from
+    // other modes; aggregate by asset uuid instead.
+    if (!renderId && queryUuid) {
+      if (!CommonUtils.validateUuid(queryUuid)) {
+        throw new M2CException('invalid uuid');
+      }
+      const eps = await doc.send(new QueryCommand({
+        TableName: EditProjectsTable,
+        IndexName: EditProjectsUuidGsiName,
+        KeyConditionExpression: '#k = :v',
+        ExpressionAttributeNames: { '#k': EditProjectsUuidGsiKey },
+        ExpressionAttributeValues: { ':v': queryUuid },
+      }));
+      const editProjectIds = ((eps && eps.Items) || [])
+        .map((it) => it && it.editProjectId)
+        .filter((id) => typeof id === 'string' && id.length > 0);
+      const buckets = await Promise.all(editProjectIds.map((id) => doc.send(new QueryCommand({
+        TableName: RendersTable,
+        IndexName: RendersEditProjectGsiName,
+        KeyConditionExpression: '#k = :v',
+        ExpressionAttributeNames: { '#k': RendersEditProjectGsiKey },
+        ExpressionAttributeValues: { ':v': id },
+      })).then((r) => (r && r.Items) || []).catch(() => [])));
+      const renders = [].concat(...buckets);
+      return {
+        uuid: queryUuid,
+        renders,
       };
     }
 

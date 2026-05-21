@@ -273,18 +273,26 @@ export default class EditorTracks {
     const segDur = Math.max(0.001, segEnd - segStart);
     const offset = Math.max(0, Math.min(1, (cur - segStart) / segDur));
 
-    let totalEditSec = 0;
-    let priorSec = 0;
-    editSegs.forEach((s, i) => {
-      const d = Math.max(0, (Number(s.endSec) || 0) - (Number(s.startSec) || 0));
-      if (i < activeIdx) priorSec += d;
-      totalEditSec += d;
-    });
-    if (totalEditSec <= 0) {
+    // Anchor to the active chip's actual DOM rect inside the ribbon. Chips have
+    // margins + min-width clamps, so a pure time-fraction over the ribbon width
+    // drifts away from the visible edge — snapping to the chip rect keeps the
+    // red bar aligned to where the user clicked.
+    const ribbonEl = this.$playhead.parent()[0];
+    const chipEl = ribbonEl
+      && ribbonEl.querySelector(`[data-edit-index="${activeIdx}"]`);
+    if (!ribbonEl || !chipEl) {
       this.$playhead.css('display', 'none');
       return;
     }
-    const pct = ((priorSec + offset * segDur) / totalEditSec) * 100;
+    const ribbonRect = ribbonEl.getBoundingClientRect();
+    const chipRect = chipEl.getBoundingClientRect();
+    if (ribbonRect.width <= 0) {
+      this.$playhead.css('display', 'none');
+      return;
+    }
+    const xWithinRibbon = (chipRect.left - ribbonRect.left)
+      + offset * chipRect.width;
+    const pct = (xWithinRibbon / ribbonRect.width) * 100;
     this.$playhead.css({ display: '', left: `${pct}%` });
   }
 

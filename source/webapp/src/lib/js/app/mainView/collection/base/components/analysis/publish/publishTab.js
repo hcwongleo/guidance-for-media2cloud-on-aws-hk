@@ -547,14 +547,28 @@ export default class PublishTab extends mxAlert(BaseAnalysisTab) {
       return;
     }
     const rows = [];
-    const fmt = (k, v) => `<div><strong>${k}</strong>: <code>${v}</code></div>`;
+    const escape = (s) => String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const fmt = (k, v) => `<div><strong>${k}</strong>: <code>${escape(v)}</code></div>`;
     if (status.status) rows.push(fmt('Status', status.status));
     if (status.jobId) rows.push(fmt('Job ID', status.jobId));
+    if (status.outputId) rows.push(fmt('Output ID', status.outputId));
     if (status.template) rows.push(fmt('Template', status.template));
     if (typeof status.jobPercentComplete === 'number') {
       rows.push(fmt('Progress', `${status.jobPercentComplete}%`));
     }
     if (status.currentPhase) rows.push(fmt('Phase', status.currentPhase));
+    if (status.sourceUri) rows.push(fmt('Source video', status.sourceUri));
+    if (status.captionsSource) {
+      const cs = status.captionsSource;
+      if (cs.origin === 'none') {
+        rows.push(fmt('Captions', 'none — no SRT bundled'));
+      } else {
+        const label = cs.origin === 'edited' ? 'edited' : 'original';
+        const path = cs.snapshotKey ? `s3://...${cs.snapshotKey}` : '';
+        rows.push(fmt('Captions', `${label}${path ? ` · snapshot ${path}` : ''}`));
+      }
+    }
     if (status.errorCode) rows.push(fmt('Error code', status.errorCode));
     if (status.errorMessage) rows.push(fmt('Error', status.errorMessage));
     if (status.submittedAt) rows.push(fmt('Submitted', new Date(status.submittedAt).toISOString()));

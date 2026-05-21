@@ -317,7 +317,8 @@ class PublishOp extends BaseOp {
     const hlsDestination = `s3://${ProxyBucket}/${outputBase}/hls/`;
     const mp4Destination = `s3://${ProxyBucket}/${outputBase}/mp4/`;
 
-    const srtUri = await this._snapshotSrtForPublish(uuid, outputBase);
+    const captionsSnapshot = await this._snapshotSrtForPublish(uuid, outputBase);
+    const srtUri = captionsSnapshot ? captionsSnapshot.uri : undefined;
 
     const tmpl = await this._loadTemplate(templateName);
     const outputGroups = JSON.parse(JSON.stringify(tmpl.OutputGroups));
@@ -464,6 +465,14 @@ class PublishOp extends BaseOp {
       jobId: job.Id,
       status: job.Status || 'SUBMITTED',
       submittedAt: Date.now(),
+      sourceUri,
+      captionsSource: captionsSnapshot
+        ? {
+          origin: captionsSnapshot.origin,
+          sourceKey: captionsSnapshot.sourceKey,
+          snapshotKey: captionsSnapshot.snapshotKey,
+        }
+        : { origin: 'none' },
       hlsDestination,
       mp4Destination,
       history,
@@ -576,7 +585,13 @@ class PublishOp extends BaseOp {
       ProxyBucket,
       destKey
     );
-    return `s3://${ProxyBucket}/${destKey}`;
+    const origin = srcKey.endsWith('_edited.srt') ? 'edited' : 'original';
+    return {
+      uri: `s3://${ProxyBucket}/${destKey}`,
+      sourceKey: srcKey,
+      snapshotKey: destKey,
+      origin,
+    };
   }
 
   // ---------- template management ----------

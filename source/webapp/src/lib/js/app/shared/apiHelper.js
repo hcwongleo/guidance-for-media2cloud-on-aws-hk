@@ -39,7 +39,7 @@ const ENDPOINTS = {
   Custom: `${ApiEndpoint}/${ApiOps.Custom}`,
   Models: `${ApiEndpoint}/models`,
   Subtitle: `${ApiEndpoint}/subtitle`,
-  Publish: `${ApiEndpoint}/publish`,
+  Output: `${ApiEndpoint}/output`,
   Workflow: `${ApiEndpoint}/${ApiOps.Execution}`,
   Highlights: `${ApiEndpoint}/${ApiOps.Highlights}`,
   HighlightSettings: `${ApiEndpoint}/${ApiOps.HighlightSettings}`,
@@ -578,50 +578,22 @@ export default class ApiHelper {
     );
   }
 
-  // Publish (Sub-Project D)
-  static async getPublishStatus(uuid) {
-    return _authHttpRequest.send(
-      'GET',
-      `${ENDPOINTS.Publish}/${uuid}/status`
-    );
-  }
-
-  static async getPublishSettings(uuid) {
-    return _authHttpRequest.send(
-      'GET',
-      `${ENDPOINTS.Publish}/${uuid}/settings`
-    );
-  }
-
-  static async savePublishSettings(uuid, settings) {
+  // Output tab (Sub-Project D)
+  // Settings live on the EditProject row, lifecycle on /renders. The only
+  // /output route is logo upload presigning.
+  static async presignLogoUpload(uuid, payload) {
     return _authHttpRequest.send(
       'POST',
-      `${ENDPOINTS.Publish}/${uuid}/settings`,
+      `${ENDPOINTS.Output}/${uuid}/logo`,
       undefined,
-      settings
+      payload || {}
     );
   }
 
-  static async startPublish(uuid, settings) {
-    return _authHttpRequest.send(
-      'POST',
-      `${ENDPOINTS.Publish}/${uuid}/start`,
-      undefined,
-      settings || {}
-    );
-  }
-
-  static async getPublishOutputs(uuid) {
-    return _authHttpRequest.send(
-      'GET',
-      `${ENDPOINTS.Publish}/${uuid}/outputs`
-    );
-  }
-
-  static async deletePublishOutput(uuid, outputId) {
+  static async deleteLogo(uuid, size) {
     return _authHttpRequest.send(
       'DELETE',
-      `${ENDPOINTS.Publish}/${uuid}/outputs/${encodeURIComponent(outputId)}`
+      `${ENDPOINTS.Output}/${uuid}/logo/${encodeURIComponent(size)}`
     );
   }
 

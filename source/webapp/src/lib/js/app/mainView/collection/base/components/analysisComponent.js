@@ -46,10 +46,8 @@ import GenAITab from './analysis/genai/genaiTab.js';
 import AdBreakTab from './analysis/adbreak/adbreakTab.js';
 // Shoppable
 import ShoppableTab from './analysis/shoppable/shoppableTab.js';
-// Publish (Sub-Project D)
-import PublishTab from './analysis/publish/publishTab.js';
-// Highlight
-import HighlightTab from './analysis/highlight/highlightTab.js';
+// Output (Sub-Project D — merged Publish + Highlight)
+import OutputTab from './analysis/output/outputTab.js';
 
 const {
   Rekognition: {
@@ -88,10 +86,6 @@ export default class AnalysisComponent {
 
     if (GenAITab.canSupport()) {
       this.$tabControllers.push(new GenAITab(previewComponent));
-    }
-
-    if (HighlightTab.canSupport(previewComponent)) {
-      this.$tabControllers.push(new HighlightTab(previewComponent));
     }
 
     if (previewComponent.media.getTranscribeResults()) {
@@ -179,9 +173,9 @@ export default class AnalysisComponent {
     if (textract) {
       this.$tabControllers.push(new TextractTab(previewComponent));
     }
-    /* publish (Sub-Project D) — only for video assets */
-    if (((previewComponent.media || {}).type) === 'video') {
-      this.$tabControllers.push(new PublishTab(previewComponent));
+    /* output (Sub-Project D, merged Publish + Highlight) — video only */
+    if (OutputTab.canSupport(previewComponent)) {
+      this.$tabControllers.push(new OutputTab(previewComponent));
     }
 
     /* permission */

@@ -768,4 +768,35 @@ export default class ApiHelper {
       `${ENDPOINTS.Renders}/${renderId}`
     );
   }
+
+  // Render templates (mirrors publish templates)
+  static async listRenderTemplates() {
+    return _authHttpRequest.send(
+      'GET',
+      `${ENDPOINTS.Renders}/templates`
+    );
+  }
+
+  static async getRenderTemplate(name) {
+    return _authHttpRequest.send(
+      'GET',
+      `${ENDPOINTS.Renders}/templates/${encodeURIComponent(name)}`
+    );
+  }
+
+  static async saveRenderTemplate(name, content) {
+    return _authHttpRequest.send(
+      'POST',
+      `${ENDPOINTS.Renders}/templates/${encodeURIComponent(name)}`,
+      undefined,
+      { content }
+    );
+  }
+
+  static async deleteRenderTemplate(name) {
+    return _authHttpRequest.send(
+      'DELETE',
+      `${ENDPOINTS.Renders}/templates/${encodeURIComponent(name)}`
+    );
+  }
 }

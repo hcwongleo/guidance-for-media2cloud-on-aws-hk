@@ -1,6 +1,8 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+const FS = require('node:fs');
+const PATH = require('node:path');
 const {
   DynamoDBClient,
 } = require('@aws-sdk/client-dynamodb');
@@ -12,6 +14,7 @@ const {
 const CRYPTO = require('node:crypto');
 
 const {
+  CommonUtils,
   Environment: {
     Solution: {
       Metrics: {
@@ -33,11 +36,11 @@ const REQUIRED_ENVS = [
 ];
 
 const FPS = 25;
-const HLS_RESOLUTIONS = [
-  { name: '1080p', height: 1080, bitrate: 5000000 },
-  { name: '720p', height: 720, bitrate: 3000000 },
-  { name: '480p', height: 480, bitrate: 1500000 },
-];
+const TEMPLATES_PREFIX = '_render_templates';
+const TEMPLATE_NAME_RE = /^[A-Za-z0-9_-]{1,64}$/;
+const SUPPORTED_TEMPLATES = ['mp4_landscape', 'mp4_portrait'];
+const DEFAULT_TEMPLATE = 'mp4_landscape';
+const AUDIO_SOURCE_NAME = 'Audio Selector 1';
 
 function ddb() {
   const client = xraysdkHelper(new DynamoDBClient({
@@ -62,9 +65,9 @@ function secondsToTimecode(seconds, fps = FPS) {
     .join(':');
 }
 
-function buildInputs(proxyUri, segments) {
+function buildInputs(sourceUri, segments) {
   return segments.map((seg) => ({
-    FileInput: proxyUri,
+    FileInput: sourceUri,
     InputClippings: [
       {
         StartTimecode: secondsToTimecode(seg.startSec),
@@ -77,7 +80,7 @@ function buildInputs(proxyUri, segments) {
       Rotate: 'AUTO',
     },
     AudioSelectors: {
-      'Audio Selector 1': {
+      [AUDIO_SOURCE_NAME]: {
         DefaultSelection: 'DEFAULT',
         Offset: 0,
       },
@@ -87,184 +90,6 @@ function buildInputs(proxyUri, segments) {
     DeblockFilter: 'DISABLED',
     DenoiseFilter: 'DISABLED',
   }));
-}
-
-function buildVideoDescription(height, bitrate) {
-  return {
-    ScalingBehavior: 'DEFAULT',
-    Height: height,
-    TimecodeInsertion: 'DISABLED',
-    AntiAlias: 'ENABLED',
-    Sharpness: 50,
-    CodecSettings: {
-      Codec: 'H_264',
-      H264Settings: {
-        InterlaceMode: 'PROGRESSIVE',
-        ParNumerator: 1,
-        NumberReferenceFrames: 3,
-        Syntax: 'DEFAULT',
-        Softness: 0,
-        GopClosedCadence: 1,
-        GopSize: 90,
-        Slices: 1,
-        GopBReference: 'DISABLED',
-        SlowPal: 'DISABLED',
-        SpatialAdaptiveQuantization: 'ENABLED',
-        TemporalAdaptiveQuantization: 'ENABLED',
-        FlickerAdaptiveQuantization: 'DISABLED',
-        EntropyEncoding: 'CABAC',
-        Bitrate: bitrate,
-        FramerateControl: 'INITIALIZE_FROM_SOURCE',
-        RateControlMode: 'CBR',
-        CodecProfile: 'MAIN',
-        Telecine: 'NONE',
-        MinIInterval: 0,
-        AdaptiveQuantization: 'HIGH',
-        CodecLevel: 'AUTO',
-        FieldEncoding: 'PAFF',
-        SceneChangeDetect: 'ENABLED',
-        QualityTuningLevel: 'SINGLE_PASS',
-        FramerateConversionAlgorithm: 'DUPLICATE_DROP',
-        UnregisteredSeiTimecode: 'DISABLED',
-        GopSizeUnits: 'FRAMES',
-        ParControl: 'INITIALIZE_FROM_SOURCE',
-        NumberBFramesBetweenReferenceFrames: 2,
-        RepeatPps: 'DISABLED',
-      },
-    },
-    AfdSignaling: 'NONE',
-    DropFrameTimecode: 'ENABLED',
-    RespondToAfd: 'NONE',
-    ColorMetadata: 'INSERT',
-  };
-}
-
-function buildAudioDescription(bitrate = 96000) {
-  return {
-    AudioTypeControl: 'FOLLOW_INPUT',
-    AudioSourceName: 'Audio Selector 1',
-    CodecSettings: {
-      Codec: 'AAC',
-      AacSettings: {
-        AudioDescriptionBroadcasterMix: 'NORMAL',
-        Bitrate: bitrate,
-        RateControlMode: 'CBR',
-        CodecProfile: 'LC',
-        CodingMode: 'CODING_MODE_2_0',
-        RawFormat: 'NONE',
-        SampleRate: 48000,
-        Specification: 'MPEG4',
-      },
-    },
-    LanguageCodeControl: 'FOLLOW_INPUT',
-  };
-}
-
-function buildMp4Group(destination) {
-  return {
-    CustomName: 'mp4',
-    Name: 'File Group',
-    OutputGroupSettings: {
-      Type: 'FILE_GROUP_SETTINGS',
-      FileGroupSettings: {
-        Destination: destination,
-      },
-    },
-    Outputs: [
-      {
-        ContainerSettings: {
-          Container: 'MP4',
-          Mp4Settings: {
-            CslgAtom: 'INCLUDE',
-            FreeSpaceBox: 'EXCLUDE',
-            MoovPlacement: 'PROGRESSIVE_DOWNLOAD',
-          },
-        },
-        VideoDescription: buildVideoDescription(720, 3000000),
-        AudioDescriptions: [buildAudioDescription(96000)],
-        NameModifier: '_proxy',
-      },
-    ],
-  };
-}
-
-function buildHlsGroup(destination) {
-  return {
-    CustomName: 'hls',
-    Name: 'Apple HLS',
-    OutputGroupSettings: {
-      Type: 'HLS_GROUP_SETTINGS',
-      HlsGroupSettings: {
-        ManifestDurationFormat: 'INTEGER',
-        SegmentLength: 6,
-        TimedMetadataId3Period: 10,
-        CaptionLanguageSetting: 'OMIT',
-        Destination: destination,
-        TimedMetadataId3Frame: 'PRIV',
-        CodecSpecification: 'RFC_4281',
-        OutputSelection: 'MANIFESTS_AND_SEGMENTS',
-        ProgramDateTimePeriod: 600,
-        MinSegmentLength: 0,
-        MinFinalSegmentLength: 0,
-        DirectoryStructure: 'SINGLE_DIRECTORY',
-        ProgramDateTime: 'EXCLUDE',
-        SegmentControl: 'SEGMENTED_FILES',
-        ManifestCompression: 'NONE',
-        ClientCache: 'ENABLED',
-        StreamInfResolution: 'INCLUDE',
-      },
-    },
-    Outputs: HLS_RESOLUTIONS.map((res) => ({
-      ContainerSettings: {
-        Container: 'M3U8',
-        M3u8Settings: {
-          AudioFramesPerPes: 4,
-          PcrControl: 'PCR_EVERY_PES_PACKET',
-          PmtPid: 480,
-          PrivateMetadataPid: 503,
-          ProgramNumber: 1,
-          PatInterval: 0,
-          PmtInterval: 0,
-          Scte35Source: 'NONE',
-          NielsenId3: 'NONE',
-          TimedMetadata: 'NONE',
-          VideoPid: 481,
-          AudioPids: [482, 483, 484, 485, 486, 487, 488, 489, 490, 491, 492],
-        },
-      },
-      VideoDescription: buildVideoDescription(res.height, res.bitrate),
-      AudioDescriptions: [buildAudioDescription(96000)],
-      NameModifier: `_${res.name}`,
-    })),
-  };
-}
-
-function buildJobTemplate({
-  proxyUri,
-  segments,
-  destinationPrefix,
-  roleArn,
-  solutionUuid,
-}) {
-  return {
-    Role: roleArn,
-    UserMetadata: {
-      solutionUuid,
-    },
-    StatusUpdateInterval: 'SECONDS_12',
-    AccelerationSettings: {
-      Mode: 'DISABLED',
-    },
-    BillingTagsSource: 'JOB',
-    Settings: {
-      AdAvailOffset: 0,
-      Inputs: buildInputs(proxyUri, segments),
-      OutputGroups: [
-        buildMp4Group(`${destinationPrefix}mp4/`),
-        buildHlsGroup(`${destinationPrefix}hls/`),
-      ],
-    },
-  };
 }
 
 async function loadEditProject(table, editProjectId) {
@@ -291,13 +116,62 @@ async function loadIngestRow(table, uuid) {
   return res.Item;
 }
 
-function findVideoProxy(ingestRow) {
-  const proxies = ingestRow.proxies || [];
-  const proxy = proxies.find((p) => p.type === 'video');
-  if (!proxy || !proxy.key) {
-    throw new M2CException('no video proxy on ingest row');
+// Mirrors publishOp._resolveSourceUri: prefer the originally ingested file so
+// MediaConvert isn't asked to upscale a downscaled aiml proxy. Fall back to a
+// "prod" mp4 proxy if no original is on the row; never the aiml inference proxy.
+function resolveSourceUri(ingestRow, proxyBucket) {
+  if (ingestRow && ingestRow.bucket && ingestRow.key) {
+    return `s3://${ingestRow.bucket}/${ingestRow.key}`;
   }
-  return proxy.key;
+  const proxies = (ingestRow || {}).proxies || [];
+  const videoProxies = proxies.filter((p) =>
+    p && p.type === 'video' && (p.key || '').toLowerCase().endsWith('.mp4'));
+  const prod = videoProxies.find((p) => p.outputType === 'prod');
+  if (prod && prod.key) {
+    return `s3://${proxyBucket}/${prod.key}`;
+  }
+  throw new M2CException('cannot resolve source video for render');
+}
+
+async function loadTemplate(proxyBucket, name) {
+  if (!TEMPLATE_NAME_RE.test(name)) {
+    throw new M2CException(`invalid template name: ${name}`);
+  }
+  // S3 override (uploaded via API) wins over the packaged built-in.
+  const s3Key = `${TEMPLATES_PREFIX}/${name}.json`;
+  const exists = await CommonUtils.headObject(proxyBucket, s3Key).catch(() => undefined);
+  if (exists) {
+    const buf = await CommonUtils.download(proxyBucket, s3Key);
+    return JSON.parse(buf.toString('utf8'));
+  }
+  const file = PATH.join(__dirname, 'tmpl', `${name}.json`);
+  if (!FS.existsSync(file)) {
+    throw new M2CException(`template not found: ${name}`);
+  }
+  return JSON.parse(FS.readFileSync(file, 'utf8'));
+}
+
+function applyTemplate(template, mp4Destination) {
+  // Deep clone before mutating; the loaded template may be a packaged JSON
+  // we don't want to keep mutating across warm invocations.
+  const groups = JSON.parse(JSON.stringify(template.OutputGroups || []));
+  if (!Array.isArray(groups) || groups.length === 0) {
+    throw new M2CException('template must have non-empty OutputGroups');
+  }
+  groups.forEach((og) => {
+    const settings = og.OutputGroupSettings || {};
+    if (settings.Type === 'FILE_GROUP_SETTINGS' && settings.FileGroupSettings) {
+      settings.FileGroupSettings.Destination = mp4Destination;
+    }
+    (og.Outputs || []).forEach((o) => {
+      (o.AudioDescriptions || []).forEach((a) => {
+        if (a.AudioSourceName === '##AUDIO_SOURCE##') {
+          a.AudioSourceName = AUDIO_SOURCE_NAME;
+        }
+      });
+    });
+  });
+  return groups;
 }
 
 async function persistRenderRow(table, renderId, attrs) {
@@ -350,8 +224,7 @@ exports.handler = async (event) => {
   }
 
   const ingestRow = await loadIngestRow(ingestTable, editProject.uuid);
-  const proxyKey = findVideoProxy(ingestRow);
-  const proxyUri = `s3://${proxyBucket}/${proxyKey}`;
+  const sourceUri = resolveSourceUri(ingestRow, proxyBucket);
 
   // Use the renderId minted by the API at POST time (it pre-created the row
   // with status='queued' so the webapp could poll). Falling back to a fresh
@@ -359,14 +232,38 @@ exports.handler = async (event) => {
   const renderId = event.renderId || CRYPTO.randomUUID();
   const startedAt = new Date().toISOString();
   const destinationPrefix = `s3://${proxyBucket}/renders/${editProject.uuid}/${renderId}/`;
+  const mp4Destination = `${destinationPrefix}mp4/`;
 
-  const mediaConvertParams = buildJobTemplate({
-    proxyUri,
-    segments,
-    destinationPrefix,
-    roleArn,
-    solutionUuid,
-  });
+  // Template precedence: SFN event > editProject row > default. Persisted on the
+  // editProject row so re-renders pick up the same orientation by default.
+  const templateName = event.template
+    || editProject.template
+    || DEFAULT_TEMPLATE;
+  if (!TEMPLATE_NAME_RE.test(templateName)) {
+    throw new M2CException(`invalid template name: ${templateName}`);
+  }
+  const template = await loadTemplate(proxyBucket, templateName);
+
+  const outputGroups = applyTemplate(template, mp4Destination);
+
+  const mediaConvertParams = {
+    Role: roleArn,
+    UserMetadata: {
+      solutionUuid: solutionUuid || '',
+      m2cUuid: editProject.uuid,
+      m2cEditProjectId: editProjectId,
+      m2cRenderId: renderId,
+      m2cTemplate: templateName,
+    },
+    StatusUpdateInterval: 'SECONDS_12',
+    AccelerationSettings: { Mode: 'DISABLED' },
+    BillingTagsSource: 'JOB',
+    Settings: {
+      AdAvailOffset: 0,
+      Inputs: buildInputs(sourceUri, segments),
+      OutputGroups: outputGroups,
+    },
+  };
 
   await persistRenderRow(rendersTable, renderId, {
     editProjectId,
@@ -376,6 +273,8 @@ exports.handler = async (event) => {
     aspectRatio: editProject.aspectRatio || '16:9',
     burnCaptions: !!editProject.burnCaptions,
     segmentCount: segments.length,
+    template: templateName,
+    sourceUri,
     destinationPrefix,
     startedAt,
     updatedAt: startedAt,
@@ -388,6 +287,7 @@ exports.handler = async (event) => {
     publishToLibrary: !!editProject.publishToLibrary,
     aspectRatio: editProject.aspectRatio || '16:9',
     burnCaptions: !!editProject.burnCaptions,
+    template: templateName,
     destinationPrefix,
     mediaConvertParams,
   };

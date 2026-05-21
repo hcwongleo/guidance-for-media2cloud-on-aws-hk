@@ -1,0 +1,97 @@
+{
+  "Description": "Highlight render: 1080x1920 portrait MP4 with SMART_CROP from concatenated input clippings (segments). High-quality QVBR-9 / SINGLE_PASS_HQ — matches publish quality.",
+  "OutputGroups": [
+    {
+      "Name": "MP4 Portrait",
+      "Outputs": [
+        {
+          "ContainerSettings": {
+            "Container": "MP4",
+            "Mp4Settings": {
+              "CslgAtom": "INCLUDE",
+              "FreeSpaceBox": "EXCLUDE",
+              "MoovPlacement": "PROGRESSIVE_DOWNLOAD"
+            }
+          },
+          "VideoDescription": {
+            "Width": 1080,
+            "Height": 1920,
+            "ScalingBehavior": "SMART_CROP",
+            "TimecodeInsertion": "DISABLED",
+            "AntiAlias": "ENABLED",
+            "Sharpness": 100,
+            "CodecSettings": {
+              "Codec": "H_264",
+              "H264Settings": {
+                "InterlaceMode": "PROGRESSIVE",
+                "ParNumerator": 1,
+                "ParDenominator": 1,
+                "ParControl": "SPECIFIED",
+                "NumberReferenceFrames": 3,
+                "Syntax": "DEFAULT",
+                "GopClosedCadence": 1,
+                "GopSize": 3,
+                "GopSizeUnits": "SECONDS",
+                "GopBReference": "ENABLED",
+                "NumberBFramesBetweenReferenceFrames": 5,
+                "Slices": 1,
+                "HrdBufferInitialFillPercentage": 90,
+                "HrdBufferSize": 21250000,
+                "MaxBitrate": 8500000,
+                "RateControlMode": "QVBR",
+                "QvbrSettings": { "QvbrQualityLevel": 9 },
+                "CodecProfile": "HIGH",
+                "CodecLevel": "AUTO",
+                "EntropyEncoding": "CABAC",
+                "FieldEncoding": "PAFF",
+                "AdaptiveQuantization": "HIGH",
+                "SpatialAdaptiveQuantization": "ENABLED",
+                "TemporalAdaptiveQuantization": "ENABLED",
+                "FlickerAdaptiveQuantization": "ENABLED",
+                "MinIInterval": 0,
+                "Telecine": "NONE",
+                "SlowPal": "DISABLED",
+                "DynamicSubGop": "ADAPTIVE",
+                "SceneChangeDetect": "ENABLED",
+                "QualityTuningLevel": "SINGLE_PASS_HQ",
+                "UnregisteredSeiTimecode": "DISABLED",
+                "RepeatPps": "DISABLED"
+              }
+            },
+            "AfdSignaling": "NONE",
+            "DropFrameTimecode": "ENABLED",
+            "RespondToAfd": "NONE",
+            "ColorMetadata": "INSERT"
+          },
+          "AudioDescriptions": [
+            {
+              "AudioTypeControl": "FOLLOW_INPUT",
+              "AudioSourceName": "##AUDIO_SOURCE##",
+              "CodecSettings": {
+                "Codec": "AAC",
+                "AacSettings": {
+                  "AudioDescriptionBroadcasterMix": "NORMAL",
+                  "Bitrate": 128000,
+                  "RateControlMode": "CBR",
+                  "CodecProfile": "LC",
+                  "CodingMode": "CODING_MODE_2_0",
+                  "RawFormat": "NONE",
+                  "SampleRate": 48000,
+                  "Specification": "MPEG4"
+                }
+              },
+              "LanguageCodeControl": "FOLLOW_INPUT",
+              "AudioType": 0
+            }
+          ],
+          "NameModifier": "_proxy",
+          "Extension": "mp4"
+        }
+      ],
+      "OutputGroupSettings": {
+        "Type": "FILE_GROUP_SETTINGS",
+        "FileGroupSettings": { "Destination": "##MP4_DESTINATION##" }
+      }
+    }
+  ]
+}

@@ -310,13 +310,14 @@ class PublishOp extends BaseOp {
     }
 
     const sourceUri = await this._resolveSourceUri(uuid);
-    const srtUri = await this._resolveSrtUri(uuid);
 
     const dest = settings.destination || {};
     const outputId = dest.outputId || `vod-${Date.now()}`;
     const outputBase = `${uuid}/${PUBLISH_PREFIX}/${outputId}`;
     const hlsDestination = `s3://${ProxyBucket}/${outputBase}/hls/`;
     const mp4Destination = `s3://${ProxyBucket}/${outputBase}/mp4/`;
+
+    const srtUri = await this._snapshotSrtForPublish(uuid, outputBase);
 
     const tmpl = await this._loadTemplate(templateName);
     const outputGroups = JSON.parse(JSON.stringify(tmpl.OutputGroups));
@@ -547,18 +548,35 @@ class PublishOp extends BaseOp {
     throw new M2CException('cannot resolve source video for publish');
   }
 
-  async _resolveSrtUri(uuid) {
+  async _resolveSrtKey(uuid) {
     const editedKey = `${uuid}/${SUBTITLE_PREFIX}/${uuid}_edited.srt`;
     const plainKey = `${uuid}/${SUBTITLE_PREFIX}/${uuid}.srt`;
     let exists = await CommonUtils.headObject(ProxyBucket, editedKey).catch(() => undefined);
     if (exists) {
-      return `s3://${ProxyBucket}/${editedKey}`;
+      return editedKey;
     }
     exists = await CommonUtils.headObject(ProxyBucket, plainKey).catch(() => undefined);
     if (exists) {
-      return `s3://${ProxyBucket}/${plainKey}`;
+      return plainKey;
     }
     return undefined;
+  }
+
+  // Snapshots the chosen SRT into the publish output folder so the MediaConvert
+  // job is self-contained — later Reset / Save / AI Edit cannot yank the file
+  // out from under an in-flight job (caused error 1040 in the wild).
+  async _snapshotSrtForPublish(uuid, outputBaseKey) {
+    const srcKey = await this._resolveSrtKey(uuid);
+    if (!srcKey) {
+      return undefined;
+    }
+    const destKey = `${outputBaseKey}/captions.srt`;
+    await CommonUtils.copyObject(
+      `${ProxyBucket}/${srcKey}`,
+      ProxyBucket,
+      destKey
+    );
+    return `s3://${ProxyBucket}/${destKey}`;
   }
 
   // ---------- template management ----------

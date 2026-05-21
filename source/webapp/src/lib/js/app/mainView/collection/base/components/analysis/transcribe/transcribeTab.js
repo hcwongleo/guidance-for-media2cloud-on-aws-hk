@@ -393,15 +393,21 @@ export default class TranscribeTab extends mxAlert(BaseAnalysisTab) {
     };
 
     const setCues = (cues, { dirty = false, keepAi = false } = {}) => {
+      let anyAi = false;
       state.cues = (cues || []).map((c, i) => {
         const out = { start: c.start, end: c.end, text: c.text || '' };
-        if (keepAi && state.cues[i] && state.cues[i].aiText) {
+        // Carry aiText from the input first (e.g. merged from a draft),
+        // then fall back to keepAi which preserves prior in-memory state.
+        if (c && c.aiText) {
+          out.aiText = c.aiText;
+        } else if (keepAi && state.cues[i] && state.cues[i].aiText) {
           out.aiText = state.cues[i].aiText;
         }
+        if (out.aiText) anyAi = true;
         return out;
       });
       state.dirty = dirty;
-      if (!keepAi) state.hasAi = false;
+      state.hasAi = anyAi;
       renderCues();
     };
 
@@ -443,8 +449,6 @@ export default class TranscribeTab extends mxAlert(BaseAnalysisTab) {
             return out;
           });
           setCues(merged, { dirty: mergedCount > 0, keepAi: false });
-          state.hasAi = aiCount > 0;
-          renderCues();
           if (this.previewComponent && this.previewComponent.setSubtitleVttKey) {
             await this.previewComponent.setSubtitleVttKey(res.vttKey);
           }
@@ -465,7 +469,9 @@ export default class TranscribeTab extends mxAlert(BaseAnalysisTab) {
                 status.removeClass('text-muted text-danger').addClass('text-success')
                   .html(`AI suggestions ready (${polled.cues.length} cues) — review and Apply`);
               }
-            } else if (ai && ai.status === 'completed' && Array.isArray(ai.cues) && !state.hasAi) {
+            } else if (ai && ai.status === 'completed' && Array.isArray(ai.cues)) {
+              // Server is the source of truth for completed jobs — re-apply
+              // even if a stale draft already populated some aiText cells.
               applyAiCues(ai.cues);
               status.removeClass('text-muted text-danger').addClass('text-success')
                 .html(`AI suggestions ready (${ai.cues.length} cues) — review and Apply`);

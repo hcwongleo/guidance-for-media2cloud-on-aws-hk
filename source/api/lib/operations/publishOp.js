@@ -45,6 +45,8 @@ const BaseOp = require('./baseOp');
 const PUBLISH_PREFIX = 'publish';
 const SETTINGS_FILE = 'settings.json';
 const STATUS_FILE = 'job_status.json';
+const TEMPLATES_PREFIX = '_publish_templates';
+const TEMPLATE_NAME_RE = /^[A-Za-z0-9_-]{1,64}$/;
 
 // Dedicated CloudFront distribution serving ProxyBucket /*/publish/* (set by webapp-stack)
 const PUBLISH_CLOUDFRONT_DOMAIN = process.env.ENV_PUBLISH_CLOUDFRONT_DOMAIN || '';
@@ -57,6 +59,7 @@ const ORIENTATION_TEMPLATES = {
   landscape: 'mp4_landscape',
   portrait: 'mp4_portrait',
 };
+const SUPPORTED_TEMPLATES = ['mp4_landscape', 'mp4_portrait'];
 
 const DEFAULT_SETTINGS = {
   orientations: ['landscape', 'portrait'],
@@ -65,7 +68,14 @@ const DEFAULT_SETTINGS = {
 
 class PublishOp extends BaseOp {
   async onGET() {
-    const { uuid, subOp } = this._parsePath();
+    const route = this._parsePath();
+    if (route.kind === 'templates') {
+      if (!route.templateName) {
+        return super.onGET(await this._listTemplates());
+      }
+      return super.onGET(await this._getTemplate(route.templateName));
+    }
+    const { uuid, subOp } = route;
     if (subOp === '' || subOp === 'status') {
       return super.onGET(await this._getStatus(uuid));
     }
@@ -79,7 +89,14 @@ class PublishOp extends BaseOp {
   }
 
   async onPOST() {
-    const { uuid, subOp } = this._parsePath();
+    const route = this._parsePath();
+    if (route.kind === 'templates') {
+      if (!route.templateName) {
+        throw new M2CException('template name required');
+      }
+      return super.onPOST(await this._saveTemplate(route.templateName));
+    }
+    const { uuid, subOp } = route;
     if (subOp === '' || subOp === 'start') {
       return super.onPOST(await this._startPublish(uuid));
     }
@@ -90,10 +107,16 @@ class PublishOp extends BaseOp {
   }
 
   async onDELETE() {
-    const { uuid, subOp } = this._parsePath();
-    if (subOp && subOp.startsWith('outputs/')) {
-      const outputId = subOp.slice('outputs/'.length);
-      return super.onDELETE(await this._deletePublishOutput(uuid, outputId));
+    const route = this._parsePath();
+    if (route.kind === 'templates') {
+      if (!route.templateName) {
+        throw new M2CException('template name required');
+      }
+      return super.onDELETE(await this._deleteTemplate(route.templateName));
+    }
+    if (route.subOp && route.subOp.startsWith('outputs/')) {
+      const outputId = route.subOp.slice('outputs/'.length);
+      return super.onDELETE(await this._deletePublishOutput(route.uuid, outputId));
     }
     throw new M2CException('unsupported publish DELETE');
   }
@@ -101,12 +124,17 @@ class PublishOp extends BaseOp {
   _parsePath() {
     const raw = (this.request.pathParameters || {}).uuid || '';
     const parts = raw.split('/').filter((x) => x.length > 0);
+    // Template routes are addressed as /publish/templates[/<name>] — they have
+    // no per-asset uuid in the path.
+    if (parts[0] === 'templates') {
+      return { kind: 'templates', templateName: parts[1] || '' };
+    }
     const uuid = parts[0];
     const subOp = parts.slice(1).join('/');
     if (!uuid || !CommonUtils.validateUuid(uuid)) {
       throw new M2CException('invalid uuid');
     }
-    return { uuid, subOp };
+    return { kind: 'asset', uuid, subOp };
   }
 
   async _getSettings(uuid) {
@@ -238,7 +266,7 @@ class PublishOp extends BaseOp {
     const jobs = {};
     await Promise.all(requestedOrients.map(async (orientation) => {
       const tmplName = ORIENTATION_TEMPLATES[orientation];
-      const tmpl = this._loadTemplate(tmplName);
+      const tmpl = await this._loadTemplate(tmplName);
       const outputGroups = JSON.parse(JSON.stringify(tmpl.OutputGroups));
       const mp4Destination = `s3://${ProxyBucket}/${outputBase}/${orientation}/`;
 
@@ -412,12 +440,100 @@ class PublishOp extends BaseOp {
     throw new M2CException('cannot resolve source video for publish');
   }
 
-  _loadTemplate(name) {
+  async _loadTemplate(name) {
+    if (!TEMPLATE_NAME_RE.test(name)) {
+      throw new M2CException(`invalid template name: ${name}`);
+    }
+    // S3 override (uploaded by the user) wins over the packaged built-in.
+    const s3Key = `${TEMPLATES_PREFIX}/${name}.json`;
+    const exists = await CommonUtils.headObject(ProxyBucket, s3Key).catch(() => undefined);
+    if (exists) {
+      const buf = await CommonUtils.download(ProxyBucket, s3Key);
+      return JSON.parse(buf.toString('utf8'));
+    }
     const file = PATH.join(__dirname, 'publish', 'tmpl', `${name}.json`);
     if (!FS.existsSync(file)) {
       throw new M2CException(`template not found: ${name}`);
     }
     return JSON.parse(FS.readFileSync(file, 'utf8'));
+  }
+
+  async _listTemplates() {
+    const items = new Map();
+    SUPPORTED_TEMPLATES.forEach((n) =>
+      items.set(n, { name: n, builtin: true, custom: false }));
+
+    let response;
+    try {
+      response = await CommonUtils.listObjects(ProxyBucket, `${TEMPLATES_PREFIX}/`);
+    } catch (e) {
+      response = undefined;
+    }
+    const contents = (response && response.Contents) || [];
+    contents.forEach((o) => {
+      const m = (o.Key || '').match(/^_publish_templates\/([A-Za-z0-9_-]{1,64})\.json$/);
+      if (!m) return;
+      const name = m[1];
+      const prev = items.get(name);
+      items.set(name, {
+        name,
+        builtin: !!(prev && prev.builtin),
+        custom: true,
+        size: o.Size,
+        lastModified: o.LastModified,
+      });
+    });
+    return { templates: Array.from(items.values()) };
+  }
+
+  async _getTemplate(name) {
+    const tmpl = await this._loadTemplate(name);
+    const isCustom = await CommonUtils.headObject(
+      ProxyBucket,
+      `${TEMPLATES_PREFIX}/${name}.json`
+    ).catch(() => undefined);
+    return {
+      name,
+      builtin: SUPPORTED_TEMPLATES.includes(name),
+      custom: !!isCustom,
+      content: tmpl,
+    };
+  }
+
+  async _saveTemplate(name) {
+    if (!TEMPLATE_NAME_RE.test(name)) {
+      throw new M2CException(`invalid template name: ${name}`);
+    }
+    const body = this.request.body || {};
+    const content = body.content || body;
+    if (!content || typeof content !== 'object') {
+      throw new M2CException('template body must be a JSON object');
+    }
+    if (!Array.isArray(content.OutputGroups) || content.OutputGroups.length === 0) {
+      throw new M2CException('template must have OutputGroups array');
+    }
+    const key = `${TEMPLATES_PREFIX}/${name}.json`;
+    await CommonUtils.uploadFile(
+      ProxyBucket,
+      PATH.dirname(key),
+      PATH.basename(key),
+      Buffer.from(JSON.stringify(content), 'utf8')
+    );
+    return { name, custom: true, builtin: SUPPORTED_TEMPLATES.includes(name) };
+  }
+
+  async _deleteTemplate(name) {
+    if (!TEMPLATE_NAME_RE.test(name)) {
+      throw new M2CException(`invalid template name: ${name}`);
+    }
+    const key = `${TEMPLATES_PREFIX}/${name}.json`;
+    const exists = await CommonUtils.headObject(ProxyBucket, key).catch(() => undefined);
+    if (!exists) {
+      // Built-ins with no override, or unknown names — idempotent no-op.
+      return { name, deleted: false };
+    }
+    await CommonUtils.deleteObject(ProxyBucket, key);
+    return { name, deleted: true };
   }
 }
 

@@ -624,6 +624,36 @@ export default class ApiHelper {
     );
   }
 
+  static async listPublishTemplates() {
+    return _authHttpRequest.send(
+      'GET',
+      `${ENDPOINTS.Publish}/templates`
+    );
+  }
+
+  static async getPublishTemplate(name) {
+    return _authHttpRequest.send(
+      'GET',
+      `${ENDPOINTS.Publish}/templates/${encodeURIComponent(name)}`
+    );
+  }
+
+  static async savePublishTemplate(name, content) {
+    return _authHttpRequest.send(
+      'POST',
+      `${ENDPOINTS.Publish}/templates/${encodeURIComponent(name)}`,
+      undefined,
+      { content }
+    );
+  }
+
+  static async deletePublishTemplate(name) {
+    return _authHttpRequest.send(
+      'DELETE',
+      `${ENDPOINTS.Publish}/templates/${encodeURIComponent(name)}`
+    );
+  }
+
   // Highlight detection
   static async startHighlightDetection(uuid, body) {
     return _authHttpRequest.send(

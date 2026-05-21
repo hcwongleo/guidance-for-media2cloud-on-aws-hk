@@ -18,6 +18,11 @@ const ORIENTATIONS = [
   { value: 'portrait', label: 'Portrait (9:16, 1080×1920)' },
 ];
 
+const BUILTIN_TEMPLATES = [
+  { value: 'mp4_landscape', label: 'Landscape MP4 (built-in)' },
+  { value: 'mp4_portrait', label: 'Portrait MP4 (built-in)' },
+];
+
 const POLL_MS = 5000;
 const MAX_POLLS = 720;
 
@@ -32,6 +37,7 @@ export default class PublishTab extends mxAlert(BaseAnalysisTab) {
     const container = $('<div/>').addClass('col-11 my-4 max-h36r');
     container.append(this.createIntro());
     container.append(this.createOrientationSection());
+    container.append(this.createTemplateSection());
     container.append(this.createControls());
     container.append(this.createStatusSection());
     container.append(this.createOutputSection());
@@ -73,6 +79,203 @@ export default class PublishTab extends mxAlert(BaseAnalysisTab) {
     });
     section.append(row);
     return section;
+  }
+
+  createTemplateSection() {
+    const section = $('<div/>').addClass('form-group px-0 mt-3 mb-3');
+    section.append($('<p/>').addClass('lead-s mb-1').html('Job template'));
+    section.append($('<p/>').addClass('lead-xs text-muted mb-2').html(
+      'Each orientation uses its own MediaConvert job template. Pick one to '
+      + 'download and tweak the JSON, then upload it back as an override (same '
+      + 'name) or under a new name. The two built-in templates are picked '
+      + 'automatically by orientation when you generate a bundle.'
+    ));
+
+    const row = $('<div/>').addClass('d-flex flex-wrap align-items-center');
+    const select = $('<select/>')
+      .addClass('custom-select custom-select-sm w-auto mr-2 mb-1')
+      .attr('data-role', 'template');
+    BUILTIN_TEMPLATES.forEach((t) => {
+      select.append($('<option/>').attr('value', t.value).text(t.label));
+    });
+    row.append(select);
+
+    const downloadBtn = $('<button/>').attr('type', 'button')
+      .addClass('btn btn-sm btn-outline-secondary mr-1 mb-1')
+      .attr('data-role', 'tmpl-download').html('Download');
+    const uploadBtn = $('<button/>').attr('type', 'button')
+      .addClass('btn btn-sm btn-outline-secondary mr-1 mb-1')
+      .attr('data-role', 'tmpl-upload').html('Upload override');
+    const newBtn = $('<button/>').attr('type', 'button')
+      .addClass('btn btn-sm btn-outline-secondary mr-1 mb-1')
+      .attr('data-role', 'tmpl-new').html('Upload as new');
+    const deleteBtn = $('<button/>').attr('type', 'button')
+      .addClass('btn btn-sm btn-outline-danger mr-2 mb-1')
+      .attr('data-role', 'tmpl-delete').html('Delete custom');
+    const refreshBtn = $('<button/>').attr('type', 'button')
+      .addClass('btn btn-sm btn-link mb-1')
+      .attr('data-role', 'tmpl-refresh').html('Refresh list');
+    row.append(downloadBtn).append(uploadBtn).append(newBtn).append(deleteBtn).append(refreshBtn);
+
+    const hiddenFile = $('<input/>').attr('type', 'file')
+      .attr('accept', 'application/json,.json')
+      .css('display', 'none')
+      .attr('data-role', 'tmpl-file');
+    row.append(hiddenFile);
+
+    const status = $('<span/>')
+      .addClass('lead-xs text-muted ml-2 mb-1')
+      .attr('data-role', 'tmpl-status');
+    row.append(status);
+    section.append(row);
+
+    downloadBtn.on('click', () => this.downloadTemplate());
+    uploadBtn.on('click', () => {
+      hiddenFile.data('mode', 'override');
+      hiddenFile.trigger('click');
+    });
+    newBtn.on('click', () => {
+      // Pick the file first; derive the name on change. window.prompt() before
+      // .click() breaks the user-gesture chain so Chrome refuses to open the
+      // file picker.
+      hiddenFile.data('mode', 'new');
+      hiddenFile.trigger('click');
+    });
+    deleteBtn.on('click', () => this.deleteSelectedTemplate());
+    refreshBtn.on('click', () => this.refreshTemplateList());
+    hiddenFile.on('change', () => {
+      const file = hiddenFile[0].files[0];
+      const mode = hiddenFile.data('mode');
+      hiddenFile.val('');
+      let newName;
+      if (mode === 'new' && file) {
+        newName = (file.name || '')
+          .replace(/\.json$/i, '')
+          .replace(/[^A-Za-z0-9_-]/g, '_')
+          .slice(0, 64);
+        if (!/^[A-Za-z0-9_-]{1,64}$/.test(newName)) {
+          this.setTemplateStatus('Filename must yield A-Z, a-z, 0-9, _, - (max 64 chars).', 'err');
+          return;
+        }
+      }
+      this.uploadTemplateFile(file, mode, newName).catch((e) => {
+        console.error(e);
+        this.setTemplateStatus(`Upload failed: ${e.message}`, 'err');
+      });
+    });
+
+    return section;
+  }
+
+  setTemplateStatus(text, kind) {
+    const el = this.$root().find('[data-role="tmpl-status"]');
+    el.removeClass('text-muted text-success text-danger');
+    if (kind === 'ok') el.addClass('text-success');
+    else if (kind === 'err') el.addClass('text-danger');
+    else el.addClass('text-muted');
+    el.html(text || '');
+  }
+
+  async refreshTemplateList(preferredValue) {
+    try {
+      this.setTemplateStatus('Loading templates...');
+      const res = await ApiHelper.listPublishTemplates();
+      const templates = (res && res.templates) || [];
+      const select = this.$root().find('[data-role="template"]');
+      const current = preferredValue || select.val() || 'mp4_landscape';
+      select.empty();
+      templates
+        .slice()
+        .sort((a, b) => a.name.localeCompare(b.name))
+        .forEach((t) => {
+          const tags = [];
+          if (t.builtin && t.custom) tags.push('built-in, overridden');
+          else if (t.builtin) tags.push('built-in');
+          else if (t.custom) tags.push('custom');
+          const label = `${t.name}${tags.length ? ` (${tags.join(', ')})` : ''}`;
+          select.append($('<option/>').attr('value', t.name).text(label));
+        });
+      if (templates.find((t) => t.name === current)) {
+        select.val(current);
+      }
+      this.setTemplateStatus(`${templates.length} template(s) available.`, 'ok');
+    } catch (e) {
+      console.error(e);
+      this.setTemplateStatus(`Error loading templates: ${e.message}`, 'err');
+    }
+  }
+
+  async downloadTemplate() {
+    const name = this.$root().find('[data-role="template"]').val();
+    if (!name) return;
+    try {
+      this.setTemplateStatus(`Downloading ${name}...`);
+      const res = await ApiHelper.getPublishTemplate(name);
+      const content = (res && res.content) || res;
+      const blob = new Blob([JSON.stringify(content, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${name}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      this.setTemplateStatus(`Downloaded ${name}.json`, 'ok');
+    } catch (e) {
+      console.error(e);
+      this.setTemplateStatus(`Download failed: ${e.message}`, 'err');
+    }
+  }
+
+  async uploadTemplateFile(file, mode, newName) {
+    if (!file) return;
+    const targetName = mode === 'new'
+      ? newName
+      : this.$root().find('[data-role="template"]').val();
+    if (!targetName) {
+      this.setTemplateStatus('No target template selected.', 'err');
+      return;
+    }
+    this.setTemplateStatus(`Reading ${file.name}...`);
+    const text = await file.text();
+    let parsed;
+    try {
+      parsed = JSON.parse(text);
+    } catch (e) {
+      this.setTemplateStatus(`Invalid JSON: ${e.message}`, 'err');
+      return;
+    }
+    if (!parsed || !Array.isArray(parsed.OutputGroups) || parsed.OutputGroups.length === 0) {
+      this.setTemplateStatus('Template must have an OutputGroups array.', 'err');
+      return;
+    }
+    this.setTemplateStatus(`Uploading ${targetName}...`);
+    await ApiHelper.savePublishTemplate(targetName, parsed);
+    this.setTemplateStatus(`Saved ${targetName}.`, 'ok');
+    await this.refreshTemplateList(targetName);
+  }
+
+  async deleteSelectedTemplate() {
+    const name = this.$root().find('[data-role="template"]').val();
+    if (!name) return;
+    if (!window.confirm(`Delete custom version of "${name}"? Built-in templates revert to the packaged default.`)) {
+      return;
+    }
+    try {
+      this.setTemplateStatus(`Deleting ${name}...`);
+      const res = await ApiHelper.deletePublishTemplate(name);
+      if (res && res.deleted) {
+        this.setTemplateStatus(`Deleted ${name}.`, 'ok');
+      } else {
+        this.setTemplateStatus(`No custom override for ${name}.`, 'ok');
+      }
+      const fallback = BUILTIN_TEMPLATES.find((b) => b.value === name) ? name : 'mp4_landscape';
+      await this.refreshTemplateList(fallback);
+    } catch (e) {
+      console.error(e);
+      this.setTemplateStatus(`Delete failed: ${e.message}`, 'err');
+    }
   }
 
   createControls() {
@@ -145,6 +348,7 @@ export default class PublishTab extends mxAlert(BaseAnalysisTab) {
     const uuid = this.media.uuid;
     try {
       this.setControlsStatus('Loading settings...');
+      await this.refreshTemplateList().catch(() => {});
       const res = await ApiHelper.getPublishSettings(uuid);
       this.applySettings(res || {});
       this.setControlsStatus(res && res.isDefault ? 'Defaults loaded.' : 'Settings loaded.', 'ok');

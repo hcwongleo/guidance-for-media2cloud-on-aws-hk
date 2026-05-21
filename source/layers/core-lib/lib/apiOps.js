@@ -193,4 +193,13 @@ module.exports = {
    * /mc-templates/{name}                       DELETE: drop a custom override
    */
   McTemplates: 'mc-templates',
+
+  /**
+   * @description shared library of named AI-edit prompts (Transcribe tab)
+   * /subtitle-prompts                          GET:    list prompts
+   * /subtitle-prompts/{name}                   GET:    fetch one prompt
+   * /subtitle-prompts/{name}                   POST:   upsert prompt body
+   * /subtitle-prompts/{name}                   DELETE: drop a prompt
+   */
+  SubtitlePrompts: 'subtitle-prompts',
 };

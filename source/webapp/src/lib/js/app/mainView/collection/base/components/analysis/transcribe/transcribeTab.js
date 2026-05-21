@@ -231,11 +231,20 @@ export default class TranscribeTab extends mxAlert(BaseAnalysisTab) {
       .html('Prompt');
     editForm.append(promptLabel);
 
+    const promptSelect = $('<select/>')
+      .addClass('custom-select custom-select-sm mb-2');
+    editForm.append(promptSelect);
+
     const promptInput = $('<textarea/>')
       .addClass('form-control form-control-sm')
-      .attr('rows', 4)
+      .attr('rows', 6)
       .val(DEFAULT_AI_PROMPT);
     editForm.append(promptInput);
+
+    const promptHint = $('<div/>')
+      .addClass('lead-xxs text-muted mt-1')
+      .html('Edits here are one-shot. Manage the library under Settings &rarr; Subtitle AI-edit prompts.');
+    editForm.append(promptHint);
 
     const runBtn = $('<button/>')
       .addClass('btn btn-sm btn-success mt-2')
@@ -654,6 +663,34 @@ export default class TranscribeTab extends mxAlert(BaseAnalysisTab) {
         } catch (e) {
           console.error(e);
         }
+      }
+
+      if (isHidden && promptSelect.children().length === 0) {
+        try {
+          const res = await ApiHelper.listSubtitlePrompts();
+          const prompts = (res && res.prompts) || [];
+          prompts.forEach((p) => {
+            promptSelect.append($('<option/>').attr('value', p.name).text(p.name));
+          });
+          const initial = prompts.find((p) => p.name === 'default') || prompts[0];
+          if (initial) {
+            promptSelect.val(initial.name);
+            promptInput.val(initial.prompt);
+          }
+        } catch (e) {
+          console.error(e);
+        }
+      }
+    });
+
+    promptSelect.on('change', async () => {
+      const name = promptSelect.val();
+      if (!name) return;
+      try {
+        const res = await ApiHelper.getSubtitlePrompt(name);
+        promptInput.val((res && res.prompt) || '');
+      } catch (e) {
+        console.error(e);
       }
     });
 

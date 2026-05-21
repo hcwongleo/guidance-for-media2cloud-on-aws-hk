@@ -46,6 +46,7 @@ const ENDPOINTS = {
   Edits: `${ApiEndpoint}/${ApiOps.Edits}`,
   Renders: `${ApiEndpoint}/${ApiOps.Renders}`,
   McTemplates: `${ApiEndpoint}/mc-templates`,
+  SubtitlePrompts: `${ApiEndpoint}/subtitle-prompts`,
 };
 
 let GRAPH_ENDPOINT;
@@ -539,19 +540,34 @@ export default class ApiHelper {
     );
   }
 
-  static async getSubtitlePrompt(uuid) {
+  // Shared AI-edit prompt library (used by Settings + Transcribe)
+  static async listSubtitlePrompts() {
     return _authHttpRequest.send(
       'GET',
-      `${ENDPOINTS.Subtitle}/${uuid}/prompt`
+      ENDPOINTS.SubtitlePrompts
     );
   }
 
-  static async saveSubtitlePrompt(uuid, prompt) {
+  static async getSubtitlePrompt(name) {
+    return _authHttpRequest.send(
+      'GET',
+      `${ENDPOINTS.SubtitlePrompts}/${encodeURIComponent(name)}`
+    );
+  }
+
+  static async saveSubtitlePrompt(name, prompt) {
     return _authHttpRequest.send(
       'POST',
-      `${ENDPOINTS.Subtitle}/${uuid}/prompt`,
+      `${ENDPOINTS.SubtitlePrompts}/${encodeURIComponent(name)}`,
       undefined,
       { prompt }
+    );
+  }
+
+  static async deleteSubtitlePrompt(name) {
+    return _authHttpRequest.send(
+      'DELETE',
+      `${ENDPOINTS.SubtitlePrompts}/${encodeURIComponent(name)}`
     );
   }
 

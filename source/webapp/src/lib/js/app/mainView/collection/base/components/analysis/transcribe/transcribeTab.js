@@ -161,10 +161,20 @@ export default class TranscribeTab extends mxAlert(BaseAnalysisTab) {
       .attr('type', 'button')
       .html('Reset to Original');
 
+    const importBtn = $('<button/>')
+      .addClass('btn btn-sm btn-outline-secondary mr-2 mb-1')
+      .attr('type', 'button')
+      .html('Import SRT');
+
+    const importInput = $('<input/>')
+      .attr('type', 'file')
+      .attr('accept', '.srt,text/plain')
+      .css('display', 'none');
+
     const status = $('<span/>')
       .addClass('lead-xs text-muted ml-2 mb-1');
 
-    toolbar.append(loadBtn, downloadBtn, saveBtn, aiToggleBtn, applyAllBtn, resetBtn, status);
+    toolbar.append(loadBtn, downloadBtn, saveBtn, aiToggleBtn, applyAllBtn, importBtn, importInput, resetBtn, status);
     container.append(toolbar);
 
     // collapsible AI edit form
@@ -458,6 +468,45 @@ export default class TranscribeTab extends mxAlert(BaseAnalysisTab) {
         console.error(e);
         status.removeClass('text-muted text-success').addClass('text-danger').html(`Error: ${e.message}`);
         saveBtn.prop('disabled', false);
+      }
+    });
+
+    importBtn.on('click', () => importInput.trigger('click'));
+
+    importInput.on('change', async () => {
+      const inputEl = importInput[0];
+      const file = inputEl && inputEl.files && inputEl.files[0];
+      if (!file) {
+        return;
+      }
+      const uuid = this.media.uuid;
+      try {
+        importBtn.prop('disabled', true);
+        status.removeClass('text-danger text-success').addClass('text-muted').html(`Importing ${file.name}...`);
+        const text = await file.text();
+        if (!text || !/-->/.test(text)) {
+          throw new Error('File does not look like an SRT (no timecode arrows found)');
+        }
+        const res = await ApiHelper.saveSrt(uuid, { content: text });
+        if (res && Array.isArray(res.cues)) {
+          setCues(res.cues);
+          if (this.previewComponent && this.previewComponent.setSubtitleVttKey && res.vttKey) {
+            await this.previewComponent.setSubtitleVttKey(res.vttKey);
+          }
+          state.dirty = false;
+          state.hasAi = false;
+          applyAllBtn.css('display', 'none');
+          status.removeClass('text-muted text-danger').addClass('text-success').html(`Imported ${res.cues.length} cues from ${file.name}`);
+        } else {
+          status.removeClass('text-muted text-success').addClass('text-danger').html('Import failed');
+        }
+      } catch (e) {
+        console.error(e);
+        status.removeClass('text-muted text-success').addClass('text-danger').html(`Error: ${e.message}`);
+      } finally {
+        importBtn.prop('disabled', false);
+        // Reset so re-selecting the same file re-fires change.
+        inputEl.value = '';
       }
     });
 

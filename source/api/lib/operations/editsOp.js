@@ -39,6 +39,27 @@ const {
 const BaseOp = require('./baseOp');
 
 const VALID_KINDS = ['highlight', 'custom'];
+const VALID_MODES = ['full', 'trim', 'highlights'];
+const TEMPLATE_NAME_RE = /^[A-Za-z0-9_-]{1,64}$/;
+const LOGO_SIZES = ['48', '64', '96', '128', '192'];
+
+function sanitizeLogos(logos) {
+  if (!logos || typeof logos !== 'object') return {};
+  const out = {};
+  for (const size of LOGO_SIZES) {
+    const v = logos[size];
+    if (typeof v === 'string' && v.length > 0) out[size] = v;
+  }
+  return out;
+}
+
+function sanitizeInputClipping(clip) {
+  if (!clip || typeof clip !== 'object') return null;
+  const start = String(clip.StartTimecode || '');
+  const end = String(clip.EndTimecode || '');
+  if (!start || !end) return null;
+  return { StartTimecode: start, EndTimecode: end };
+}
 
 function ddbDocClient() {
   const ddb = xraysdkHelper(new DynamoDBClient({
@@ -114,6 +135,35 @@ class EditsOp extends BaseOp {
       burnCaptions: !!body.burnCaptions,
       updatedAt: new Date().toISOString(),
     };
+
+    // Output-tab fields read by compose-edl. Stored here so /renders POST
+    // doesn't need to repeat them; the user's last choice persists.
+    if (body.mode !== undefined) {
+      const mode = String(body.mode);
+      if (!VALID_MODES.includes(mode)) {
+        throw new M2CException(`mode must be one of ${VALID_MODES.join(', ')}`);
+      }
+      item.mode = mode;
+    }
+    if (body.template !== undefined) {
+      const tmpl = String(body.template);
+      if (tmpl && !TEMPLATE_NAME_RE.test(tmpl)) {
+        throw new M2CException(`invalid template name: ${tmpl}`);
+      }
+      if (tmpl) item.template = tmpl;
+    }
+    if (body.fontScript !== undefined) {
+      item.fontScript = String(body.fontScript);
+    }
+    if (body.burnSubtitles !== undefined) {
+      item.burnSubtitles = !!body.burnSubtitles;
+    }
+    if (body.logos !== undefined) {
+      item.logos = sanitizeLogos(body.logos);
+    }
+    if (body.inputClipping !== undefined) {
+      item.inputClipping = sanitizeInputClipping(body.inputClipping);
+    }
     if (body.createdAt) {
       item.createdAt = String(body.createdAt);
     } else {

@@ -1117,10 +1117,10 @@ Resources:
 
     ################################################################################
     #
-    # CloudFront Distribution (Publish VOD)
-    # * Dedicated distribution for publish outputs in the ProxyBucket
+    # CloudFront Distribution (Output VOD)
+    # * Dedicated distribution for render outputs in the ProxyBucket
     # * Mirrors the VOD Foundation pattern exactly: private S3 + OAC + managed
-    #   CachingOptimized policy. Only paths matching */publish/* are exposed.
+    #   CachingOptimized policy. Only paths matching */output/* are exposed.
     #
     ################################################################################
     PublishOAC:

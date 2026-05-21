@@ -147,13 +147,13 @@ module.exports = {
   Subtitle: 'subtitle',
 
   /**
-   * @description Production VOD publish (HLS + MP4 with logo + subtitle burn-in)
-   * /publish/{uuid}            POST: start publish, GET: status
-   * /publish/{uuid}/settings   GET, POST
-   * /publish/{uuid}/logo       POST: presigned logo upload URL
-   * method: GET, POST
+   * @description Output-tab assets that don't fit /edits or /renders.
+   * /output/{uuid}/logo            POST: presigned logo upload URL
+   * /output/{uuid}/logo/{size}     DELETE: drop a logo at a given size
+   * Settings live on the EditProject row (template, fontScript, mode, logos,
+   * burnSubtitles, inputClipping). Render lifecycle lives on /renders.
    */
-  Publish: 'publish',
+  Output: 'output',
 
   /**
    * @description manage highlight detection runs

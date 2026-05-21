@@ -21,8 +21,9 @@ const TEMPLATES_PREFIX = '_mc_templates';
 const TEMPLATE_NAME_RE = /^[A-Za-z0-9_-]{1,64}$/;
 const SUPPORTED_TEMPLATES = ['mp4_landscape', 'mp4_portrait'];
 
-// Packaged JSONs ship with publish (api Lambda piggybacks on publish/tmpl).
-const PACKAGED_TEMPLATE_DIR = PATH.join(__dirname, 'publish', 'tmpl');
+// Packaged JSONs ship under output/tmpl. compose-edl Lambda carries the same
+// JSONs so renders work even when the api Lambda hasn't been redeployed.
+const PACKAGED_TEMPLATE_DIR = PATH.join(__dirname, 'output', 'tmpl');
 
 class McTemplatesOp extends BaseOp {
   async onGET() {

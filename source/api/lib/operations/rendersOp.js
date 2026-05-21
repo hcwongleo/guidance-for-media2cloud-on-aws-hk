@@ -219,7 +219,7 @@ class RendersOp extends BaseOp {
 
     let objectsDeleted = 0;
     if (item && item.uuid) {
-      const prefix = `renders/${item.uuid}/${renderId}/`;
+      const prefix = `${item.uuid}/output/${renderId}/`;
       let token;
       do {
         const page = await CommonUtils.listObjects(ProxyBucket, prefix, {

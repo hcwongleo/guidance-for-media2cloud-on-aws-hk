@@ -37,6 +37,8 @@ const SUBTITLE_SYSTEM_PROMPT = 'You are a professional subtitle editor. Follow t
 const STATUS_FILE = 'aiedit_status.json';
 
 const EDITED_SUFFIX = '_edited.srt';
+const EDITED_VTT_SUFFIX = '_edited.vtt';
+const AI_PREVIEW_SUFFIX = '_aiedit_preview.srt';
 const BaseOp = require('./baseOp');
 
 const SUBTITLE_PREFIX = 'transcode/subtitle';
@@ -73,7 +75,18 @@ class SubtitleOp extends BaseOp {
     if (subOp === 'save-srt') {
       return super.onPOST(await this._saveSrt(uuid));
     }
+    if (subOp === 'reset') {
+      return super.onPOST(await this._resetSrt(uuid));
+    }
     throw new M2CException(`unsupported subtitle POST op: ${subOp}`);
+  }
+
+  async onDELETE() {
+    const { uuid, subOp } = this._parsePath();
+    if (subOp === 'reset' || subOp === 'srt' || subOp === '') {
+      return super.onDELETE(await this._resetSrt(uuid));
+    }
+    throw new M2CException(`unsupported subtitle DELETE op: ${subOp}`);
   }
 
   _parsePath() {
@@ -121,11 +134,15 @@ class SubtitleOp extends BaseOp {
   }
 
   async _getSrt(uuid) {
-    const editedKey = `${uuid}/${SUBTITLE_PREFIX}/${uuid}_edited.srt`;
+    const editedKey = `${uuid}/${SUBTITLE_PREFIX}/${uuid}${EDITED_SUFFIX}`;
+    const editedVttKey = `${uuid}/${SUBTITLE_PREFIX}/${uuid}${EDITED_VTT_SUFFIX}`;
     const plainKey = `${uuid}/${SUBTITLE_PREFIX}/${uuid}.srt`;
 
     let key = editedKey;
     let exists = await CommonUtils.headObject(ProxyBucket, key).catch(() => undefined);
+    const editedVttExists = exists
+      ? await CommonUtils.headObject(ProxyBucket, editedVttKey).catch(() => undefined)
+      : undefined;
     if (!exists) {
       key = plainKey;
       exists = await CommonUtils.headObject(ProxyBucket, key).catch(() => undefined);
@@ -137,35 +154,79 @@ class SubtitleOp extends BaseOp {
     const content = (await CommonUtils.download(ProxyBucket, key)).toString('utf8');
     const url = await CommonUtils.getSignedUrl({ Bucket: ProxyBucket, Key: key });
     const cues = SrtHelper.parseSrt(content);
-    return { uuid, srtKey: key, url, content, cues };
+    return {
+      uuid,
+      srtKey: key,
+      url,
+      content,
+      cues,
+      vttKey: editedVttExists ? editedVttKey : undefined,
+    };
   }
 
   async _saveSrt(uuid) {
     const body = this.request.body || {};
     const { cues, content } = body;
     let srt;
+    let parsedCues;
     if (typeof content === 'string' && content.trim().length > 0) {
       srt = content;
+      parsedCues = SrtHelper.parseSrt(srt);
     } else if (Array.isArray(cues) && cues.length > 0) {
-      srt = SrtHelper.fromCues(cues.map((c) => ({
+      parsedCues = cues.map((c) => ({
         start: Number(c.start),
         end: Number(c.end),
         text: String(c.text || ''),
-      })));
+      }));
+      srt = SrtHelper.fromCues(parsedCues);
     } else {
       throw new M2CException('cues or content is required');
     }
 
     const editedKey = `${uuid}/${SUBTITLE_PREFIX}/${uuid}${EDITED_SUFFIX}`;
-    await CommonUtils.uploadFile(
-      ProxyBucket,
-      PATH.dirname(editedKey),
-      PATH.basename(editedKey),
-      Buffer.from(srt, 'utf8')
-    );
+    const editedVttKey = `${uuid}/${SUBTITLE_PREFIX}/${uuid}${EDITED_VTT_SUFFIX}`;
+    const vttContent = _cuesToVtt(parsedCues);
+
+    await Promise.all([
+      CommonUtils.uploadFile(
+        ProxyBucket,
+        PATH.dirname(editedKey),
+        PATH.basename(editedKey),
+        Buffer.from(srt, 'utf8')
+      ),
+      CommonUtils.uploadFile(
+        ProxyBucket,
+        PATH.dirname(editedVttKey),
+        PATH.basename(editedVttKey),
+        Buffer.from(vttContent, 'utf8')
+      ),
+    ]);
+
     const url = await CommonUtils.getSignedUrl({ Bucket: ProxyBucket, Key: editedKey });
-    const parsedCues = SrtHelper.parseSrt(srt);
-    return { uuid, srtKey: editedKey, url, content: srt, cues: parsedCues };
+    return {
+      uuid,
+      srtKey: editedKey,
+      vttKey: editedVttKey,
+      url,
+      content: srt,
+      cues: parsedCues,
+    };
+  }
+
+  async _resetSrt(uuid) {
+    const editedKey = `${uuid}/${SUBTITLE_PREFIX}/${uuid}${EDITED_SUFFIX}`;
+    const editedVttKey = `${uuid}/${SUBTITLE_PREFIX}/${uuid}${EDITED_VTT_SUFFIX}`;
+    const previewKey = `${uuid}/${SUBTITLE_PREFIX}/${uuid}${AI_PREVIEW_SUFFIX}`;
+    const statusKey = `${uuid}/${SUBTITLE_PREFIX}/${STATUS_FILE}`;
+
+    await Promise.all([
+      CommonUtils.deleteObject(ProxyBucket, editedKey).catch(() => undefined),
+      CommonUtils.deleteObject(ProxyBucket, editedVttKey).catch(() => undefined),
+      CommonUtils.deleteObject(ProxyBucket, previewKey).catch(() => undefined),
+      CommonUtils.deleteObject(ProxyBucket, statusKey).catch(() => undefined),
+    ]);
+
+    return this._generateSrt(uuid);
   }
 
   async _savePrompt(uuid) {
@@ -280,22 +341,25 @@ class SubtitleOp extends BaseOp {
       const editedCues = await SubtitleOp._processCuesInChunksStatic(uuid, cues, userPrompt, modelId, startedAt);
       const editedSrt = SrtHelper.fromCues(editedCues);
 
-      const editedKey = `${uuid}/${SUBTITLE_PREFIX}/${uuid}_edited.srt`;
+      // Preview-only: do NOT overwrite _edited.srt here. _edited.srt is the
+      // user-confirmed save target written by _saveSrt; this file is only for
+      // the polling UI to render alongside the original for review.
+      const previewKey = `${uuid}/${SUBTITLE_PREFIX}/${uuid}${AI_PREVIEW_SUFFIX}`;
       await CommonUtils.uploadFile(
         ProxyBucket,
-        PATH.dirname(editedKey),
-        PATH.basename(editedKey),
+        PATH.dirname(previewKey),
+        PATH.basename(previewKey),
         Buffer.from(editedSrt, 'utf8')
       );
 
-      const url = await CommonUtils.getSignedUrl({ Bucket: ProxyBucket, Key: editedKey });
+      const url = await CommonUtils.getSignedUrl({ Bucket: ProxyBucket, Key: previewKey });
 
       await SubtitleOp._writeStatus(uuid, {
         status: 'completed',
         startedAt,
         completedAt: Date.now(),
         modelId,
-        srtKey: editedKey,
+        previewKey,
         url,
         content: editedSrt,
         cues: editedCues,
@@ -393,6 +457,24 @@ class SubtitleOp extends BaseOp {
     return results;
   }
 
+}
+
+function _vttTimestamp(seconds) {
+  const totalMs = Math.round(Number(seconds) * 1000);
+  const ms = totalMs % 1000;
+  const totalSec = Math.floor(totalMs / 1000);
+  const s = totalSec % 60;
+  const totalMin = Math.floor(totalSec / 60);
+  const m = totalMin % 60;
+  const h = Math.floor(totalMin / 60);
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}.${String(ms).padStart(3, '0')}`;
+}
+
+function _cuesToVtt(cues) {
+  const body = (cues || [])
+    .map((c) => `${_vttTimestamp(c.start)} --> ${_vttTimestamp(c.end)}\n${(c.text || '').replace(/<[^>]*>/g, '').trim()}\n`)
+    .join('\n');
+  return `WEBVTT\n\n${body}`;
 }
 
 function _extractSrtFromResponse(text) {

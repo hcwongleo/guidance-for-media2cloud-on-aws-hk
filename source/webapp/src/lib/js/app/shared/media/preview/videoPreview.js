@@ -169,10 +169,11 @@ export default class VideoPreview extends BasePreview {
         player.volume(0.5);
 
         const trancribe = this.media.getTranscribeResults() || {};
-        if (trancribe.vtt) {
+        const vttKey = this.$subtitleVttOverride || trancribe.vtt;
+        if (vttKey) {
           this.trackRegister(
             VideoPreview.Constants.Subtitle,
-            trancribe.vtt,
+            vttKey,
             TRACK_SUBTITLES,
             trancribe.languageCode || 'en'
           );
@@ -304,6 +305,26 @@ export default class VideoPreview extends BasePreview {
         }
         this.trackLoadedEvent(selected);
       });
+    }
+    return this;
+  }
+
+  async setSubtitleVttKey(vttKey) {
+    // Swap the subtitle track to a different VTT key (e.g. the user-edited
+    // version). Remembered for re-load if the player is re-mounted later.
+    const trancribe = this.media.getTranscribeResults() || {};
+    const nextKey = vttKey || trancribe.vtt;
+    if (!nextKey) {
+      return this;
+    }
+    this.$subtitleVttOverride = vttKey || undefined;
+    const label = VideoPreview.Constants.Subtitle;
+    const wasOn = this.trackIsEnabled(label);
+    this.trackUnregister(label);
+    this.trackRegister(label, nextKey, TRACK_SUBTITLES, trancribe.languageCode || 'en');
+    this.subtitleView.children().remove();
+    if (wasOn) {
+      await this.trackToggle(label, true);
     }
     return this;
   }

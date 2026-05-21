@@ -563,6 +563,13 @@ export default class ApiHelper {
     );
   }
 
+  static async resetSrt(uuid) {
+    return _authHttpRequest.send(
+      'POST',
+      `${ENDPOINTS.Subtitle}/${uuid}/reset`
+    );
+  }
+
   static async getAiEditStatus(uuid) {
     return _authHttpRequest.send(
       'GET',

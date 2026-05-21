@@ -156,10 +156,15 @@ export default class TranscribeTab extends mxAlert(BaseAnalysisTab) {
       .css('display', 'none')
       .html('Apply All AI →');
 
+    const resetBtn = $('<button/>')
+      .addClass('btn btn-sm btn-outline-danger mr-2 mb-1')
+      .attr('type', 'button')
+      .html('Reset to Original');
+
     const status = $('<span/>')
       .addClass('lead-xs text-muted ml-2 mb-1');
 
-    toolbar.append(loadBtn, downloadBtn, saveBtn, aiToggleBtn, applyAllBtn, status);
+    toolbar.append(loadBtn, downloadBtn, saveBtn, aiToggleBtn, applyAllBtn, resetBtn, status);
     container.append(toolbar);
 
     // collapsible AI edit form
@@ -372,6 +377,9 @@ export default class TranscribeTab extends mxAlert(BaseAnalysisTab) {
         const res = await ApiHelper.getSrt(uuid);
         if (res && Array.isArray(res.cues)) {
           setCues(res.cues);
+          if (this.previewComponent && this.previewComponent.setSubtitleVttKey) {
+            await this.previewComponent.setSubtitleVttKey(res.vttKey);
+          }
           status.html(`Loaded ${res.cues.length} cues`);
         } else {
           status.html('No subtitles available');
@@ -437,7 +445,10 @@ export default class TranscribeTab extends mxAlert(BaseAnalysisTab) {
         };
         const res = await ApiHelper.saveSrt(uuid, payload);
         if (res && res.url) {
-          status.removeClass('text-muted text-danger').addClass('text-success').html(`Saved (${(res.cues || []).length} cues)`);
+          if (this.previewComponent && this.previewComponent.setSubtitleVttKey && res.vttKey) {
+            await this.previewComponent.setSubtitleVttKey(res.vttKey);
+          }
+          status.removeClass('text-muted text-danger').addClass('text-success').html(`Saved (${(res.cues || []).length} cues) — player updated`);
           state.dirty = false;
         } else {
           status.removeClass('text-muted text-success').addClass('text-danger').html('Save failed');
@@ -447,6 +458,38 @@ export default class TranscribeTab extends mxAlert(BaseAnalysisTab) {
         console.error(e);
         status.removeClass('text-muted text-success').addClass('text-danger').html(`Error: ${e.message}`);
         saveBtn.prop('disabled', false);
+      }
+    });
+
+    resetBtn.on('click', async () => {
+      const uuid = this.media.uuid;
+      // eslint-disable-next-line no-alert
+      const confirmed = window.confirm('Reset subtitles to the original Transcribe output? Saved edits and AI suggestions will be discarded.');
+      if (!confirmed) {
+        return;
+      }
+      try {
+        resetBtn.prop('disabled', true);
+        status.removeClass('text-danger text-success').addClass('text-muted').html('Resetting...');
+        const res = await ApiHelper.resetSrt(uuid);
+        if (res && Array.isArray(res.cues)) {
+          setCues(res.cues);
+          if (this.previewComponent && this.previewComponent.setSubtitleVttKey) {
+            // Pass undefined to fall back to the original transcribe.vtt.
+            await this.previewComponent.setSubtitleVttKey(undefined);
+          }
+          status.removeClass('text-muted text-danger').addClass('text-success').html(`Reset to original (${res.cues.length} cues)`);
+          state.dirty = false;
+          state.hasAi = false;
+          applyAllBtn.css('display', 'none');
+        } else {
+          status.removeClass('text-muted text-success').addClass('text-danger').html('Reset failed');
+        }
+      } catch (e) {
+        console.error(e);
+        status.removeClass('text-muted text-success').addClass('text-danger').html(`Error: ${e.message}`);
+      } finally {
+        resetBtn.prop('disabled', false);
       }
     });
 

@@ -125,6 +125,40 @@ export default class TranscribeTab extends mxAlert(BaseAnalysisTab) {
       .html('Subtitles (SRT)');
     container.append(heading);
 
+    // Per-asset draft cache: subtitle + AI scratch persist across refresh,
+    // cleared on Save.
+    const draftKey = `m2c.subtitleDraft.${this.media.uuid}`;
+    const loadDraft = () => {
+      try {
+        const raw = window.localStorage.getItem(draftKey);
+        return raw ? JSON.parse(raw) : null;
+      } catch (e) {
+        return null;
+      }
+    };
+    const saveDraft = (cues) => {
+      try {
+        const slim = (cues || []).map((c) => ({
+          start: c.start, end: c.end, text: c.text || '', aiText: c.aiText || '',
+        }));
+        window.localStorage.setItem(draftKey, JSON.stringify({
+          uuid: this.media.uuid,
+          updatedAt: Date.now(),
+          cues: slim,
+        }));
+      } catch (e) {
+        // quota or disabled — silently skip
+      }
+    };
+    const clearDraft = () => {
+      try { window.localStorage.removeItem(draftKey); } catch (e) { /* noop */ }
+    };
+    let draftTimer = null;
+    const scheduleDraftSave = () => {
+      if (draftTimer) clearTimeout(draftTimer);
+      draftTimer = setTimeout(() => saveDraft(state.cues), 400);
+    };
+
     // toolbar: Load / Download / Save
     const toolbar = $('<div/>')
       .addClass('d-flex align-items-center mb-2 flex-wrap');
@@ -226,7 +260,7 @@ export default class TranscribeTab extends mxAlert(BaseAnalysisTab) {
       .addClass('thead-light')
       .css({ position: 'sticky', top: 0, 'z-index': 1 });
     const trh = $('<tr/>');
-    const thAi = $('<th/>').addClass('align-middle ai-col').css('display', 'none').html('AI Suggestion');
+    const thAi = $('<th/>').addClass('align-middle ai-col').html('AI Suggestion');
     trh.append(
       $('<th/>').css('width', '4rem').addClass('align-middle').html('#'),
       $('<th/>').css('width', '14rem').addClass('align-middle').html('Time'),
@@ -285,6 +319,7 @@ export default class TranscribeTab extends mxAlert(BaseAnalysisTab) {
         input.removeClass('is-invalid');
         state.cues[idx][field] = parsed;
         markDirty();
+        scheduleDraftSave();
       });
       return input;
     };
@@ -295,12 +330,12 @@ export default class TranscribeTab extends mxAlert(BaseAnalysisTab) {
       if (!cues || cues.length === 0) {
         placeholder.show().html('No subtitle cues found.');
         saveBtn.prop('disabled', true);
-        thAi.css('display', state.hasAi ? '' : 'none');
+        thAi.css('display', '');
         applyAllBtn.css('display', state.hasAi ? '' : 'none');
         return;
       }
       placeholder.hide();
-      thAi.css('display', state.hasAi ? '' : 'none');
+      thAi.css('display', '');
       applyAllBtn.css('display', state.hasAi ? '' : 'none');
 
       cues.forEach((cue, idx) => {
@@ -320,37 +355,37 @@ export default class TranscribeTab extends mxAlert(BaseAnalysisTab) {
         textArea.on('input', () => {
           state.cues[idx].text = textArea.val();
           markDirty();
+          scheduleDraftSave();
         });
         tr.append($('<td/>').addClass('align-top').append(textArea));
 
-        if (state.hasAi) {
-          const aiCell = $('<td/>').addClass('align-top ai-col');
-          const aiText = cue.aiText || '';
-          if (aiText) {
-            const aiArea = $('<textarea/>')
-              .addClass('form-control form-control-sm')
-              .css('background-color', '#f0fff4')
-              .attr('rows', Math.max(1, aiText.split('\n').length))
-              .val(aiText);
-            aiArea.on('input', () => {
-              state.cues[idx].aiText = aiArea.val();
-            });
-            const applyBtn = $('<button/>')
-              .addClass('btn btn-xs btn-outline-success mt-1')
-              .attr('type', 'button')
-              .html('← Apply')
-              .on('click', () => {
-                state.cues[idx].text = aiArea.val();
-                textArea.val(aiArea.val());
-                textArea.attr('rows', Math.max(1, aiArea.val().split('\n').length));
-                markDirty();
-              });
-            aiCell.append(aiArea, applyBtn);
-          } else {
-            aiCell.append($('<span/>').addClass('text-muted lead-xxs').html('—'));
-          }
-          tr.append(aiCell);
-        }
+        const aiCell = $('<td/>').addClass('align-top ai-col');
+        const aiText = cue.aiText || '';
+        const aiArea = $('<textarea/>')
+          .addClass('form-control form-control-sm')
+          .css('background-color', aiText ? '#f0fff4' : '#fafafa')
+          .attr('rows', Math.max(1, (aiText || '').split('\n').length))
+          .attr('placeholder', 'Edit suggestion...')
+          .val(aiText);
+        aiArea.on('input', () => {
+          state.cues[idx].aiText = aiArea.val();
+          aiArea.css('background-color', aiArea.val() ? '#f0fff4' : '#fafafa');
+          scheduleDraftSave();
+        });
+        const applyBtn = $('<button/>')
+          .addClass('btn btn-xs btn-outline-success mt-1')
+          .attr('type', 'button')
+          .html('← Apply')
+          .on('click', () => {
+            const v = aiArea.val();
+            if (!v) return;
+            state.cues[idx].text = v;
+            textArea.val(v);
+            textArea.attr('rows', Math.max(1, v.split('\n').length));
+            markDirty();
+          });
+        aiCell.append(aiArea, applyBtn);
+        tr.append(aiCell);
 
         tbody.append(tr);
       });
@@ -377,6 +412,7 @@ export default class TranscribeTab extends mxAlert(BaseAnalysisTab) {
       }
       state.hasAi = true;
       renderCues();
+      saveDraft(state.cues);
     };
 
     const loadCues = async () => {
@@ -386,11 +422,36 @@ export default class TranscribeTab extends mxAlert(BaseAnalysisTab) {
         status.removeClass('text-danger text-success').addClass('text-muted').html('Loading...');
         const res = await ApiHelper.getSrt(uuid);
         if (res && Array.isArray(res.cues)) {
-          setCues(res.cues);
+          // Merge cached draft (text + aiText) by index. Subtitle text only
+          // takes the cached value if it differs from the server (otherwise
+          // setting dirty would be misleading).
+          const draft = loadDraft();
+          const draftCues = (draft && Array.isArray(draft.cues)) ? draft.cues : null;
+          let mergedCount = 0;
+          let aiCount = 0;
+          const merged = res.cues.map((c, i) => {
+            const d = draftCues && draftCues[i];
+            const out = { start: c.start, end: c.end, text: c.text || '' };
+            if (d && typeof d.text === 'string' && d.text !== out.text) {
+              out.text = d.text;
+              mergedCount += 1;
+            }
+            if (d && d.aiText) {
+              out.aiText = d.aiText;
+              aiCount += 1;
+            }
+            return out;
+          });
+          setCues(merged, { dirty: mergedCount > 0, keepAi: false });
+          state.hasAi = aiCount > 0;
+          renderCues();
           if (this.previewComponent && this.previewComponent.setSubtitleVttKey) {
             await this.previewComponent.setSubtitleVttKey(res.vttKey);
           }
-          status.html(`Loaded ${res.cues.length} cues`);
+          const parts = [`Loaded ${res.cues.length} cues`];
+          if (mergedCount > 0) parts.push(`restored ${mergedCount} unsaved`);
+          if (aiCount > 0) parts.push(`${aiCount} AI drafts`);
+          status.html(parts.join(' · '));
         } else {
           status.html('No subtitles available');
         }
@@ -458,6 +519,7 @@ export default class TranscribeTab extends mxAlert(BaseAnalysisTab) {
           if (this.previewComponent && this.previewComponent.setSubtitleVttKey && res.vttKey) {
             await this.previewComponent.setSubtitleVttKey(res.vttKey);
           }
+          clearDraft();
           status.removeClass('text-muted text-danger').addClass('text-success').html(`Saved (${(res.cues || []).length} cues) — player updated`);
           state.dirty = false;
         } else {
@@ -496,6 +558,7 @@ export default class TranscribeTab extends mxAlert(BaseAnalysisTab) {
           state.dirty = false;
           state.hasAi = false;
           applyAllBtn.css('display', 'none');
+          clearDraft();
           status.removeClass('text-muted text-danger').addClass('text-success').html(`Imported ${res.cues.length} cues from ${file.name}`);
         } else {
           status.removeClass('text-muted text-success').addClass('text-danger').html('Import failed');
@@ -527,6 +590,7 @@ export default class TranscribeTab extends mxAlert(BaseAnalysisTab) {
             // Pass undefined to fall back to the original transcribe.vtt.
             await this.previewComponent.setSubtitleVttKey(undefined);
           }
+          clearDraft();
           status.removeClass('text-muted text-danger').addClass('text-success').html(`Reset to original (${res.cues.length} cues)`);
           state.dirty = false;
           state.hasAi = false;

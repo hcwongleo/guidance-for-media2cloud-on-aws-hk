@@ -13,11 +13,6 @@ const {
   },
 } = Localization;
 
-const ORIENTATIONS = [
-  { value: 'landscape', label: 'Landscape (16:9, 1920×1080)' },
-  { value: 'portrait', label: 'Portrait (9:16, 1080×1920)' },
-];
-
 const BUILTIN_TEMPLATES = [
   { value: 'mp4_landscape', label: 'Landscape MP4 (built-in)' },
   { value: 'mp4_portrait', label: 'Portrait MP4 (built-in)' },
@@ -36,7 +31,6 @@ export default class PublishTab extends mxAlert(BaseAnalysisTab) {
   async createContent() {
     const container = $('<div/>').addClass('col-11 my-4 max-h36r');
     container.append(this.createIntro());
-    container.append(this.createOrientationSection());
     container.append(this.createTemplateSection());
     container.append(this.createControls());
     container.append(this.createStatusSection());
@@ -49,46 +43,22 @@ export default class PublishTab extends mxAlert(BaseAnalysisTab) {
     const wrap = $('<div/>').addClass('mb-3');
     wrap.append($('<p/>').addClass('lead mb-1').html('Publish'));
     wrap.append($('<p/>').addClass('lead-xs text-muted mb-0').html(
-      'Generates landscape and/or portrait 1080p MP4s from the source video. '
-      + 'Subtitle burn-in and logo overlay are out of scope here — download the SRT '
-      + 'from the Transcribe tab and the MP4 below, then hand both off to your editor.'
+      'Pick a MediaConvert job template and run it against the source video — '
+      + 'one template, one MP4. Subtitle burn-in and logo overlay are out of scope '
+      + 'here; download the SRT from the Transcribe tab and the MP4 below, then '
+      + 'hand both off to your editor.'
     ));
     return wrap;
-  }
-
-  createOrientationSection() {
-    const section = $('<div/>').addClass('form-group px-0 mt-3 mb-3');
-    section.append($('<p/>').addClass('lead-s mb-2').html('Orientations'));
-
-    const row = $('<div/>').addClass('d-flex flex-wrap');
-    ORIENTATIONS.forEach((o) => {
-      const cell = $('<div/>').addClass('custom-control custom-checkbox mr-4 mb-1');
-      const id = `publish-orient-${o.value}`;
-      cell.append($('<input/>')
-        .attr('type', 'checkbox')
-        .attr('id', id)
-        .attr('data-role', 'orientation')
-        .attr('data-value', o.value)
-        .addClass('custom-control-input')
-        .prop('checked', true));
-      cell.append($('<label/>')
-        .addClass('custom-control-label')
-        .attr('for', id)
-        .text(o.label));
-      row.append(cell);
-    });
-    section.append(row);
-    return section;
   }
 
   createTemplateSection() {
     const section = $('<div/>').addClass('form-group px-0 mt-3 mb-3');
     section.append($('<p/>').addClass('lead-s mb-1').html('Job template'));
     section.append($('<p/>').addClass('lead-xs text-muted mb-2').html(
-      'Each orientation uses its own MediaConvert job template. Pick one to '
-      + 'download and tweak the JSON, then upload it back as an override (same '
-      + 'name) or under a new name. The two built-in templates are picked '
-      + 'automatically by orientation when you generate a bundle.'
+      'The selected template alone defines orientation, scaling and codec '
+      + 'settings — pick a built-in (Landscape or Portrait) or upload your own. '
+      + 'Use Download to grab the JSON, edit, and Upload override (same name) '
+      + 'or Upload as new (custom name).'
     ));
 
     const row = $('<div/>').addClass('d-flex flex-wrap align-items-center');
@@ -360,31 +330,23 @@ export default class PublishTab extends mxAlert(BaseAnalysisTab) {
   }
 
   applySettings(s) {
-    const root = this.$root();
-    const enabled = Array.isArray(s.orientations) && s.orientations.length > 0
-      ? s.orientations
-      : ORIENTATIONS.map((o) => o.value);
-    root.find('[data-role="orientation"]').each(function () {
-      const v = $(this).attr('data-value');
-      $(this).prop('checked', enabled.includes(v));
-    });
+    const select = this.$root().find('[data-role="template"]');
+    if (s && typeof s.template === 'string' && select.find(`option[value="${s.template}"]`).length > 0) {
+      select.val(s.template);
+    }
   }
 
   collectSettings() {
-    const root = this.$root();
-    const orientations = [];
-    root.find('[data-role="orientation"]').each(function () {
-      if ($(this).prop('checked')) orientations.push($(this).attr('data-value'));
-    });
-    return { orientations };
+    const template = this.$root().find('[data-role="template"]').val();
+    return { template };
   }
 
   async saveSettings() {
     const uuid = this.media.uuid;
     try {
       const settings = this.collectSettings();
-      if (!settings.orientations.length) {
-        this.setControlsStatus('Pick at least one orientation.', 'err');
+      if (!settings.template) {
+        this.setControlsStatus('Pick a template.', 'err');
         return;
       }
       this.setControlsStatus('Saving...');
@@ -400,14 +362,14 @@ export default class PublishTab extends mxAlert(BaseAnalysisTab) {
     const uuid = this.media.uuid;
     try {
       const settings = this.collectSettings();
-      if (!settings.orientations.length) {
-        this.setControlsStatus('Pick at least one orientation.', 'err');
+      if (!settings.template) {
+        this.setControlsStatus('Pick a template.', 'err');
         return;
       }
-      this.setControlsStatus('Saving and submitting jobs...');
+      this.setControlsStatus('Saving and submitting job...');
       await ApiHelper.savePublishSettings(uuid, settings);
       const job = await ApiHelper.startPublish(uuid, settings);
-      this.setControlsStatus(`Submitted ${settings.orientations.length} job(s) · output ${job.outputId}`, 'ok');
+      this.setControlsStatus(`Submitted ${settings.template} · output ${job.outputId}`, 'ok');
       this.renderStatus(job);
       this.startPolling();
     } catch (e) {
@@ -441,40 +403,34 @@ export default class PublishTab extends mxAlert(BaseAnalysisTab) {
     const fmt = (k, v) => `<div><strong>${k}</strong>: <code>${escape(v)}</code></div>`;
     const rows = [];
     rows.push(fmt('Status', status.status || 'unknown'));
+    if (status.template) rows.push(fmt('Template', status.template));
     if (status.outputId) rows.push(fmt('Output ID', status.outputId));
     if (status.sourceUri) rows.push(fmt('Source video', status.sourceUri));
     if (status.submittedAt) rows.push(fmt('Submitted', new Date(status.submittedAt).toISOString()));
 
-    // Per-orientation job rows.
-    const jobs = status.jobs || {};
-    const orients = Object.keys(jobs);
-    if (orients.length > 0) {
-      rows.push('<div class="mt-2"><strong>Jobs</strong></div>');
-      orients.forEach((orient) => {
-        const j = jobs[orient] || {};
-        const parts = [];
-        parts.push(`<strong>${escape(orient)}</strong>`);
-        parts.push(escape(j.status || 'unknown'));
-        if (typeof j.jobPercentComplete === 'number') parts.push(`${j.jobPercentComplete}%`);
-        if (j.currentPhase) parts.push(escape(j.currentPhase));
-        if (j.errorCode) parts.push(`<span class="text-danger">err ${escape(j.errorCode)}</span>`);
-        if (j.errorMessage) parts.push(`<span class="text-danger">${escape(j.errorMessage)}</span>`);
-        if (j.jobId) parts.push(`<code class="lead-xxs">${escape(j.jobId)}</code>`);
-        rows.push(`<div class="ml-2">${parts.join(' · ')}</div>`);
-      });
+    const j = status.job || {};
+    if (j.jobId) {
+      const parts = [];
+      parts.push(escape(j.status || 'unknown'));
+      if (typeof j.jobPercentComplete === 'number') parts.push(`${j.jobPercentComplete}%`);
+      if (j.currentPhase) parts.push(escape(j.currentPhase));
+      if (j.errorCode) parts.push(`<span class="text-danger">err ${escape(j.errorCode)}</span>`);
+      if (j.errorMessage) parts.push(`<span class="text-danger">${escape(j.errorMessage)}</span>`);
+      parts.push(`<code class="lead-xxs">${escape(j.jobId)}</code>`);
+      rows.push(`<div class="mt-2"><strong>Job</strong>: ${parts.join(' · ')}</div>`);
     }
 
     this.setStatusBody(rows.join('\n'));
 
     const isComplete = status.status === 'COMPLETE';
-    this.renderOutputs(isComplete ? (status.outputs || {}) : null, status.history || [], status);
+    this.renderOutputs(isComplete ? (status.output || null) : null, status.history || [], status);
   }
 
-  renderOutputs(outputs, history, currentStatus) {
+  renderOutputs(output, history, currentStatus) {
     const section = this.$root().find('[data-role="outputs-section"]');
     const body = this.$root().find('[data-role="outputs-body"]');
     body.empty();
-    const hasCurrent = outputs && Object.keys(outputs).some((k) => outputs[k] && outputs[k].url);
+    const hasCurrent = !!(output && output.url);
     const hasHistory = Array.isArray(history) && history.length > 0;
     if (!hasCurrent && !hasHistory) {
       section.css('display', 'none');
@@ -483,14 +439,14 @@ export default class PublishTab extends mxAlert(BaseAnalysisTab) {
     }
     section.css('display', '');
     if (hasCurrent) {
-      body.append(this.buildOutputRow(outputs, {
+      body.append(this.buildOutputRow(output, {
         outputId: currentStatus && currentStatus.outputId,
       }));
     }
     this.renderHistory(history || []);
   }
 
-  buildOutputRow(outputs, opts) {
+  buildOutputRow(output, opts) {
     const opts2 = opts || {};
     const wrap = $('<div/>').addClass('mb-3');
 
@@ -504,7 +460,7 @@ export default class PublishTab extends mxAlert(BaseAnalysisTab) {
       const delBtn = $('<button/>').attr('type', 'button')
         .addClass('btn btn-sm btn-outline-danger').html('Delete files');
       delBtn.on('click', () => {
-        if (!window.confirm('Delete the rendered MP4(s) for this output?\n\nThis permanently removes the files from S3.')) return;
+        if (!window.confirm('Delete the rendered MP4 for this output?\n\nThis permanently removes the file from S3.')) return;
         delBtn.prop('disabled', true);
         this.deletePublishOutput(opts2.outputId).catch((e) => {
           console.error(e);
@@ -515,23 +471,20 @@ export default class PublishTab extends mxAlert(BaseAnalysisTab) {
     }
     wrap.append(headingRow);
 
-    // Per-orientation MP4 rows.
-    ORIENTATIONS.forEach((o) => {
-      const entry = outputs && outputs[o.value];
-      if (!entry || !entry.url) return;
+    if (output && output.url) {
       const row = $('<div/>').addClass('mb-2');
-      row.append($('<strong/>').html(`${o.label}: `));
-      const filename = (entry.key || '').split('/').pop() || `${o.value}.mp4`;
-      row.append($('<a/>').attr('href', entry.url).attr('download', filename).text('Download MP4'));
-      if (typeof entry.size === 'number') {
-        const mb = (entry.size / (1024 * 1024)).toFixed(1);
+      const filename = (output.key || '').split('/').pop() || 'publish.mp4';
+      row.append($('<strong/>').html('MP4: '));
+      row.append($('<a/>').attr('href', output.url).attr('download', filename).text('Download MP4'));
+      if (typeof output.size === 'number') {
+        const mb = (output.size / (1024 * 1024)).toFixed(1);
         row.append($('<span/>').addClass('lead-xxs text-muted ml-2').text(`${mb} MB`));
       }
       row.append($('<div/>').addClass('lead-xxs text-muted text-break').html(
-        `<a href="${entry.url}" target="_blank">${entry.url}</a>`
+        `<a href="${output.url}" target="_blank">${output.url}</a>`
       ));
       wrap.append(row);
-    });
+    }
     return wrap;
   }
 
@@ -540,8 +493,7 @@ export default class PublishTab extends mxAlert(BaseAnalysisTab) {
     const title = this.$root().find('[data-role="history-title"]');
     const body = this.$root().find('[data-role="history-body"]');
     body.empty();
-    const items = (history || []).filter((h) => h && h.outputs
-      && Object.keys(h.outputs).some((k) => h.outputs[k] && h.outputs[k].url));
+    const items = (history || []).filter((h) => h && h.output && h.output.url);
     if (items.length === 0) {
       divider.css('display', 'none');
       title.css('display', 'none');
@@ -552,9 +504,8 @@ export default class PublishTab extends mxAlert(BaseAnalysisTab) {
     items.forEach((h) => {
       const ts = h.finishedAt ? new Date(h.finishedAt).toLocaleString()
         : h.submittedAt ? new Date(h.submittedAt).toLocaleString() : '';
-      const orients = Array.isArray(h.orientations) ? h.orientations.join(', ') : '';
-      const heading = `<strong>${orients}</strong> · ${ts || h.outputId || ''}`;
-      body.append(this.buildOutputRow(h.outputs, { heading, outputId: h.outputId }));
+      const heading = `<strong>${h.template || ''}</strong> · ${ts || h.outputId || ''}`;
+      body.append(this.buildOutputRow(h.output, { heading, outputId: h.outputId }));
     });
   }
 

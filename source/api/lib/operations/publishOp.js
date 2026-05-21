@@ -51,18 +51,15 @@ const TEMPLATE_NAME_RE = /^[A-Za-z0-9_-]{1,64}$/;
 // Dedicated CloudFront distribution serving ProxyBucket /*/publish/* (set by webapp-stack)
 const PUBLISH_CLOUDFRONT_DOMAIN = process.env.ENV_PUBLISH_CLOUDFRONT_DOMAIN || '';
 
-// Bundle-handoff: produce MP4(s) only. No subtitle burn-in, no logo overlay.
-// Downstream editors get the MP4(s) plus the SRT (downloaded separately from
-// the transcribe tab) and own all overlay/burn-in work.
-const ORIENTATIONS = ['landscape', 'portrait'];
-const ORIENTATION_TEMPLATES = {
-  landscape: 'mp4_landscape',
-  portrait: 'mp4_portrait',
-};
+// Bundle-handoff: produce a single MP4 from a chosen template. No subtitle
+// burn-in, no logo overlay. Downstream editors get the MP4 plus the SRT
+// (downloaded separately from the transcribe tab) and own all overlay work.
+// Each publish runs exactly one MediaConvert job using the selected template;
+// the template alone defines orientation, scaling and codec settings.
 const SUPPORTED_TEMPLATES = ['mp4_landscape', 'mp4_portrait'];
 
 const DEFAULT_SETTINGS = {
-  orientations: ['landscape', 'portrait'],
+  template: 'mp4_landscape',
   inputClipping: null,
 };
 
@@ -150,12 +147,11 @@ class PublishOp extends BaseOp {
   async _saveSettings(uuid) {
     const body = this.request.body || {};
     const merged = { ...DEFAULT_SETTINGS };
-    if (Array.isArray(body.orientations)) {
-      const filtered = body.orientations.filter((o) => ORIENTATIONS.includes(o));
-      if (filtered.length === 0) {
-        throw new M2CException('orientations must include at least one of: landscape, portrait');
+    if (typeof body.template === 'string' && body.template.length > 0) {
+      if (!TEMPLATE_NAME_RE.test(body.template)) {
+        throw new M2CException(`invalid template name: ${body.template}`);
       }
-      merged.orientations = filtered;
+      merged.template = body.template;
     }
     if (body.inputClipping !== undefined) merged.inputClipping = body.inputClipping;
     merged.updatedAt = Date.now();
@@ -212,9 +208,9 @@ class PublishOp extends BaseOp {
       let mutated = false;
       if (status.outputId === outputId) {
         delete status.outputId;
-        delete status.outputs;
-        delete status.jobs;
-        delete status.mp4Destination;
+        delete status.output;
+        delete status.job;
+        delete status.template;
         delete status.errorCode;
         delete status.errorMessage;
         delete status.finishedAt;
@@ -246,95 +242,85 @@ class PublishOp extends BaseOp {
     const stored = await this._getSettings(uuid);
     const settings = { ...stored, ...body };
 
-    const requestedOrients = Array.isArray(settings.orientations) && settings.orientations.length > 0
-      ? settings.orientations.filter((o) => ORIENTATIONS.includes(o))
-      : ORIENTATIONS.slice();
-    if (requestedOrients.length === 0) {
-      throw new M2CException('no valid orientations selected');
+    const tmplName = settings.template || DEFAULT_SETTINGS.template;
+    if (!TEMPLATE_NAME_RE.test(tmplName)) {
+      throw new M2CException(`invalid template name: ${tmplName}`);
     }
+    const tmpl = await this._loadTemplate(tmplName);
 
     const sourceUri = await this._resolveSourceUri(uuid);
 
     const dest = settings.destination || {};
     const outputId = dest.outputId || `vod-${Date.now()}`;
-    const outputBase = `${uuid}/${PUBLISH_PREFIX}/${outputId}`;
+    const mp4Destination = `s3://${ProxyBucket}/${uuid}/${PUBLISH_PREFIX}/${outputId}/`;
 
     const audioSourceName = 'Audio Selector 1';
-    const client = new MediaConvertClient({ endpoint: MediaConvertHost });
-
-    // Submit one job per orientation in parallel.
-    const jobs = {};
-    await Promise.all(requestedOrients.map(async (orientation) => {
-      const tmplName = ORIENTATION_TEMPLATES[orientation];
-      const tmpl = await this._loadTemplate(tmplName);
-      const outputGroups = JSON.parse(JSON.stringify(tmpl.OutputGroups));
-      const mp4Destination = `s3://${ProxyBucket}/${outputBase}/${orientation}/`;
-
-      outputGroups.forEach((og) => {
-        if (og.OutputGroupSettings.Type === 'FILE_GROUP_SETTINGS') {
-          og.OutputGroupSettings.FileGroupSettings.Destination = mp4Destination;
-        }
-        (og.Outputs || []).forEach((o) => {
-          (o.AudioDescriptions || []).forEach((a) => {
-            if (a.AudioSourceName === '##AUDIO_SOURCE##') a.AudioSourceName = audioSourceName;
-          });
+    const outputGroups = JSON.parse(JSON.stringify(tmpl.OutputGroups));
+    outputGroups.forEach((og) => {
+      if (og.OutputGroupSettings.Type === 'FILE_GROUP_SETTINGS') {
+        og.OutputGroupSettings.FileGroupSettings.Destination = mp4Destination;
+      }
+      (og.Outputs || []).forEach((o) => {
+        (o.AudioDescriptions || []).forEach((a) => {
+          if (a.AudioSourceName === '##AUDIO_SOURCE##') a.AudioSourceName = audioSourceName;
         });
       });
+    });
 
-      const input = {
-        AudioSelectors: {
-          [audioSourceName]: {
-            Offset: 0,
-            DefaultSelection: 'DEFAULT',
-            ProgramSelection: 1,
-          },
+    const input = {
+      AudioSelectors: {
+        [audioSourceName]: {
+          Offset: 0,
+          DefaultSelection: 'DEFAULT',
+          ProgramSelection: 1,
         },
-        VideoSelector: { AlphaBehavior: 'DISCARD', ColorSpace: 'FOLLOW', Rotate: 'DEGREE_0' },
-        FilterEnable: 'AUTO',
-        PsiControl: 'USE_PSI',
-        FilterStrength: 0,
-        DeblockFilter: 'DISABLED',
-        DenoiseFilter: 'DISABLED',
-        TimecodeSource: 'ZEROBASED',
-        FileInput: sourceUri,
-      };
-      if (settings.inputClipping
-        && settings.inputClipping.StartTimecode
-        && settings.inputClipping.EndTimecode) {
-        input.InputClippings = [{
-          StartTimecode: settings.inputClipping.StartTimecode,
-          EndTimecode: settings.inputClipping.EndTimecode,
-        }];
-      }
+      },
+      VideoSelector: { AlphaBehavior: 'DISCARD', ColorSpace: 'FOLLOW', Rotate: 'DEGREE_0' },
+      FilterEnable: 'AUTO',
+      PsiControl: 'USE_PSI',
+      FilterStrength: 0,
+      DeblockFilter: 'DISABLED',
+      DenoiseFilter: 'DISABLED',
+      TimecodeSource: 'ZEROBASED',
+      FileInput: sourceUri,
+    };
+    if (settings.inputClipping
+      && settings.inputClipping.StartTimecode
+      && settings.inputClipping.EndTimecode) {
+      input.InputClippings = [{
+        StartTimecode: settings.inputClipping.StartTimecode,
+        EndTimecode: settings.inputClipping.EndTimecode,
+      }];
+    }
 
-      const jobParams = {
-        Role: DataAccessRole,
-        Settings: {
-          OutputGroups: outputGroups,
-          AdAvailOffset: 0,
-          FollowSource: 1,
-          Inputs: [input],
-        },
-        StatusUpdateInterval: 'SECONDS_60',
-        AccelerationSettings: { Mode: 'DISABLED' },
-        UserMetadata: {
-          solutionUuid: SolutionUuid || '',
-          m2cUuid: uuid,
-          m2cOutputId: outputId,
-          m2cOrientation: orientation,
-        },
-        BillingTagsSource: 'JOB',
-      };
+    const jobParams = {
+      Role: DataAccessRole,
+      Settings: {
+        OutputGroups: outputGroups,
+        AdAvailOffset: 0,
+        FollowSource: 1,
+        Inputs: [input],
+      },
+      StatusUpdateInterval: 'SECONDS_60',
+      AccelerationSettings: { Mode: 'DISABLED' },
+      UserMetadata: {
+        solutionUuid: SolutionUuid || '',
+        m2cUuid: uuid,
+        m2cOutputId: outputId,
+        m2cTemplate: tmplName,
+      },
+      BillingTagsSource: 'JOB',
+    };
 
-      const response = await client.send(new CreateJobCommand(jobParams));
-      const job = response.Job || {};
-      jobs[orientation] = {
-        jobId: job.Id,
-        status: job.Status || 'SUBMITTED',
-        mp4Destination,
-        submittedAt: Date.now(),
-      };
-    }));
+    const client = new MediaConvertClient({ endpoint: MediaConvertHost });
+    const response = await client.send(new CreateJobCommand(jobParams));
+    const job = response.Job || {};
+    const jobInfo = {
+      jobId: job.Id,
+      status: job.Status || 'SUBMITTED',
+      mp4Destination,
+      submittedAt: Date.now(),
+    };
 
     const previous = await _readStatus(uuid);
     const history = Array.isArray(previous && previous.history) ? previous.history.slice() : [];
@@ -347,9 +333,9 @@ class PublishOp extends BaseOp {
     const status = {
       uuid,
       outputId,
-      orientations: requestedOrients,
-      jobs,
-      status: _aggregateJobStatus(jobs),
+      template: tmplName,
+      job: jobInfo,
+      status: jobInfo.status,
       submittedAt: Date.now(),
       sourceUri,
       history,
@@ -366,23 +352,21 @@ class PublishOp extends BaseOp {
       return { uuid, status: 'idle' };
     }
     const data = JSON.parse((await CommonUtils.download(ProxyBucket, key)).toString('utf8'));
-    if (!data.jobs || Object.keys(data.jobs).length === 0) {
-      // Status docs from before the bundle-handoff redesign aren't supported —
+    if (!data.job || !data.job.jobId) {
+      // Status docs from before the single-job redesign aren't supported —
       // surface them as idle so the UI doesn't render stale fields.
       return { uuid, status: 'idle' };
     }
 
-    // Refresh each job's MediaConvert status in parallel.
-    const client = new MediaConvertClient({ endpoint: MediaConvertHost });
-    const updated = { ...data, jobs: { ...data.jobs } };
-    await Promise.all(Object.entries(data.jobs).map(async ([orientation, j]) => {
-      if (!j.jobId || ['COMPLETE', 'ERROR', 'CANCELED'].includes(j.status)) return;
+    const updated = { ...data, job: { ...data.job } };
+    if (!['COMPLETE', 'ERROR', 'CANCELED'].includes(updated.job.status)) {
+      const client = new MediaConvertClient({ endpoint: MediaConvertHost });
       try {
-        const response = await client.send(new GetJobCommand({ Id: j.jobId }));
+        const response = await client.send(new GetJobCommand({ Id: updated.job.jobId }));
         const job = response.Job || {};
-        updated.jobs[orientation] = {
-          ...j,
-          status: job.Status || j.status,
+        updated.job = {
+          ...updated.job,
+          status: job.Status || updated.job.status,
           jobPercentComplete: job.JobPercentComplete,
           currentPhase: job.CurrentPhase,
           errorCode: job.ErrorCode,
@@ -390,13 +374,13 @@ class PublishOp extends BaseOp {
           finishedAt: ['COMPLETE', 'ERROR', 'CANCELED'].includes(job.Status) ? Date.now() : undefined,
         };
       } catch (e) {
-        updated.jobs[orientation] = { ...j, error: e.message };
+        updated.job = { ...updated.job, error: e.message };
       }
-    }));
+    }
 
-    updated.status = _aggregateJobStatus(updated.jobs);
+    updated.status = updated.job.status || 'idle';
     if (updated.status === 'COMPLETE') {
-      updated.outputs = await _listOutputUrls(updated);
+      updated.output = await _findOutputUrl(updated);
     }
 
     await _writeStatus(uuid, updated);
@@ -408,7 +392,7 @@ class PublishOp extends BaseOp {
     return {
       uuid,
       status: status.status,
-      outputs: status.outputs || await _listOutputUrls(status),
+      output: status.output || await _findOutputUrl(status),
     };
   }
 
@@ -565,40 +549,22 @@ function _cloudfrontUrl(key) {
   return `https://${PUBLISH_CLOUDFRONT_DOMAIN}/${encoded}`;
 }
 
-function _aggregateJobStatus(jobs) {
-  const states = Object.values(jobs || {}).map((j) => j && j.status);
-  if (states.length === 0) return 'idle';
-  if (states.some((s) => s === 'ERROR')) return 'ERROR';
-  if (states.some((s) => s === 'CANCELED')) return 'CANCELED';
-  if (states.every((s) => s === 'COMPLETE')) return 'COMPLETE';
-  if (states.some((s) => s === 'PROGRESSING')) return 'PROGRESSING';
-  return 'SUBMITTED';
-}
-
-async function _listOutputUrls(status) {
-  const result = {};
-  if (!status || !status.jobs) return result;
-
-  await Promise.all(Object.entries(status.jobs).map(async ([orientation, j]) => {
-    if (!j || !j.mp4Destination) return;
-    const prefix = j.mp4Destination.replace(`s3://${ProxyBucket}/`, '');
-    try {
-      const response = await CommonUtils.listObjects(ProxyBucket, prefix);
-      const contents = (response && response.Contents) || [];
-      const mp4Key = contents.find((o) => (o.Key || '').endsWith('.mp4'));
-      if (mp4Key) {
-        result[orientation] = {
-          key: mp4Key.Key,
-          url: _cloudfrontUrl(mp4Key.Key),
-          size: mp4Key.Size,
-        };
-      }
-    } catch (e) {
-      // ignore listing errors per orientation
-    }
-  }));
-
-  return result;
+async function _findOutputUrl(status) {
+  if (!status || !status.job || !status.job.mp4Destination) return undefined;
+  const prefix = status.job.mp4Destination.replace(`s3://${ProxyBucket}/`, '');
+  try {
+    const response = await CommonUtils.listObjects(ProxyBucket, prefix);
+    const contents = (response && response.Contents) || [];
+    const mp4Key = contents.find((o) => (o.Key || '').endsWith('.mp4'));
+    if (!mp4Key) return undefined;
+    return {
+      key: mp4Key.Key,
+      url: _cloudfrontUrl(mp4Key.Key),
+      size: mp4Key.Size,
+    };
+  } catch (e) {
+    return undefined;
+  }
 }
 
 module.exports = PublishOp;

@@ -462,15 +462,6 @@ export default class PublishTab extends mxAlert(BaseAnalysisTab) {
         if (j.jobId) parts.push(`<code class="lead-xxs">${escape(j.jobId)}</code>`);
         rows.push(`<div class="ml-2">${parts.join(' · ')}</div>`);
       });
-    } else if (status.jobId) {
-      // Legacy single-job status doc.
-      rows.push(fmt('Job ID', status.jobId));
-      if (typeof status.jobPercentComplete === 'number') {
-        rows.push(fmt('Progress', `${status.jobPercentComplete}%`));
-      }
-      if (status.currentPhase) rows.push(fmt('Phase', status.currentPhase));
-      if (status.errorCode) rows.push(fmt('Error code', status.errorCode));
-      if (status.errorMessage) rows.push(fmt('Error', status.errorMessage));
     }
 
     this.setStatusBody(rows.join('\n'));
@@ -484,15 +475,14 @@ export default class PublishTab extends mxAlert(BaseAnalysisTab) {
     const body = this.$root().find('[data-role="outputs-body"]');
     body.empty();
     const hasCurrent = outputs && Object.keys(outputs).some((k) => outputs[k] && outputs[k].url);
-    const hasLegacyCurrent = outputs && (outputs.hlsMaster || outputs.mp4);
     const hasHistory = Array.isArray(history) && history.length > 0;
-    if (!hasCurrent && !hasLegacyCurrent && !hasHistory) {
+    if (!hasCurrent && !hasHistory) {
       section.css('display', 'none');
       this.renderHistory([]);
       return;
     }
     section.css('display', '');
-    if (hasCurrent || hasLegacyCurrent) {
+    if (hasCurrent) {
       body.append(this.buildOutputRow(outputs, {
         outputId: currentStatus && currentStatus.outputId,
       }));
@@ -542,22 +532,6 @@ export default class PublishTab extends mxAlert(BaseAnalysisTab) {
       ));
       wrap.append(row);
     });
-
-    // Legacy outputs (HLS master + single MP4) — keeps history rows from old
-    // jobs viewable until the user deletes them.
-    if (outputs && outputs.hlsMaster) {
-      const row = $('<div/>').addClass('mb-2');
-      row.append($('<strong/>').html('HLS master (legacy): '));
-      row.append($('<a/>').attr('href', outputs.hlsMaster).attr('target', '_blank').text('Open'));
-      wrap.append(row);
-    }
-    if (outputs && outputs.mp4 && !outputs.landscape && !outputs.portrait) {
-      const row = $('<div/>').addClass('mb-2');
-      row.append($('<strong/>').html('MP4 (legacy): '));
-      const filename = (outputs.mp4Key || '').split('/').pop() || 'video.mp4';
-      row.append($('<a/>').attr('href', outputs.mp4).attr('download', filename).text('Download'));
-      wrap.append(row);
-    }
     return wrap;
   }
 
@@ -567,8 +541,7 @@ export default class PublishTab extends mxAlert(BaseAnalysisTab) {
     const body = this.$root().find('[data-role="history-body"]');
     body.empty();
     const items = (history || []).filter((h) => h && h.outputs
-      && (Object.keys(h.outputs).some((k) => h.outputs[k] && h.outputs[k].url)
-        || h.outputs.hlsMaster || h.outputs.mp4));
+      && Object.keys(h.outputs).some((k) => h.outputs[k] && h.outputs[k].url));
     if (items.length === 0) {
       divider.css('display', 'none');
       title.css('display', 'none');
@@ -579,8 +552,7 @@ export default class PublishTab extends mxAlert(BaseAnalysisTab) {
     items.forEach((h) => {
       const ts = h.finishedAt ? new Date(h.finishedAt).toLocaleString()
         : h.submittedAt ? new Date(h.submittedAt).toLocaleString() : '';
-      const orients = Array.isArray(h.orientations) ? h.orientations.join(', ')
-        : (h.template || '');
+      const orients = Array.isArray(h.orientations) ? h.orientations.join(', ') : '';
       const heading = `<strong>${orients}</strong> · ${ts || h.outputId || ''}`;
       body.append(this.buildOutputRow(h.outputs, { heading, outputId: h.outputId }));
     });

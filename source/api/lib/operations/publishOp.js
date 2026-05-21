@@ -367,37 +367,9 @@ class PublishOp extends BaseOp {
     }
     const data = JSON.parse((await CommonUtils.download(ProxyBucket, key)).toString('utf8'));
     if (!data.jobs || Object.keys(data.jobs).length === 0) {
-      // Pre-bundle status doc with a top-level jobId. Refresh it against
-      // MediaConvert so docs left in PROGRESSING from the old burn-in
-      // pipeline self-heal to COMPLETE and surface their HLS+MP4 links.
-      if (!data.jobId || ['COMPLETE', 'ERROR', 'CANCELED'].includes(data.status)) {
-        const enriched = { uuid, ...data };
-        if (data.status === 'COMPLETE' && !data.outputs) {
-          enriched.outputs = await _listLegacyOutputUrls(data);
-        }
-        return enriched;
-      }
-      try {
-        const client = new MediaConvertClient({ endpoint: MediaConvertHost });
-        const response = await client.send(new GetJobCommand({ Id: data.jobId }));
-        const job = response.Job || {};
-        const updated = {
-          ...data,
-          status: job.Status || data.status,
-          jobPercentComplete: job.JobPercentComplete,
-          currentPhase: job.CurrentPhase,
-          errorCode: job.ErrorCode,
-          errorMessage: job.ErrorMessage,
-          finishedAt: ['COMPLETE', 'ERROR', 'CANCELED'].includes(job.Status) ? Date.now() : undefined,
-        };
-        if (job.Status === 'COMPLETE') {
-          updated.outputs = await _listLegacyOutputUrls(updated);
-        }
-        await _writeStatus(uuid, updated);
-        return { uuid, ...updated };
-      } catch (e) {
-        return { uuid, ...data, error: e.message };
-      }
+      // Status docs from before the bundle-handoff redesign aren't supported —
+      // surface them as idle so the UI doesn't render stale fields.
+      return { uuid, status: 'idle' };
     }
 
     // Refresh each job's MediaConvert status in parallel.
@@ -601,47 +573,6 @@ function _aggregateJobStatus(jobs) {
   if (states.every((s) => s === 'COMPLETE')) return 'COMPLETE';
   if (states.some((s) => s === 'PROGRESSING')) return 'PROGRESSING';
   return 'SUBMITTED';
-}
-
-// Pre-bundle outputs (single MediaConvert job with HLS + MP4 burn-in groups).
-// Walks the legacy hlsDestination / mp4Destination prefixes and returns a
-// shape compatible with the old frontend renderer.
-async function _listLegacyOutputUrls(status) {
-  const result = { hlsMaster: undefined, mp4: undefined };
-  if (!status) return result;
-
-  if (status.hlsDestination) {
-    const hlsPrefix = status.hlsDestination.replace(`s3://${ProxyBucket}/`, '');
-    try {
-      const response = await CommonUtils.listObjects(ProxyBucket, hlsPrefix);
-      const contents = (response && response.Contents) || [];
-      const masterKey = contents.find((o) =>
-        (o.Key || '').endsWith('.m3u8') && !(o.Key || '').match(/_\d+p\.m3u8$/));
-      if (masterKey) {
-        result.hlsMasterKey = masterKey.Key;
-        result.hlsMaster = _cloudfrontUrl(masterKey.Key);
-      }
-    } catch (e) {
-      // ignore
-    }
-  }
-
-  if (status.mp4Destination) {
-    const mp4Prefix = status.mp4Destination.replace(`s3://${ProxyBucket}/`, '');
-    try {
-      const response = await CommonUtils.listObjects(ProxyBucket, mp4Prefix);
-      const contents = (response && response.Contents) || [];
-      const mp4Key = contents.find((o) => (o.Key || '').endsWith('.mp4'));
-      if (mp4Key) {
-        result.mp4Key = mp4Key.Key;
-        result.mp4 = _cloudfrontUrl(mp4Key.Key);
-      }
-    } catch (e) {
-      // ignore
-    }
-  }
-
-  return result;
 }
 
 async function _listOutputUrls(status) {

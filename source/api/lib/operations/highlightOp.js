@@ -23,6 +23,9 @@ const {
         CustomUserAgent,
       },
     },
+    Proxy: {
+      Bucket: ProxyBucket,
+    },
     DynamoDB: {
       Ingest: {
         Table: IngestTable,
@@ -61,6 +64,10 @@ const BaseOp = require('./baseOp');
 
 const REGION = process.env.AWS_REGION;
 const ANALYSIS_TYPE_AUDIO = 'audio';
+// Bedrock Converse rejects video content blocks > 1 GiB. Pre-flight the
+// proxy here so the user gets a synchronous, actionable error instead of
+// a 3-second silent SFN failure.
+const BEDROCK_VIDEO_MAX_BYTES = 1073741824;
 
 function ddbDocClient() {
   const ddb = xraysdkHelper(new DynamoDBClient({
@@ -117,6 +124,28 @@ class HighlightOp extends BaseOp {
     }
     if (strategy === 'auto' && !transcriptKey && !proxyKey) {
       throw new M2CException('no transcript or video proxy available for this asset');
+    }
+
+    // Pre-flight: reject oversize multimodal jobs synchronously rather
+    // than letting the SFN crash 3s in with a Bedrock ValidationException.
+    // Skip for transcript-llm; for 'auto' only check when there is no
+    // transcript (the lambda would route to multimodal in that case).
+    const willUseVideo = strategy === 'multimodal'
+      || (strategy === 'auto' && !transcriptKey);
+    if (willUseVideo && proxyKey) {
+      const head = await CommonUtils.headObject(ProxyBucket, proxyKey)
+        .catch((e) => {
+          console.error(`headObject ${proxyKey} failed:`, e);
+          return undefined;
+        });
+      const size = head && Number(head.ContentLength);
+      if (Number.isFinite(size) && size > BEDROCK_VIDEO_MAX_BYTES) {
+        const gb = (size / (1024 ** 3)).toFixed(2);
+        throw new M2CException(
+          `video proxy is ${gb} GB; multimodal supports up to 1 GB. `
+          + 'Try strategy=transcript-llm, or wait for chunked-multimodal support.'
+        );
+      }
     }
 
     const durationSec = (ingestRow && ingestRow.duration)

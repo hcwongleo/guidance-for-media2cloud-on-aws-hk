@@ -276,6 +276,14 @@ export default class OutputTab extends mxAlert(BaseAnalysisTab) {
       .attr('data-role', 'highlights-status');
     section.append(status);
 
+    // In-flight banner: filled in by refreshHighlightSets when a row is
+    // PROCESSING. Empty (display:none) otherwise.
+    const banner = $('<div/>')
+      .attr('data-role', 'highlights-inflight')
+      .addClass('mt-2 p-2 rounded border bg-light lead-xs')
+      .css('display', 'none');
+    section.append(banner);
+
     section.append(this.createDetectForm());
 
     return section;
@@ -401,29 +409,82 @@ export default class OutputTab extends mxAlert(BaseAnalysisTab) {
       if (sets.length === 0) {
         select.append($('<option/>').attr('value', '').text('(no sets — run detection)'));
         status.text('No highlight sets yet.');
+        this.renderHighlightInflight(null);
+        this.applyHighlightSetSelectability();
         return;
       }
       sets.forEach((s) => {
         const ts = s.createdAt ? new Date(s.createdAt).toLocaleString() : s.highlightSetId.slice(0, 8);
         const cnt = (s.segments || []).length || s.segmentCount || 0;
-        const label = `${ts} · ${s.strategy || '-'} · ${cnt} seg`;
-        select.append($('<option/>').attr('value', s.highlightSetId).text(label));
+        const st = s.status || 'COMPLETED';
+        let label;
+        if (st === 'PROCESSING') {
+          label = `⚙ ${ts} · ${s.strategy || '-'} · running`;
+        } else if (st === 'FAILED') {
+          const err = (s.error || 'failed').slice(0, 60);
+          label = `✗ ${ts} · ${s.strategy || '-'} · ${err}`;
+        } else {
+          label = `${ts} · ${s.strategy || '-'} · ${cnt} seg`;
+        }
+        select.append($('<option/>')
+          .attr('value', s.highlightSetId)
+          .attr('data-status', st)
+          .text(label));
       });
-      // Pick the dropdown selection without clobbering $state.editProjectId.
-      // editProjectId is the user's last-saved edit project (full mode by
-      // default); we only set it to a highlight-set id when the user
-      // actually starts a highlights render.
+      // Prefer the most recent COMPLETED set so the editor/render flow
+      // keeps targeting usable rows; fall back to whichever row exists.
+      const completed = sets.filter((s) => (s.status || 'COMPLETED') === 'COMPLETED');
       const target = preferredId
         || (this.$state.mode === 'highlights' && this.$state.editProjectId
           && sets.find((s) => s.highlightSetId === this.$state.editProjectId)
           && this.$state.editProjectId)
+        || (completed[0] && completed[0].highlightSetId)
         || sets[0].highlightSetId;
       select.val(target);
-      status.text(`${sets.length} set(s) available.`);
+      const completedCount = completed.length;
+      const processingCount = sets.filter((s) => s.status === 'PROCESSING').length;
+      const failedCount = sets.filter((s) => s.status === 'FAILED').length;
+      const parts = [`${completedCount} ready`];
+      if (processingCount > 0) parts.push(`${processingCount} running`);
+      if (failedCount > 0) parts.push(`${failedCount} failed`);
+      status.text(parts.join(' · '));
+      const inflight = sets.find((s) => s.status === 'PROCESSING');
+      this.renderHighlightInflight(inflight || null);
+      this.applyHighlightSetSelectability();
+      select.off('change.inflight').on('change.inflight', () => this.applyHighlightSetSelectability());
     } catch (e) {
       console.error(e);
       status.text(`Error loading highlight sets: ${e.message}`);
     }
+  }
+
+  renderHighlightInflight(row) {
+    const banner = this.$root().find('[data-role="highlights-inflight"]');
+    if (!row) {
+      banner.empty().css('display', 'none');
+      return;
+    }
+    const e = (s) => String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const ts = row.createdAt ? new Date(row.createdAt).toLocaleString() : '';
+    const phase = row.phase ? ` · phase ${e(row.phase)}` : '';
+    const pct = (typeof row.percent === 'number') ? ` · ${row.percent}%` : '';
+    banner.html(
+      `<strong>⚙ Detecting highlights…</strong> ${e(row.strategy || '-')}`
+      + `${pct} · started ${e(ts)}${phase}<br>`
+      + '<span class="text-muted">Status will update automatically. '
+      + 'You can leave this page — the run continues server-side.</span>'
+    ).css('display', '');
+  }
+
+  applyHighlightSetSelectability() {
+    const select = this.$root().find('[data-role="highlight-set-select"]');
+    const editBtn = this.$root().find('[data-role="open-editor"]');
+    const opt = select.find(`option[value="${select.val()}"]`);
+    const st = opt.attr('data-status') || 'COMPLETED';
+    const usable = st === 'COMPLETED' || st === '' || st == null;
+    editBtn.prop('disabled', !usable);
+    editBtn.attr('title', usable ? '' : `Cannot edit — set is ${st}`);
   }
 
   async deleteSelectedHighlightSet() {
@@ -465,7 +526,11 @@ export default class OutputTab extends mxAlert(BaseAnalysisTab) {
       submitBtn.attr('disabled', 'disabled');
       status.text('Submitting detection…');
       await ApiHelper.startHighlightDetection(this.media.uuid, body);
-      status.text('Detection submitted. The new set will appear here when the workflow completes.');
+      status.text('Detection submitted.');
+      // Pull the PROCESSING row immediately so the in-flight banner and
+      // dropdown reflect the new run without waiting for the first IoT
+      // event to land.
+      this.refreshHighlightSets().catch(() => {});
     } catch (e) {
       console.error(e);
       status.text(`Failed to start detection: ${e.message}`);
@@ -952,8 +1017,10 @@ export default class OutputTab extends mxAlert(BaseAnalysisTab) {
       if (this.$state.activeRenderId && msg.renderId !== this.$state.activeRenderId) return;
       this.refreshHistory().catch(() => {});
     } else if (msg.type === 'detect-highlight'
-      && this.media && msg.uuid === this.media.uuid
-      && msg.status === 'completed') {
+      && this.media && msg.uuid === this.media.uuid) {
+      // Re-pull on every detect-highlight event for this asset so the
+      // dropdown labels and in-flight banner stay in sync with the run
+      // (started → processing → completed/error).
       this.refreshHighlightSets().catch(() => {});
     }
   }

@@ -471,9 +471,34 @@ exports.handler = async (event) => {
   }
 
   let strategy = requestedStrategy;
+  // Allocate the highlight-set id up front so the PROCESSING row, IoT
+  // events, and final COMPLETED/FAILED row all share the same key. The
+  // webapp uses this id to render an in-flight banner that survives a
+  // page refresh.
+  const highlightSetId = CRYPTO.randomUUID();
+  const startedAt = new Date().toISOString();
 
   try {
-    await publishStatus({ uuid, strategy, status: 'started', percent: 0 });
+    await publishStatus({
+      uuid,
+      highlightSetId,
+      strategy,
+      status: 'started',
+      percent: 0,
+    });
+
+    await persistHighlightSet(tableName, {
+      uuid,
+      highlightSetId,
+      strategy,
+      modelId: requestedModelId || null,
+      prompt: customPrompt || null,
+      segments: [],
+      status: 'PROCESSING',
+      createdAt: startedAt,
+      createdBy: owner,
+      durationSec: durationSec || 0,
+    });
 
     // Transcript is required for transcript-llm; multimodal uses it when available.
     let words = [];
@@ -494,9 +519,15 @@ exports.handler = async (event) => {
       strategy = autoPickStrategy(density);
     }
 
-    await publishStatus({ uuid, strategy, status: 'processing', percent: 30, phase: 'data-loaded' });
+    await publishStatus({
+      uuid,
+      highlightSetId,
+      strategy,
+      status: 'processing',
+      percent: 30,
+      phase: 'data-loaded',
+    });
 
-    const startedAt = new Date().toISOString();
     let merged;
     let modelId;
     let usage = {};
@@ -511,7 +542,14 @@ exports.handler = async (event) => {
       const prompt = buildPrompt(transcriptText, maxSegments, customPrompt);
       const out = await callBedrock(modelId, prompt, region);
       usage = out.usage;
-      await publishStatus({ uuid, strategy, status: 'processing', percent: 70, phase: 'model-completed' });
+      await publishStatus({
+        uuid,
+        highlightSetId,
+        strategy,
+        status: 'processing',
+        percent: 70,
+        phase: 'model-completed',
+      });
       const rawHighlights = parseHighlightsResponse(out.text);
       const segments = [];
       for (let i = 0; i < rawHighlights.length; i += 1) {
@@ -558,16 +596,29 @@ exports.handler = async (event) => {
         transcriptText,
       });
       usage = out.usage;
-      await publishStatus({ uuid, strategy, status: 'processing', percent: 70, phase: 'model-completed' });
+      await publishStatus({
+        uuid,
+        highlightSetId,
+        strategy,
+        status: 'processing',
+        percent: 70,
+        phase: 'model-completed',
+      });
       merged = mergeOverlapping(out.segments);
       extra = { proxyKey };
     } else {
       throw new M2CException(`unsupported strategy: ${strategy}`);
     }
 
-    await publishStatus({ uuid, strategy, status: 'processing', percent: 90, phase: 'anchored', segmentCount: merged.length });
-
-    const highlightSetId = CRYPTO.randomUUID();
+    await publishStatus({
+      uuid,
+      highlightSetId,
+      strategy,
+      status: 'processing',
+      percent: 90,
+      phase: 'anchored',
+      segmentCount: merged.length,
+    });
 
     const row = {
       uuid,
@@ -593,10 +644,10 @@ exports.handler = async (event) => {
 
     await publishStatus({
       uuid,
+      highlightSetId,
       strategy,
       status: 'completed',
       percent: 100,
-      highlightSetId,
       segmentCount: merged.length,
     });
 
@@ -610,11 +661,34 @@ exports.handler = async (event) => {
       status: 'COMPLETED',
     };
   } catch (e) {
+    const errorMessage = e.message || String(e);
+    // Stamp the row as FAILED so the webapp can list it after a refresh.
+    // Best-effort — if persistence itself blew up we still rethrow the
+    // original error to surface in Step Functions.
+    try {
+      await persistHighlightSet(tableName, {
+        uuid,
+        highlightSetId,
+        strategy,
+        modelId: requestedModelId || null,
+        prompt: customPrompt || null,
+        segments: [],
+        status: 'FAILED',
+        error: errorMessage,
+        createdAt: startedAt,
+        finishedAt: new Date().toISOString(),
+        createdBy: owner,
+        durationSec: durationSec || 0,
+      });
+    } catch (persistErr) {
+      console.log(`=== persist FAILED row failed: ${persistErr.message}`);
+    }
     await publishStatus({
       uuid,
+      highlightSetId,
       strategy,
       status: 'error',
-      error: e.message || String(e),
+      error: errorMessage,
     });
     throw e;
   }

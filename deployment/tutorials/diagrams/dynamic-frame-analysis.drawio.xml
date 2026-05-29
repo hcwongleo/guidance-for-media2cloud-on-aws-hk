@@ -1,0 +1,86 @@
+<mxfile host="app.diagrams.net" agent="Claude" version="24.0.0">
+  <diagram id="dynamic-frame-analysis" name="Dynamic Frame Analysis">
+    <mxGraphModel dx="1422" dy="800" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1400" pageHeight="900" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <mxCell id="title" value="Dynamic Frame Analysis — perceptual-hash sampling + Bedrock vision summarisation" style="text;html=1;align=center;fontSize=18;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="20" width="1320" height="30" as="geometry" />
+        </mxCell>
+
+        <mxCell id="subtitle" value="Replaces fixed-interval frame sampling — adapts cadence to scene change rate. Cuts Bedrock token spend on slow content; raises detail on fast content." style="text;html=1;align=center;fontSize=11;fontStyle=2;fontColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="40" y="55" width="1320" height="20" as="geometry" />
+        </mxCell>
+
+        <mxCell id="proxy" value="S3 proxy.mp4" style="sketch=0;outlineConnect=0;fontColor=#232F3E;fillColor=#7AA116;strokeColor=#ffffff;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.s3;" vertex="1" parent="1">
+          <mxGeometry x="60" y="120" width="50" height="50" as="geometry" />
+        </mxCell>
+
+        <mxCell id="dfsFn" value="dynamic-frame-segmentation Lambda&#xa;ffmpeg → 1 fps frames + perceptual hash" style="sketch=0;outlineConnect=0;fontColor=#232F3E;fillColor=#ED7100;strokeColor=#ffffff;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.lambda;" vertex="1" parent="1">
+          <mxGeometry x="220" y="120" width="50" height="50" as="geometry" />
+        </mxCell>
+
+        <mxCell id="hammingLabel" value="Hamming distance threshold filters near-duplicate frames" style="text;html=1;align=center;fontSize=11;fontStyle=2;fontColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="180" y="180" width="280" height="20" as="geometry" />
+        </mxCell>
+
+        <mxCell id="frames" value="S3 dyn-frames/&#xa;keyframe JPEGs&#xa;(only the unique ones)" style="sketch=0;outlineConnect=0;fontColor=#232F3E;fillColor=#7AA116;strokeColor=#ffffff;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.s3;" vertex="1" parent="1">
+          <mxGeometry x="380" y="120" width="50" height="50" as="geometry" />
+        </mxCell>
+
+        <mxCell id="batchFn" value="frame-batch Lambda&#xa;group N frames per call,&#xa;build prompt" style="sketch=0;outlineConnect=0;fontColor=#232F3E;fillColor=#ED7100;strokeColor=#ffffff;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.lambda;" vertex="1" parent="1">
+          <mxGeometry x="540" y="120" width="50" height="50" as="geometry" />
+        </mxCell>
+
+        <mxCell id="bedrockVision" value="Bedrock Runtime&#xa;Claude Haiku/Sonnet vision&#xa;per-frame description" style="sketch=0;outlineConnect=0;fontColor=#232F3E;fillColor=#01A88D;strokeColor=#ffffff;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.bedrock;" vertex="1" parent="1">
+          <mxGeometry x="700" y="120" width="50" height="50" as="geometry" />
+        </mxCell>
+
+        <mxCell id="rollupFn" value="rollup Lambda&#xa;merge consecutive frames&#xa;w/ same caption,&#xa;build summary intervals" style="sketch=0;outlineConnect=0;fontColor=#232F3E;fillColor=#ED7100;strokeColor=#ffffff;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.lambda;" vertex="1" parent="1">
+          <mxGeometry x="860" y="120" width="50" height="50" as="geometry" />
+        </mxCell>
+
+        <mxCell id="ddb" value="DynamoDB&#xa;Analysis (frame-level)" style="sketch=0;outlineConnect=0;fontColor=#232F3E;fillColor=#3334B9;strokeColor=#ffffff;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.dynamodb;" vertex="1" parent="1">
+          <mxGeometry x="1020" y="120" width="50" height="50" as="geometry" />
+        </mxCell>
+
+        <mxCell id="opensearch" value="OpenSearch&#xa;visual phrase search" style="sketch=0;outlineConnect=0;fontColor=#232F3E;fillColor=#3334B9;strokeColor=#ffffff;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.elasticsearch_service;" vertex="1" parent="1">
+          <mxGeometry x="1180" y="120" width="50" height="50" as="geometry" />
+        </mxCell>
+
+        <mxCell id="downstreamBox" value="DOWNSTREAM consumers — Scene grouping, Highlight Reel multimodal context, Subtitle Editor cue suggestions" style="rounded=0;whiteSpace=wrap;html=1;dashed=1;fillColor=none;strokeColor=#0066CC;fontSize=12;fontStyle=1;verticalAlign=top;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="280" width="1320" height="200" as="geometry" />
+        </mxCell>
+
+        <mxCell id="scene" value="Scene grouping&#xa;[[scene-ad-break]]" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4CE;strokeColor=#D79B00;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="120" y="350" width="200" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="highlight" value="Highlight Reel&#xa;multimodal context&#xa;[[highlight-reel]]" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4CE;strokeColor=#D79B00;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="500" y="350" width="200" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="subtitle2" value="Subtitle Editor&#xa;cue suggestions&#xa;[[ai-subtitle-editor]]" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4CE;strokeColor=#D79B00;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="880" y="350" width="200" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="userTimeline" value="Webapp dynamic-frame ribbon — captions render as hover-tooltips on player; click to seek" style="text;html=1;align=center;fontSize=11;fontStyle=2;fontColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="40" y="520" width="1320" height="20" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e1" style="endArrow=classic;html=1;" edge="1" parent="1" source="proxy" target="dfsFn"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e2" style="endArrow=classic;html=1;" edge="1" parent="1" source="dfsFn" target="frames"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e3" style="endArrow=classic;html=1;" edge="1" parent="1" source="frames" target="batchFn"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e4" style="endArrow=classic;html=1;" edge="1" parent="1" source="batchFn" target="bedrockVision"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e5" style="endArrow=classic;html=1;" edge="1" parent="1" source="bedrockVision" target="rollupFn"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e6" style="endArrow=classic;html=1;" edge="1" parent="1" source="rollupFn" target="ddb"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e7" style="endArrow=classic;html=1;" edge="1" parent="1" source="ddb" target="opensearch"><mxGeometry relative="1" as="geometry" /></mxCell>
+
+        <mxCell id="e8" style="endArrow=classic;html=1;dashed=1;" edge="1" parent="1" source="ddb" target="scene"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e9" style="endArrow=classic;html=1;dashed=1;" edge="1" parent="1" source="ddb" target="highlight"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e10" style="endArrow=classic;html=1;dashed=1;" edge="1" parent="1" source="ddb" target="subtitle2"><mxGeometry relative="1" as="geometry" /></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

@@ -3,8 +3,7 @@
 ## Table of Contents
 
 - [Compatibility Notes](#compatibility-notes)
-- [What's New in V4](#whats-new-in-v4)
-- [Hong Kong Fork — Features and Customizations](#hong-kong-fork--features-and-customizations)
+- [Features and Customizations](#features-and-customizations)
 - [Upstream V4 features — architecture deep dive](#upstream-v4-features--architecture-deep-dive)
 - [Introduction](#introduction)
 - [Installation](#installation)
@@ -31,35 +30,17 @@ If you are looking for Version 3, please switch to [v3/maintenance](https://gith
 
 __
 
-## What's new in V4?
+## Features and Customizations
 
-- **Dynamic frame analysis**: V3 introduced frame-based analysis that allows you to specify frames per second to run the AWS AI/ML services. In V4, the Dynamic frame analysis uses two algorithms (Perceptual Hash and Laplacian Variant) to intelligently select frames to analyze.
+This build adds five extensions on top of the upstream V4 baseline plus Cantonese (zh-HK) localization and build-system tweaks. Each extension is independently shippable and gated behind the same Cognito login as the rest of the app.
 
-- **Auto Face Indexer**: This feature automatically indexes `unrecognized faces` during the analysis workflow. After faces are identified, we use the `late binding` technique that allows you to tag the unrecognized faces after the video files have been analyzed. The tagged names are then automatically propagated to all the video files without the need to re-run the analysis workflow.
+> **Per-feature architecture diagrams.** Each major feature below has a PNG render and a draw.io source under [`deployment/tutorials/diagrams/`](./deployment/tutorials/diagrams/). Open the `.drawio.xml` files with [app.diagrams.net](https://app.diagrams.net) or the VS Code [drawio extension](https://marketplace.visualstudio.com/items?itemName=hediet.vscode-drawio).
 
-- **Scene detection**: Using a combination of AWS Generative AI and AI/ML services, including Amazon Bedrock Text & Vision (Anthropic Claude Haiku 4.5 / Sonnet) model, Amazon Rekognition Segment API, Amazon Transcribe API, and an open-source machine learning model (to generate image embeddings of the frames) and an ephemeral vector store, V4 provides contextual scene change events along with detailed information such as scene description, IAB Content Taxonomies, GARM Taxonomies, scene sentiments, and brands and logos at the scene level.
-
-- **Ad break detection**: Leveraging the scene change events derived from the Scene detection, V4 automatically derives and suggests relevant timestamps that are suitable for ad insertions.
-
-- **Image contextual description**: V4 uses the Amazon Bedrock model to analyze the uploaded image and provides image description, one-line ALT-TEXT, image file name suggestion, and the top five relevant tags for publishers to enhance SEO.
-
-- **Generative AI plugins**: V4 web user inference enables you to try out Amazon Bedrock models.
-
-See quick demo in [V4 Demo Video Gallery](#v4-demo-video-gallery)
-
-__
-
-## Hong Kong Fork — Features and Customizations
-
-This fork of `guidance-for-media2cloud-on-aws` adds five sub-projects on top of the upstream V4 baseline plus Hong Kong–specific localization and build-system tweaks. Each sub-project is independently shippable and gated behind the same Cognito login as the rest of the app.
-
-> **Per-feature architecture diagrams.** Each major feature below has its own draw.io source under [`deployment/tutorials/diagrams/`](./deployment/tutorials/diagrams/). Open them with [app.diagrams.net](https://app.diagrams.net) or the VS Code [drawio extension](https://marketplace.visualstudio.com/items?itemName=hediet.vscode-drawio).
-
-### Sub-Project A — Tab-stacking bug fix (analysis tabs)
+### Tab-stacking bug fix (analysis tabs)
 Switching between analysis tabs (Transcribe, Scenes, Ad Break, etc.) while a previous tab was still loading caused tabs to "stack" on top of each other. Replaced with a one-line sibling-active gate that drops late-arriving content if the user has already moved on.
 - Spec: `docs/superpowers/specs/2026-05-18-tab-stacking-bug-fix-design.md`
 
-### Sub-Project B — Dynamic Bedrock model registry + editable prompts
+### Dynamic Bedrock model registry + editable prompts
 Hard-coded Claude/Nova model IDs and system prompts are replaced with a runtime registry (`source/layers/core-lib/lib/genai/bedrockModel.js` + `source/api/lib/operations/modelsOp.js`).
 
 **AWS services in play**
@@ -71,11 +52,11 @@ Hard-coded Claude/Nova model IDs and system prompts are replaced with a runtime 
 - Per-feature system prompts (transcribe summary, scene description, ad-break taxonomy, highlight reasons, subtitle AI-edit) are editable from the Settings UI and persisted in DynamoDB.
 - `maxTokens` is clamped per model so Nova Lite no longer fails at the output ceiling.
 
-### Sub-Project C — Subtitle / Transcribe AI editing + SRT export
+### Subtitle / Transcribe AI editing + SRT export
 A side-by-side "AI editor" on the Transcribe tab that lets a producer rewrite, translate, or tighten captions with Bedrock and export the edited transcript as an SRT.
 
-![AI Subtitle Editor](./deployment/tutorials/diagrams/ai-subtitle-editor.drawio.xml)
-> Architecture diagram: [`ai-subtitle-editor.drawio.xml`](./deployment/tutorials/diagrams/ai-subtitle-editor.drawio.xml)
+![AI Subtitle Editor](./deployment/tutorials/diagrams/ai-subtitle-editor.png)
+> Architecture diagram source: [`ai-subtitle-editor.drawio.xml`](./deployment/tutorials/diagrams/ai-subtitle-editor.drawio.xml)
 
 **AWS services in play**
 - [Amazon Transcribe](https://docs.aws.amazon.com/transcribe/latest/dg/) — async speech-to-text with speaker identification; output is word-level JSON with timestamps.
@@ -93,11 +74,11 @@ A side-by-side "AI editor" on the Transcribe tab that lets a producer rewrite, t
 - The VTT lives in S3 as the source of truth — the editor PUTs back to S3 on save, so the next webapp load reflects the edit. SRT export is a pure client-side conversion.
 - The same VTT is used downstream by the Highlight Reel "transcript-llm" strategy and by Publish-to-VOD as an optional sidecar / burn-in caption track.
 
-### Sub-Project D — Publish-to-Short-Form pipeline (landscape + portrait)
+### Publish-to-Short-Form pipeline (landscape + portrait)
 Lets the user pick a finished asset, choose 16:9 or 9:16, and submit a MediaConvert job that emits HLS + MP4 proxies into the Proxy bucket. The Publish tab shows job progress, finished outputs, signed download links, and a **Delete files** button that wipes the S3 prefix.
 
-![Publish to Short-Form](./deployment/tutorials/diagrams/publish-short-form.drawio.xml)
-> Architecture diagram: [`publish-short-form.drawio.xml`](./deployment/tutorials/diagrams/publish-short-form.drawio.xml)
+![Publish to Short-Form](./deployment/tutorials/diagrams/publish-short-form.png)
+> Architecture diagram source: [`publish-short-form.drawio.xml`](./deployment/tutorials/diagrams/publish-short-form.drawio.xml)
 
 **AWS services in play**
 - [AWS Elemental MediaConvert](https://docs.aws.amazon.com/mediaconvert/latest/ug/) — multi-input concat job, separate `OutputGroup` per aspect ratio.
@@ -114,11 +95,11 @@ Lets the user pick a finished asset, choose 16:9 or 9:16, and submit a MediaConv
 - Landscape and portrait render in **parallel** Step Functions branches against the same input — render time ≈ longest single output, not sum.
 - For SMART_CROP to work the IAM service role must include both `mediaconvert:*` **and** `elemental-inference:*`. Watch for error 1432 if the inference action is missing.
 
-### Sub-Project E — Highlight clipping + video editor (short-form video)
+### Highlight clipping + video editor (short-form video)
 Auto-detects highlight moments in a long-form video and lets the user assemble a short-form cut with a timeline editor. Uses **TwelveLabs Pegasus 1.2** on Bedrock for native-multimodal scoring, with chunking for inputs >30 minutes.
 
-![Highlight Reel](./deployment/tutorials/diagrams/highlight-reel.drawio.xml)
-> Architecture diagram: [`highlight-reel.drawio.xml`](./deployment/tutorials/diagrams/highlight-reel.drawio.xml)
+![Highlight Reel](./deployment/tutorials/diagrams/highlight-reel.png)
+> Architecture diagram source: [`highlight-reel.drawio.xml`](./deployment/tutorials/diagrams/highlight-reel.drawio.xml)
 
 **AWS services in play**
 - [Amazon Bedrock Runtime — TwelveLabs Pegasus 1.2](https://docs.aws.amazon.com/bedrock/latest/userguide/model-providers-twelvelabs.html) — sync `InvokeModel` with `mediaSource.s3Location.bucketOwner` required; tops out around 60 min per call so we cap chunks at 25 min for timestamp accuracy.
@@ -149,7 +130,7 @@ Auto-detects highlight moments in a long-form video and lets the user assemble a
 - Chunking uses MediaConvert *stream-copy* (`Codec: PASSTHROUGH`), not re-encode. Audio is re-encoded to AAC 96 kbps because the underlying encoder rejects ADTS-in-MP4 stream copy. Chunks are scoped to `s3://<proxy>/<uuid>/_pegasus-chunks/` and IAM-restricted to that prefix only — highlight detection cannot reach raw or proxy media.
 - Pegasus timestamp precision degrades on long inputs; the 25-minute chunk target is the sweet spot we found between extra Bedrock calls and tight timestamps.
 
-### Hong Kong–specific localization
+### Cantonese (zh-HK) localization
 
 **Chinese, Hong Kong (zh-HK)** added end-to-end:
 - **Language code** registered in the dropdown (`source/webapp/src/lib/js/app/shared/languageCodes.js`, after `zh-TW`):
@@ -162,7 +143,7 @@ Auto-detects highlight moments in a long-form video and lets the user assemble a
 - **Transcribe** forced to `zh-HK` for Cantonese audio.
 - **Bedrock system prompts** for summarize / custom / image / scene-taxonomy / highlight-reasons rewritten to emit zh-HK output.
 
-### Build-system tweaks (Hong Kong fork)
+### Build-system tweaks
 
 - **Pre-built Lambda layer packages** — `deployment/build-s3-dist.sh` now downloads the official AWS-built ExifTool (`image-process-lib-v4.0.9.zip`) and PDF (`pdf-lib-v4.0.9.zip`) layers from `s3://awsi-megs-guidances-us-east-1/media2cloud/v4.0.9/` instead of running the local Docker build for each. This drops ~10–15 min off every build, fixes the `canvas.node` native-module errors that occasionally hit document processing, and falls back to Docker only if the download fails. Modified functions: `build_image_process_layer`, `build_pdf_layer`.
 - **Webapp deploy via Rollup-at-deploy + SRI** — surgical updates skip the full CloudFormation cycle and deploy a webapp change in ~3 minutes (`deployment/build-s3-dist.sh` enhancements). Useful for iterating on the highlight editor and publish tab without re-running CFN.
@@ -171,13 +152,14 @@ __
 
 ## Upstream V4 features — architecture deep dive
 
-The five sub-projects above sit on top of upstream Media2Cloud V4. Each upstream feature below has the same per-feature breakdown — what it does, AWS services in play with official doc links, an architecture diagram, and notes on non-obvious M2C-specific usage.
+The five extensions above sit on top of upstream Media2Cloud V4. Each upstream feature below has the same per-feature breakdown — what it does, AWS services in play with official doc links, an architecture diagram, and notes on non-obvious M2C-specific usage.
 
 ### Auto Face Indexer
 
 Automatically indexes unrecognized faces during the analysis workflow. Uses Bedrock vision (with Rekognition `RecognizeCelebrities` as fallback) to suggest names, then `IndexFaces` adds the face to the collection. Late binding lets you tag the face after the run and the name propagates to every previously-analyzed clip without re-running analysis.
 
-> Architecture diagram: [`auto-face-indexer.drawio.xml`](./deployment/tutorials/diagrams/auto-face-indexer.drawio.xml)
+![Auto Face Indexer](./deployment/tutorials/diagrams/auto-face-indexer.png)
+> Architecture diagram source: [`auto-face-indexer.drawio.xml`](./deployment/tutorials/diagrams/auto-face-indexer.drawio.xml)
 
 **AWS services in play**
 - [Amazon Rekognition Video — StartFaceDetection / StartFaceSearch](https://docs.aws.amazon.com/rekognition/latest/dg/faces-sqs-video.html) — async video face detection.
@@ -195,7 +177,8 @@ Automatically indexes unrecognized faces during the analysis workflow. Uses Bedr
 
 Combines Rekognition's per-shot technical cues with Bedrock vision to cluster shots into narrative scenes. Ad-break suggestions come directly from Rekognition's `BlackFrames` / `EndCredits` / `OpeningCredits` cues, optionally aligned with Transcribe silence windows.
 
-> Architecture diagram: [`scene-ad-break.drawio.xml`](./deployment/tutorials/diagrams/scene-ad-break.drawio.xml)
+![Scene + Ad Break](./deployment/tutorials/diagrams/scene-ad-break.png)
+> Architecture diagram source: [`scene-ad-break.drawio.xml`](./deployment/tutorials/diagrams/scene-ad-break.drawio.xml)
 
 **AWS services in play**
 - [Amazon Rekognition Video — StartSegmentDetection](https://docs.aws.amazon.com/rekognition/latest/dg/segments.html) — `TECHNICAL_CUE` + `SHOT` modes return ColorBars, BlackFrames, EndCredits, OpeningCredits, StudioLogo, Content + per-shot timestamps.
@@ -210,7 +193,8 @@ Combines Rekognition's per-shot technical cues with Bedrock vision to cluster sh
 
 Built-in label / text / moderation / person tracking via Rekognition Video, plus optional Custom Labels models gated by a backlog throttler so concurrent model starts don't blow the per-account inference quota.
 
-> Architecture diagram: [`segment-label.drawio.xml`](./deployment/tutorials/diagrams/segment-label.drawio.xml)
+![Segment + Label](./deployment/tutorials/diagrams/segment-label.png)
+> Architecture diagram source: [`segment-label.drawio.xml`](./deployment/tutorials/diagrams/segment-label.drawio.xml)
 
 **AWS services in play**
 - [Amazon Rekognition Video — Labels / Text / Content Moderation / Person Tracking](https://docs.aws.amazon.com/rekognition/latest/dg/video.html) — async detectors notify via SNS.
@@ -226,7 +210,8 @@ Built-in label / text / moderation / person tracking via Rekognition Video, plus
 
 V3 sampled frames at a fixed FPS. V4 replaces that with **perceptual-hash sampling** — ffmpeg pulls candidate frames at 1 fps, a Hamming distance threshold drops near-duplicates, and only the unique frames go to Bedrock. Cuts Bedrock token spend on slow content; raises detail on fast content.
 
-> Architecture diagram: [`dynamic-frame-analysis.drawio.xml`](./deployment/tutorials/diagrams/dynamic-frame-analysis.drawio.xml)
+![Dynamic Frame Analysis](./deployment/tutorials/diagrams/dynamic-frame-analysis.png)
+> Architecture diagram source: [`dynamic-frame-analysis.drawio.xml`](./deployment/tutorials/diagrams/dynamic-frame-analysis.drawio.xml)
 
 **AWS services in play**
 - [AWS Lambda](https://docs.aws.amazon.com/lambda/latest/dg/) — ffmpeg layer extracts 1 fps frames + a perceptual hash per frame.
@@ -319,7 +304,7 @@ Log on to AWS CloudFormation console to create a new stack and follow the steps 
 
 #### _Using AWS CLI_
 
-> This fork is validated only in **`us-west-2`**. Pass `--region us-west-2` so the stack lands in the supported region; without it the call uses your shell's default region (often `us-east-1`) where the Bedrock model IDs and Elemental Inference features assumed by this fork may not be GA.
+> This build is validated only in **`us-west-2`**. Pass `--region us-west-2` so the stack lands in the supported region; without it the call uses your shell's default region (often `us-east-1`) where the Bedrock model IDs and Elemental Inference features assumed by this build may not be GA.
 
 ```sh
 
@@ -349,7 +334,7 @@ aws cloudformation create-stack \
 
 ```
 
-> **No one-click template for this fork.** This fork is **only** distributed by building from source — see [Building Media2Cloud V4 on your environment](#building-media2cloud-v4-on-your-environment). Build artefacts are not published to the upstream `awsi-megs-guidances-*` buckets, so the upstream "Launch stack" buttons would deploy the upstream V4 (no Pegasus highlight, no AI subtitle editor, no SMART_CROP publish, no zh-HK).
+> **No one-click template.** This build is **only** distributed by building from source — see [Building Media2Cloud V4 on your environment](#building-media2cloud-v4-on-your-environment). Build artefacts are not published to the upstream `awsi-megs-guidances-*` buckets, so the upstream "Launch stack" buttons would deploy the upstream V4 (no Pegasus highlight, no AI subtitle editor, no SMART_CROP publish, no zh-HK).
 
 The stack creation takes about 30 minutes to complete. Upon completion, you should receive an email invitation to the Media2Cloud web portal.
 
@@ -374,7 +359,7 @@ __
 
 ## Building Media2Cloud V4 on your environment
 
-> **Supported region.** This fork is validated and deployed in **`us-west-2`** only. The Bedrock model IDs, Elemental Inference features (SMART_CROP, MediaConvert image-inserter HTTPS), and Cognito-hosted UI URLs all assume `us-west-2`. To deploy in another region, update the artefact bucket region below, set `--region` accordingly in every `aws` and `bash deploy-s3-dist.sh` invocation, and confirm the chosen Bedrock model IDs are GA in your target region. The CFN template now passes `AWS::Region` into Lambdas, so a region change is a one-line readiness check, not a code change.
+> **Supported region.** This build is validated and deployed in **`us-west-2`** only. The Bedrock model IDs, Elemental Inference features (SMART_CROP, MediaConvert image-inserter HTTPS), and Cognito-hosted UI URLs all assume `us-west-2`. To deploy in another region, update the artefact bucket region below, set `--region` accordingly in every `aws` and `bash deploy-s3-dist.sh` invocation, and confirm the chosen Bedrock model IDs are GA in your target region. The CFN template now passes `AWS::Region` into Lambdas, so a region change is a one-line readiness check, not a code change.
 
 #### _Prerequisites_
 Make sure you have the following tools installed on your environment:
@@ -397,7 +382,7 @@ aws s3api create-bucket --bucket yourname-artefact-bucket --region us-west-2 --c
 
 #### _Step 2: Clone GitHub repo_
 
-Clone **this fork** — building from upstream `aws-solutions-library-samples/guidance-for-media2cloud-on-aws` will skip every customization documented in [Hong Kong Fork — Features and Customizations](#hong-kong-fork--features-and-customizations) (sub-projects A–E, zh-HK localization, pre-built layer downloads).
+Clone **this repo** — building from upstream `aws-solutions-library-samples/guidance-for-media2cloud-on-aws` will skip every customization documented in [Features and Customizations](#features-and-customizations) (the five extensions, zh-HK localization, pre-built layer downloads).
 
 ```sh
 
@@ -445,7 +430,7 @@ __
 
 To update your deployed Media2Cloud stack with new features or bug fixes:
 
-> **Region.** This fork runs in **`us-west-2`** only. Pass `--region us-west-2` to every `aws` command in this section. The artefact S3 bucket must be the **same bucket the stack was originally deployed from** — pulling templates from a different bucket will break the nested-stack URL chain. To confirm the current deploy bucket and version, inspect the stack's `TemplateURL`:
+> **Region.** This build runs in **`us-west-2`** only. Pass `--region us-west-2` to every `aws` command in this section. The artefact S3 bucket must be the **same bucket the stack was originally deployed from** — pulling templates from a different bucket will break the nested-stack URL chain. To confirm the current deploy bucket and version, inspect the stack's `TemplateURL`:
 > ```sh
 > aws cloudformation describe-stacks \
 >   --stack-name media2cloudv4 \
@@ -589,7 +574,7 @@ Assumptions: H.264 1080p source, single audio track, English/Chinese transcript,
 **Sensitivities**
 - **Disabling Celebrities or Faces** drops ~$0.10/min each — flip them off in `DefaultAIOptions` if not needed.
 - **Switching Bedrock model from Haiku 4.5 → Sonnet 4.6** raises the Bedrock line ~5×.
-- **Sub-Project E "auto highlight detection"** does **not** run during the analyze pipeline — it's a separate one-click action billed under §3a.
+- **Auto highlight detection** does **not** run during the analyze pipeline — it's a separate one-click action billed under §3a.
 
 ### 3. (Category B) One-shot per action — Highlight detection + Render + Publish
 
@@ -597,7 +582,7 @@ Assumptions: H.264 1080p source, single audio track, English/Chinese transcript,
 
 #### 3a. Highlight detection (one click → one or more Bedrock calls)
 
-The detect-highlights pipeline picks one of two strategies based on speech density (≥0.6 words/sec → transcript-llm, < 0.6 → multimodal). The user can override. Multimodal videos longer than 30 min are auto-chunked into 25-minute Pegasus calls (see [Sub-Project E](#sub-project-e--highlight-clipping--video-editor-short-form-video)).
+The detect-highlights pipeline picks one of two strategies based on speech density (≥0.6 words/sec → transcript-llm, < 0.6 → multimodal). The user can override. Multimodal videos longer than 30 min are auto-chunked into 25-minute Pegasus calls (see [Highlight clipping + video editor](#highlight-clipping--video-editor-short-form-video)).
 
 **transcript-llm path** — sends the full transcript text only. Cost is dominated by transcript length.
 
@@ -623,7 +608,7 @@ Default model is **Amazon Nova Pro** (us-west-2 list: $0.80 / MTok input, $3.20 
 
 > **MediaConvert split job overhead.** Chunking uses stream-copy (`Codec: PASSTHROUGH`) so the split is encoder-free for video, but audio is re-encoded to AAC 96 kbps. At ~$0.0075/min (Basic tier, single output) a 60-min video splits for ~$0.45 — small relative to Pegasus.
 
-Lambda + DDB cost is < $0.01 per detection on either path. Switch models from the highlight Settings UI (Sub-Project B's runtime model registry).
+Lambda + DDB cost is < $0.01 per detection on either path. Switch models from the highlight Settings UI (the Bedrock model registry described in [Features and Customizations](#features-and-customizations)).
 
 #### 3b. Render (compose-edl → MediaConvert clip-and-stitch)
 

@@ -65,7 +65,7 @@
           <mxGeometry x="700" y="260" width="640" height="370" as="geometry" />
         </mxCell>
 
-        <mxCell id="map" value="Map state&#xa;(per 25-min chunk)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F5DEFF;strokeColor=#9673A6;fontSize=11;" vertex="1" parent="1">
+        <mxCell id="mapState" value="Map state&#xa;(per 25-min chunk)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F5DEFF;strokeColor=#9673A6;fontSize=11;" vertex="1" parent="1">
           <mxGeometry x="720" y="300" width="140" height="40" as="geometry" />
         </mxCell>
 
@@ -129,8 +129,8 @@
         <mxCell id="e9" style="endArrow=classic;html=1;" edge="1" parent="1" source="detect" target="bedrock1"><mxGeometry relative="1" as="geometry" /></mxCell>
         <mxCell id="e10" style="endArrow=classic;html=1;dashed=1;" edge="1" parent="1" source="bedrock1" target="proxy1"><mxGeometry relative="1" as="geometry" /></mxCell>
 
-        <mxCell id="e11" value="if &gt; 30 min" style="endArrow=classic;html=1;exitX=0.75;exitY=1;entryX=0.2;entryY=0;dashed=1;fontSize=10;" edge="1" parent="1" source="planChunks" target="map"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <mxCell id="e12" style="endArrow=classic;html=1;" edge="1" parent="1" source="map" target="detectChunk"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e11" value="if &gt; 30 min" style="endArrow=classic;html=1;exitX=0.75;exitY=1;entryX=0.2;entryY=0;dashed=1;fontSize=10;" edge="1" parent="1" source="planChunks" target="mapState"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e12" style="endArrow=classic;html=1;" edge="1" parent="1" source="mapState" target="detectChunk"><mxGeometry relative="1" as="geometry" /></mxCell>
         <mxCell id="e13" style="endArrow=classic;html=1;" edge="1" parent="1" source="detectChunk" target="mc1"><mxGeometry relative="1" as="geometry" /></mxCell>
         <mxCell id="e14" style="endArrow=classic;html=1;" edge="1" parent="1" source="mc1" target="chunkS3"><mxGeometry relative="1" as="geometry" /></mxCell>
         <mxCell id="e15" style="endArrow=classic;html=1;" edge="1" parent="1" source="chunkS3" target="bedrock2"><mxGeometry relative="1" as="geometry" /></mxCell>

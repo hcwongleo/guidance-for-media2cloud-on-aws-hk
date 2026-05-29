@@ -202,10 +202,13 @@ Log on to AWS CloudFormation console to create a new stack and follow the steps 
 
 #### _Using AWS CLI_
 
+> This fork is validated only in **`us-west-2`**. Pass `--region us-west-2` so the stack lands in the supported region; without it the call uses your shell's default region (often `us-east-1`) where the Bedrock model IDs and Elemental Inference features assumed by this fork may not be GA.
+
 ```sh
 
 aws cloudformation create-stack \
   --stack-name media2cloudv4 \
+  --region us-west-2 \
   --template-url https://{S3URL}/media2cloud.template \
   --parameters \
     "ParameterKey=VersionCompatibilityStatement,ParameterValue=\"Yes, I understand and proceed\"" \
@@ -284,9 +287,11 @@ aws s3api create-bucket --bucket yourname-artefact-bucket --region us-west-2 --c
 
 #### _Step 2: Clone GitHub repo_
 
+Clone **this fork** — building from upstream `aws-solutions-library-samples/guidance-for-media2cloud-on-aws` will skip every customization documented in [Hong Kong Fork — Features and Customizations](#hong-kong-fork--features-and-customizations) (sub-projects A–E, zh-HK localization, pre-built layer downloads).
+
 ```sh
 
-git clone https://github.com/aws-solutions-library-samples/guidance-for-media2cloud-on-aws
+git clone https://github.com/hcwongleo/guidance-for-media2cloud-on-aws-hk
 
 ```
 
@@ -295,7 +300,7 @@ git clone https://github.com/aws-solutions-library-samples/guidance-for-media2cl
 ```sh
 
 # change to the deployment directory
-cd guidance-for-media2cloud-on-aws/deployment
+cd guidance-for-media2cloud-on-aws-hk/deployment
 
 bash build-s3-dist.sh \
   --bucket yourname-artefact-bucket \
@@ -322,7 +327,7 @@ bash deploy-s3-dist.sh \
 
 ```
 
-Once the artefacts are uploaded to yourname-artefact-bucket, you can use the HTTPS URL of the `media2cloud.template` to create the stack on CloudFormation.
+The script prints the `media2cloud.template` HTTPS URL at the end (look for the line beginning `HTTPS URL:`); copy that URL for the next step.
 
 __
 

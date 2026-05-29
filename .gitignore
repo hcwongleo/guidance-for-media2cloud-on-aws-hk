@@ -76,3 +76,7 @@ source/layers/image-process-lib/wget-log*
 
 #### Demo Video
 *.mp4
+
+#### Local tooling / sibling content (not part of the solution)
+.superpowers/
+guidance-for-media2cloud-on-aws-data/

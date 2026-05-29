@@ -161,6 +161,10 @@ function mergeOverlapping(segments) {
     if (cur.startSec < prev.endSec) {
       prev.endSec = Math.max(prev.endSec, cur.endSec);
       prev.text = `${prev.text} ${cur.text}`.trim();
+      // Prefer the higher-confidence pick when collapsing overlaps.
+      if ((cur.score || 0) > (prev.score || 0)) {
+        prev.score = cur.score;
+      }
     } else {
       merged.push(cur);
     }
@@ -261,17 +265,19 @@ function joinTranscriptText(words) {
   return words.map((w) => w.word).join(' ');
 }
 
-function buildVideoPrompt(maxSegments, customPrompt, totalDurationSec, transcriptText) {
+function buildVideoPrompt(customPrompt, totalDurationSec, transcriptText) {
   const hasTranscript = transcriptText && transcriptText.length > 0;
   const lines = [
     'You are a video editor selecting the most engaging moments from a video for short-form highlights.',
     `You are given the full ${Math.round(totalDurationSec)}-second video${hasTranscript ? ', along with the spoken transcript' : ''}.`,
-    `Pick up to ${maxSegments} non-overlapping highlight segments based on ${hasTranscript ? 'what you see and what is said' : 'what you see in the video'}.`,
+    'Return ONLY segments that are clearly genuine highlights — quality over quantity. It is fine to return zero segments if nothing in the video stands out.',
+    'For each highlight, include a confidence score from 0.0 to 1.0 reflecting how clearly it is a real, identifiable highlight (e.g. a successful play, a pivotal moment, a memorable line). Be conservative: do not pad the list with marginal picks.',
     'STRICT RULES — failures here are unusable:',
     '- Each segment MUST be at least 5000 milliseconds and at most 60000 milliseconds long (endMs - startMs).',
     '- Do NOT emit 1-second clips. Do NOT emit clips that span most of the video.',
     '- Segments must NOT touch or overlap: each segment\'s startMs must be strictly greater than the previous segment\'s endMs.',
     '- Center each segment on the moment of interest; if the moment is brief, pad with surrounding context to reach at least 5 seconds.',
+    '- Only include a segment if you are confident the described event actually occurs. If unsure, omit it.',
     'Report timestamps in milliseconds from the start of the video.',
   ];
   if (customPrompt && customPrompt.length > 0) {
@@ -279,7 +285,7 @@ function buildVideoPrompt(maxSegments, customPrompt, totalDurationSec, transcrip
     lines.push(customPrompt);
   }
   lines.push('Respond ONLY with valid JSON in this shape:');
-  lines.push('{"highlights":[{"title":"<short>","reason":"<why it matters>","startMs":<int>,"endMs":<int>}]}');
+  lines.push('{"highlights":[{"title":"<short>","reason":"<why it matters>","score":<0.0-1.0>,"startMs":<int>,"endMs":<int>}]}');
   if (hasTranscript) {
     lines.push('');
     lines.push('Transcript:');
@@ -288,7 +294,7 @@ function buildVideoPrompt(maxSegments, customPrompt, totalDurationSec, transcrip
   return lines.join('\n');
 }
 
-function parseVideoHighlightsResponse(rawText, totalDurationSec) {
+function parseVideoHighlightsResponse(rawText, totalDurationSec, minConfidence) {
   let text = rawText.trim();
   text = text.replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
   const first = text.indexOf('{');
@@ -303,12 +309,21 @@ function parseVideoHighlightsResponse(rawText, totalDurationSec) {
 
   const segments = [];
   const cap = totalDurationSec > 0 ? totalDurationSec : Number.POSITIVE_INFINITY;
+  const threshold = Number.isFinite(minConfidence) ? minConfidence : 0;
   for (let i = 0; i < json.highlights.length; i += 1) {
     const h = json.highlights[i];
     const startMs = Number(h.startMs);
     const endMs = Number(h.endMs);
     if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) {
       console.log(`=== VLM segment #${i + 1} bad timestamps: start=${h.startMs} end=${h.endMs}`);
+      continue;
+    }
+    const rawScore = Number(h.score);
+    const score = Number.isFinite(rawScore)
+      ? Math.max(0, Math.min(1, rawScore))
+      : 0.5;
+    if (score < threshold) {
+      console.log(`=== VLM segment #${i + 1} below confidence (${score} < ${threshold})`);
       continue;
     }
     let startSec = Math.max(0, startMs / 1000);
@@ -338,6 +353,7 @@ function parseVideoHighlightsResponse(rawText, totalDurationSec) {
       kind: 'highlight',
       title: h.title || `Highlight ${i + 1}`,
       reason: h.reason || '',
+      score,
       startSec,
       endSec,
       startTimecode: secondsToTimecode(startSec),
@@ -391,14 +407,14 @@ async function callPegasus({ modelId, region, s3Uri, bucketOwner, prompt }) {
   return { text: message };
 }
 
-async function runMultimodalStrategy({ uuid, proxyBucket, proxyKey, accountId, maxSegments, modelId, customPrompt, durationSec, region, transcriptText }) {
+async function runMultimodalStrategy({ uuid, proxyBucket, proxyKey, accountId, modelId, customPrompt, durationSec, region, transcriptText, minConfidence }) {
   console.log(`=== multimodal (Pegasus): video s3://${proxyBucket}/${proxyKey}, transcript=${transcriptText ? `${transcriptText.length}ch` : 'none'} for ${uuid}`);
 
   if (!accountId) {
     throw new M2CException('multimodal requires accountId for Pegasus mediaSource.bucketOwner');
   }
 
-  const promptText = buildVideoPrompt(maxSegments, customPrompt, durationSec, transcriptText);
+  const promptText = buildVideoPrompt(customPrompt, durationSec, transcriptText);
 
   const { text: rawResponse } = await callPegasus({
     modelId,
@@ -408,8 +424,8 @@ async function runMultimodalStrategy({ uuid, proxyBucket, proxyKey, accountId, m
     prompt: promptText,
   });
   console.log(`=== multimodal raw response (${rawResponse.length}ch): ${rawResponse}`);
-  const segments = parseVideoHighlightsResponse(rawResponse, durationSec);
-  console.log(`=== multimodal parsed segments: ${segments.length}`);
+  const segments = parseVideoHighlightsResponse(rawResponse, durationSec, minConfidence);
+  console.log(`=== multimodal parsed segments: ${segments.length} (minConfidence=${minConfidence})`);
 
   // Pegasus on Bedrock does not return token usage in the response body.
   return { segments, usage: {} };
@@ -440,6 +456,7 @@ exports.handler = async (event) => {
     modelId: requestedModelId,
     prompt: customPrompt,
     maxSegments = DEFAULT_MAX_SEGMENTS,
+    minConfidence = 0.7,
     durationSec,
   } = event;
 
@@ -511,14 +528,24 @@ exports.handler = async (event) => {
       proxyBucket,
       proxyKey,
       accountId,
-      maxSegments,
       modelId,
       customPrompt,
       durationSec: totalDuration,
       region,
       transcriptText,
+      minConfidence: Number(minConfidence) || 0,
     });
     segments = mergeOverlapping(out.segments);
+
+    // Single-call runaway guard: same idea as the chunk worker — if Pegasus
+    // returned more than the user-allowed ceiling, keep highest-scored picks.
+    if (segments.length > maxSegments) {
+      segments = [...segments]
+        .sort((a, b) => (b.score || 0) - (a.score || 0))
+        .slice(0, maxSegments)
+        .sort((a, b) => a.startSec - b.startSec);
+      console.log(`=== single-call capped to ${maxSegments} by score`);
+    }
   }
 
   return {

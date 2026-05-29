@@ -29,12 +29,13 @@ const REQUIRED_ENVS = [
   'ENV_HIGHLIGHT_SETS_TABLE',
 ];
 
-// Pegasus tops out around 60 minutes per call. 50-minute chunks leave
-// margin for MC stream-copy GOP-aligned overshoot at the cut boundary.
-const CHUNK_TARGET_SEC = 50 * 60;
-// Don't bother splitting if the video is only marginally longer than
-// the single-call cap; anything ≤55min runs as a single Pegasus call.
-const SINGLE_CALL_MAX_SEC = 55 * 60;
+// Pegasus tops out around 60 minutes per call, but timestamp precision
+// drifts on long inputs — accuracy is noticeably worse in the latter half
+// of a 50-min chunk. 25-minute chunks trade extra Bedrock calls for
+// tighter timestamps, with margin for MC stream-copy GOP overshoot.
+const CHUNK_TARGET_SEC = 25 * 60;
+// Anything ≤30 min runs as a single Pegasus call; longer videos get split.
+const SINGLE_CALL_MAX_SEC = 30 * 60;
 
 const IOT_TYPE = 'detect-highlight';
 
@@ -95,6 +96,7 @@ exports.handler = async (event) => {
     modelId,
     prompt,
     maxSegments = 10,
+    minConfidence = 0.7,
     owner = 'unknown',
     durationSec = 0,
   } = event;
@@ -137,6 +139,14 @@ exports.handler = async (event) => {
     ...(splitNeeded ? { chunkCount: chunks.length } : {}),
   });
 
+  // Divide the user's segment cap across chunks so each chunk worker only
+  // emits its share. Without this, a 110-min video chunked into two 50-min
+  // halves would each return ~maxSegments and merge-chunks would have to
+  // throw most away.
+  const chunkMaxSegments = chunks.length > 0
+    ? Math.max(1, Math.ceil(maxSegments / chunks.length))
+    : maxSegments;
+
   // Emit chunk records pre-baked with everything the per-chunk Lambdas need
   // so neither Map iteration has to refetch state.
   const chunkInputs = chunks.map((c) => ({
@@ -149,6 +159,8 @@ exports.handler = async (event) => {
     modelId: modelId || null,
     prompt: prompt || null,
     maxSegments,
+    chunkMaxSegments,
+    minConfidence,
     transcriptKey: transcriptKey || null,
   }));
 
@@ -159,6 +171,7 @@ exports.handler = async (event) => {
     modelId: modelId || null,
     prompt: prompt || null,
     maxSegments,
+    minConfidence,
     owner,
     durationSec,
     transcriptKey: transcriptKey || null,

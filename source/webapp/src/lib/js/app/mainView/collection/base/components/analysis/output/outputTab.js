@@ -67,7 +67,8 @@ export default class OutputTab extends mxAlert(BaseAnalysisTab) {
         strategy: 'multimodal',
         modelId: '',
         prompt: '',
-        maxSegments: 10,
+        maxSegments: 30,
+        minConfidence: 0.7,
       },
     };
     this.$iotReceiverName = `output-tab-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
@@ -294,7 +295,9 @@ export default class OutputTab extends mxAlert(BaseAnalysisTab) {
 
     wrap.append($('<p/>').addClass('lead-s mb-1').html('Run detection'));
     wrap.append($('<p/>').addClass('lead-xs text-muted mb-2').html(
-      'Pick a strategy and Bedrock model, optionally tune the prompt and segment cap. '
+      'Pick a strategy and Bedrock model, optionally tune the prompt. '
+      + 'Min confidence (0–1) is the primary quality filter — only segments scoring at or above it survive. '
+      + 'Max segments is a runaway ceiling. '
       + 'Results land as a new highlight set in the dropdown above.'
     ));
 
@@ -325,14 +328,27 @@ export default class OutputTab extends mxAlert(BaseAnalysisTab) {
     modelGroup.append(modelSelect);
     grid.append(modelGroup);
 
-    const maxGroup = this.makeFormGroup('Max segments');
+    const confGroup = this.makeFormGroup('Min confidence');
+    const confInput = $('<input/>').addClass('form-control form-control-sm')
+      .attr('type', 'number').attr('min', '0').attr('max', '1').attr('step', '0.05')
+      .attr('data-role', 'detect-min-confidence')
+      .val(this.$state.detect.minConfidence);
+    confInput.on('input', () => {
+      const v = Number(confInput.val());
+      const safe = Number.isFinite(v) ? v : 0.7;
+      this.$state.detect.minConfidence = Math.max(0, Math.min(1, safe));
+    });
+    confGroup.append(confInput);
+    grid.append(confGroup);
+
+    const maxGroup = this.makeFormGroup('Max segments (ceiling)');
     const maxInput = $('<input/>').addClass('form-control form-control-sm')
-      .attr('type', 'number').attr('min', '1').attr('max', '50')
+      .attr('type', 'number').attr('min', '1').attr('max', '100')
       .attr('data-role', 'detect-max')
       .val(this.$state.detect.maxSegments);
     maxInput.on('input', () => {
-      const v = Number(maxInput.val()) || 10;
-      this.$state.detect.maxSegments = Math.max(1, Math.min(50, v));
+      const v = Number(maxInput.val()) || 30;
+      this.$state.detect.maxSegments = Math.max(1, Math.min(100, v));
     });
     maxGroup.append(maxInput);
     grid.append(maxGroup);
@@ -513,9 +529,11 @@ export default class OutputTab extends mxAlert(BaseAnalysisTab) {
   async runHighlightDetection() {
     const status = this.$root().find('[data-role="highlights-status"]');
     const submitBtn = this.$root().find('[data-role="detect-submit"]');
+    const conf = Number(this.$state.detect.minConfidence);
     const body = {
       strategy: this.$state.detect.strategy,
-      maxSegments: Number(this.$state.detect.maxSegments) || 10,
+      maxSegments: Number(this.$state.detect.maxSegments) || 30,
+      minConfidence: Number.isFinite(conf) ? Math.max(0, Math.min(1, conf)) : 0.7,
     };
     if (this.$state.detect.modelId) body.modelId = this.$state.detect.modelId;
     const trimmed = (this.$state.detect.prompt || '').trim();

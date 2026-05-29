@@ -995,6 +995,7 @@ Resources:
                                     "modelId.$": "$.plan.modelId",
                                     "prompt.$": "$.plan.prompt",
                                     "maxSegments.$": "$.plan.maxSegments",
+                                    "minConfidence.$": "$.plan.minConfidence",
                                     "durationSec.$": "$.plan.durationSec"
                                 },
                                 "ResultPath": "$.singleResult",
@@ -1040,6 +1041,8 @@ Resources:
                                     "modelId.$": "$.plan.modelId",
                                     "prompt.$": "$.plan.prompt",
                                     "maxSegments.$": "$.plan.maxSegments",
+                                    "chunkMaxSegments.$": "$$.Map.Item.Value.chunkMaxSegments",
+                                    "minConfidence.$": "$.plan.minConfidence",
                                     "index.$": "$$.Map.Item.Value.index",
                                     "startSec.$": "$$.Map.Item.Value.startSec",
                                     "endSec.$": "$$.Map.Item.Value.endSec",

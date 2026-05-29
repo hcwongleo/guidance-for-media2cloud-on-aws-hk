@@ -433,7 +433,7 @@ export default class EditorTracks {
         .attr('data-edit-index', idx)
         .attr('title', `${label} — ${_fmt(segDur)} (source ${_fmt(seg.startSec)}→${_fmt(seg.endSec)})`)
         .css({
-          flex: `0 0 ${widthPct}%`,
+          flex: `0 0 calc(${widthPct}% - 2px)`,
           height: '28px',
           margin: '2px 1px',
           cursor: 'grab',

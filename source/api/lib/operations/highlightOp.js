@@ -84,7 +84,11 @@ class HighlightOp extends BaseOp {
     }
     const modelId = body.modelId || null;
     const prompt = body.prompt || null;
-    const maxSegments = Number(body.maxSegments) || 10;
+    const maxSegments = Number(body.maxSegments) || 30;
+    const rawConfidence = Number(body.minConfidence);
+    const minConfidence = Number.isFinite(rawConfidence)
+      ? Math.max(0, Math.min(1, rawConfidence))
+      : 0.7;
     const owner = body.owner || this.request.cognitoIdentityId || 'anonymous';
 
     // Resolve transcriptKey + proxy MP4 + durationSec from existing M2C state.
@@ -130,6 +134,7 @@ class HighlightOp extends BaseOp {
       modelId,
       prompt,
       maxSegments,
+      minConfidence,
       durationSec: ingestDurationSec,
       owner,
       accountId: this.request.accountId,

@@ -144,17 +144,19 @@ async function waitForMediaConvert(mc, jobId) {
   throw new M2CException(`split job did not complete within ${(MC_POLL_INTERVAL_MS * MC_POLL_MAX_TRIES) / 1000}s`);
 }
 
-function buildVideoPrompt(maxSegments, customPrompt, totalDurationSec, transcriptText) {
+function buildVideoPrompt(customPrompt, totalDurationSec, transcriptText) {
   const hasTranscript = transcriptText && transcriptText.length > 0;
   const lines = [
     'You are a video editor selecting the most engaging moments from a video for short-form highlights.',
     `You are given a ${Math.round(totalDurationSec)}-second video${hasTranscript ? ', along with the spoken transcript' : ''}.`,
-    `Pick up to ${maxSegments} non-overlapping highlight segments based on ${hasTranscript ? 'what you see and what is said' : 'what you see in the video'}.`,
+    'Return ONLY segments that are clearly genuine highlights — quality over quantity. It is fine to return zero segments if nothing in the clip stands out.',
+    'For each highlight, include a confidence score from 0.0 to 1.0 reflecting how clearly it is a real, identifiable highlight (e.g. a successful play, a pivotal moment, a memorable line). Be conservative: do not pad the list with marginal picks.',
     'STRICT RULES — failures here are unusable:',
     '- Each segment MUST be at least 5000 milliseconds and at most 60000 milliseconds long (endMs - startMs).',
     '- Do NOT emit 1-second clips. Do NOT emit clips that span most of the video.',
     '- Segments must NOT touch or overlap: each segment\'s startMs must be strictly greater than the previous segment\'s endMs.',
     '- Center each segment on the moment of interest; if the moment is brief, pad with surrounding context to reach at least 5 seconds.',
+    '- Only include a segment if you are confident the described event actually occurs. If unsure, omit it.',
     'Report timestamps in milliseconds from the start of THIS video clip (not the original).',
   ];
   if (customPrompt && customPrompt.length > 0) {
@@ -162,7 +164,7 @@ function buildVideoPrompt(maxSegments, customPrompt, totalDurationSec, transcrip
     lines.push(customPrompt);
   }
   lines.push('Respond ONLY with valid JSON in this shape:');
-  lines.push('{"highlights":[{"title":"<short>","reason":"<why it matters>","startMs":<int>,"endMs":<int>}]}');
+  lines.push('{"highlights":[{"title":"<short>","reason":"<why it matters>","score":<0.0-1.0>,"startMs":<int>,"endMs":<int>}]}');
   if (hasTranscript) {
     lines.push('');
     lines.push('Transcript:');
@@ -182,7 +184,7 @@ function secondsToTimecodeFps(seconds, fps = 25) {
   return [hh, mm, ss, ff].map((n) => String(n).padStart(2, '0')).join(':');
 }
 
-function parseSegments(rawText, chunkDurationSec, chunkStartOffsetSec) {
+function parseSegments(rawText, chunkDurationSec, chunkStartOffsetSec, minConfidence) {
   let text = rawText.trim();
   text = text.replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
   const first = text.indexOf('{');
@@ -195,6 +197,7 @@ function parseSegments(rawText, chunkDurationSec, chunkStartOffsetSec) {
     throw new M2CException('VLM response missing highlights[]');
   }
 
+  const threshold = Number.isFinite(minConfidence) ? minConfidence : 0;
   const out = [];
   for (let i = 0; i < json.highlights.length; i += 1) {
     const h = json.highlights[i];
@@ -202,6 +205,16 @@ function parseSegments(rawText, chunkDurationSec, chunkStartOffsetSec) {
     const endMs = Number(h.endMs);
     if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) {
       console.log(`=== chunk segment #${i + 1} bad timestamps: start=${h.startMs} end=${h.endMs}`);
+      continue;
+    }
+    // Score is a soft signal — if Pegasus omits it we keep the segment so
+    // the run still produces output, but treat it as "uncalibrated" (0.5).
+    const rawScore = Number(h.score);
+    const score = Number.isFinite(rawScore)
+      ? Math.max(0, Math.min(1, rawScore))
+      : 0.5;
+    if (score < threshold) {
+      console.log(`=== chunk segment #${i + 1} below confidence (${score} < ${threshold})`);
       continue;
     }
     let startSec = Math.max(0, startMs / 1000);
@@ -231,6 +244,7 @@ function parseSegments(rawText, chunkDurationSec, chunkStartOffsetSec) {
       kind: 'highlight',
       title: h.title || `Highlight ${i + 1}`,
       reason: h.reason || '',
+      score,
       startSec: absStart,
       endSec: absEnd,
       startTimecode: secondsToTimecodeFps(absStart),
@@ -291,6 +305,8 @@ exports.handler = async (event) => {
     modelId,
     prompt: customPrompt,
     maxSegments = 10,
+    chunkMaxSegments,
+    minConfidence = 0.7,
   } = event;
 
   if (!uuid || !highlightSetId || sourceProxyKey === undefined || index === undefined) {
@@ -331,7 +347,7 @@ exports.handler = async (event) => {
   // 2. Pegasus on the chunk. Use chunk-relative duration in the prompt and
   // add the chunk start offset to every returned segment.
   const resolvedModelId = modelId || DEFAULT_VLM_MODEL;
-  const promptText = buildVideoPrompt(maxSegments, customPrompt, chunkDurationSec, '');
+  const promptText = buildVideoPrompt(customPrompt, chunkDurationSec, '');
   const raw = await callPegasus({
     modelId: resolvedModelId,
     region,
@@ -341,8 +357,21 @@ exports.handler = async (event) => {
   });
   console.log(`=== chunk ${index} Pegasus raw (${raw.length}ch): ${raw}`);
 
-  const segments = parseSegments(raw, chunkDurationSec, startSec);
-  console.log(`=== chunk ${index} parsed ${segments.length} segments`);
+  let segments = parseSegments(raw, chunkDurationSec, startSec, Number(minConfidence) || 0);
+  console.log(`=== chunk ${index} parsed ${segments.length} segments (minConfidence=${minConfidence})`);
+
+  // Per-chunk runaway guard: if Pegasus ignored the conservative ask and
+  // returned more than the chunk's share, keep the highest-scored picks.
+  // chunkMaxSegments is computed in plan-chunks (ceil(maxSegments/chunkCount));
+  // fall back to the legacy maxSegments if not set.
+  const chunkCap = Number(chunkMaxSegments) || Number(maxSegments) || 10;
+  if (segments.length > chunkCap) {
+    segments = [...segments]
+      .sort((a, b) => (b.score || 0) - (a.score || 0))
+      .slice(0, chunkCap)
+      .sort((a, b) => a.startSec - b.startSec);
+    console.log(`=== chunk ${index} capped to ${chunkCap} by score`);
+  }
 
   return {
     index,

@@ -60,11 +60,24 @@ function mergeAndCap(allSegments, maxSegments) {
     if (prev && seg.startSec < prev.endSec) {
       prev.endSec = Math.max(prev.endSec, seg.endSec);
       prev.text = `${prev.text || ''} ${seg.text || ''}`.trim();
+      // Keep the higher-confidence label when collapsing overlaps.
+      if ((seg.score || 0) > (prev.score || 0)) {
+        prev.score = seg.score;
+      }
     } else {
       merged.push({ ...seg });
     }
   }
-  return merged.slice(0, maxSegments);
+  // Per-chunk budgets in plan-chunks make the cap a defensive backstop, not
+  // the primary filter. When it does fire, drop low-confidence picks first
+  // (not the back half of the timeline) and re-sort by time for display.
+  if (merged.length <= maxSegments) {
+    return merged;
+  }
+  return [...merged]
+    .sort((a, b) => (b.score || 0) - (a.score || 0))
+    .slice(0, maxSegments)
+    .sort((a, b) => a.startSec - b.startSec);
 }
 
 async function deleteChunks(bucket, prefix) {

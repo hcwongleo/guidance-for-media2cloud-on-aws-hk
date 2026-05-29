@@ -17,6 +17,7 @@ const PROVIDER_WHITELIST = [
   'MiniMax',
   'Moonshot AI',
   'Qwen',
+  'TwelveLabs',
   'Z.AI',
 ];
 const MODEL_ID_DENYLIST = /sonic|rerank|embed/i;
@@ -83,8 +84,13 @@ function _filter(models, capability) {
       (m.inputModalities || []).includes('IMAGE')));
   }
   if (capability === 'video') {
+    // Multimodal goes through TwelveLabs Pegasus only — the lambda's
+    // multimodal path uses Pegasus' InvokeModel shape (different from
+    // the Converse shape Nova/Claude use). Listing other VIDEO-capable
+    // models here would let users pick a model the lambda can't call.
     return _group(models.filter((m) =>
-      (m.inputModalities || []).includes('VIDEO')));
+      (m.inputModalities || []).includes('VIDEO') &&
+      m.providerName === 'TwelveLabs'));
   }
   if (capability === 'text') {
     // Multimodal models like Nova still accept text-only prompts, so include

@@ -30,14 +30,12 @@ const BUILTIN_TEMPLATES = [
 const LOGO_SIZES = ['48', '64', '96', '128', '192'];
 const ALLOWED_LOGO_EXT = ['png', 'jpg', 'jpeg'];
 const STRATEGIES = [
-  { value: 'auto', label: 'Auto (transcript first, fallback to multimodal)' },
-  { value: 'transcript-llm', label: 'Transcript LLM (text-only)' },
   { value: 'multimodal', label: 'Multimodal VLM (sees video + audio)' },
+  { value: 'transcript-llm', label: 'Transcript LLM (text-only)' },
 ];
-// 'auto' may use either path; multimodal sends a video block to Bedrock, so
-// only models that accept video input qualify.
+// multimodal sends the video to a video-capable Bedrock model (Pegasus);
+// transcript-llm uses any TEXT model.
 const STRATEGY_CAPABILITY = {
-  auto: 'video',
   'transcript-llm': 'text',
   multimodal: 'video',
 };
@@ -66,7 +64,7 @@ export default class OutputTab extends mxAlert(BaseAnalysisTab) {
       editProjectId: null,
       activeRenderId: null,
       detect: {
-        strategy: 'auto',
+        strategy: 'multimodal',
         modelId: '',
         prompt: '',
         maxSegments: 10,

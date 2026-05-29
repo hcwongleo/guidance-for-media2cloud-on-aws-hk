@@ -23,9 +23,6 @@ const {
         CustomUserAgent,
       },
     },
-    Proxy: {
-      Bucket: ProxyBucket,
-    },
     DynamoDB: {
       Ingest: {
         Table: IngestTable,
@@ -64,10 +61,11 @@ const BaseOp = require('./baseOp');
 
 const REGION = process.env.AWS_REGION;
 const ANALYSIS_TYPE_AUDIO = 'audio';
-// Bedrock Converse rejects video content blocks > 1 GiB. Pre-flight the
-// proxy here so the user gets a synchronous, actionable error instead of
-// a 3-second silent SFN failure.
-const BEDROCK_VIDEO_MAX_BYTES = 1073741824;
+// TwelveLabs Pegasus on Bedrock rejects videos longer than ~60 minutes
+// ("Unprocessable video, please check the video codec or duration").
+// Pre-flight here so the user gets a synchronous, actionable error
+// instead of a silent SFN failure ~17s into the run.
+const PEGASUS_MAX_DURATION_SEC = 55 * 60;
 
 function ddbDocClient() {
   const ddb = xraysdkHelper(new DynamoDBClient({
@@ -85,7 +83,10 @@ class HighlightOp extends BaseOp {
     }
 
     const body = this.request.body || {};
-    const strategy = body.strategy || 'auto';
+    const strategy = body.strategy || 'multimodal';
+    if (strategy !== 'multimodal' && strategy !== 'transcript-llm') {
+      throw new M2CException(`unsupported strategy: ${strategy}`);
+    }
     const modelId = body.modelId || null;
     const prompt = body.prompt || null;
     const maxSegments = Number(body.maxSegments) || 10;
@@ -115,42 +116,28 @@ class HighlightOp extends BaseOp {
       || proxies.find((p) => p.mime === 'video/mp4');
     const proxyKey = body.proxyKey || (videoProxy && videoProxy.key);
 
-    // multimodal needs the video proxy (transcript optional); transcript-llm needs transcript; auto needs at least one.
     if (strategy === 'multimodal' && !proxyKey) {
       throw new M2CException('multimodal requires a video proxy; ensure ingest produced a video/mp4 proxy');
     }
     if (strategy === 'transcript-llm' && !transcriptKey) {
       throw new M2CException('transcript-llm requires a transcript; none found for this asset');
     }
-    if (strategy === 'auto' && !transcriptKey && !proxyKey) {
-      throw new M2CException('no transcript or video proxy available for this asset');
-    }
 
-    // Pre-flight: reject oversize multimodal jobs synchronously rather
-    // than letting the SFN crash 3s in with a Bedrock ValidationException.
-    // Skip for transcript-llm; for 'auto' only check when there is no
-    // transcript (the lambda would route to multimodal in that case).
-    const willUseVideo = strategy === 'multimodal'
-      || (strategy === 'auto' && !transcriptKey);
-    if (willUseVideo && proxyKey) {
-      const head = await CommonUtils.headObject(ProxyBucket, proxyKey)
-        .catch((e) => {
-          console.error(`headObject ${proxyKey} failed:`, e);
-          return undefined;
-        });
-      const size = head && Number(head.ContentLength);
-      if (Number.isFinite(size) && size > BEDROCK_VIDEO_MAX_BYTES) {
-        const gb = (size / (1024 ** 3)).toFixed(2);
-        throw new M2CException(
-          `video proxy is ${gb} GB; multimodal supports up to 1 GB. `
-          + 'Try strategy=transcript-llm, or wait for chunked-multimodal support.'
-        );
-      }
-    }
-
-    const durationSec = (ingestRow && ingestRow.duration)
+    const ingestDurationSec = (ingestRow && ingestRow.duration)
       ? Math.round(ingestRow.duration / 1000)
       : 0;
+
+    // Pegasus duration cap. Reject up front instead of after 17s of SFN burn.
+    if (strategy === 'multimodal'
+        && ingestDurationSec > 0
+        && ingestDurationSec > PEGASUS_MAX_DURATION_SEC) {
+      const min = Math.round(ingestDurationSec / 60);
+      const cap = Math.round(PEGASUS_MAX_DURATION_SEC / 60);
+      throw new M2CException(
+        `video is ${min} min; multimodal (Pegasus) supports up to ${cap} min. `
+        + 'Use strategy=transcript-llm.'
+      );
+    }
 
     const sfnInput = {
       uuid,
@@ -160,7 +147,7 @@ class HighlightOp extends BaseOp {
       modelId,
       prompt,
       maxSegments,
-      durationSec,
+      durationSec: ingestDurationSec,
       owner,
       accountId: this.request.accountId,
     };

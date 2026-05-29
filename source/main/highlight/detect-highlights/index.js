@@ -4,6 +4,7 @@
 const {
   BedrockRuntimeClient,
   ConverseCommand,
+  InvokeModelCommand,
 } = require('@aws-sdk/client-bedrock-runtime');
 const {
   DynamoDBClient,
@@ -38,24 +39,12 @@ const REQUIRED_ENVS = [
 ];
 
 const DEFAULT_TRANSCRIPT_MODEL = 'us.amazon.nova-2-lite-v1:0';
-const DEFAULT_VLM_MODEL = 'us.amazon.nova-2-lite-v1:0';
+const DEFAULT_VLM_MODEL = 'us.twelvelabs.pegasus-1-2-v1:0';
 const DEFAULT_MAX_SEGMENTS = 10;
-const DEFAULT_AUTOPICK_THRESHOLD = 0.6; // words/sec
 const ANCHOR_SIM_THRESHOLD = 0.70;      // matches Python reference
 const MIN_HIGHLIGHT_SEC = 5;
 const MAX_HIGHLIGHT_SEC = 60;
 const FPS = 25;
-const VIDEO_FORMAT_BY_EXT = {
-  mp4: 'mp4',
-  mov: 'mov',
-  mkv: 'mkv',
-  webm: 'webm',
-  flv: 'flv',
-  mpeg: 'mpeg',
-  mpg: 'mpeg',
-  wmv: 'wmv',
-  '3gp': 'three_gp',
-};
 
 // Bedrock rejects on-demand for some Nova models — auto-prefix the inference profile.
 function ensureInferenceProfile(modelId) {
@@ -291,18 +280,6 @@ function joinTranscriptText(words) {
   return words.map((w) => w.word).join(' ');
 }
 
-function autoPickStrategy(density) {
-  return density >= DEFAULT_AUTOPICK_THRESHOLD ? 'transcript-llm' : 'multimodal';
-}
-
-function videoFormatFromKey(key) {
-  const m = /\.([a-z0-9]+)$/i.exec(key || '');
-  if (!m) {
-    return null;
-  }
-  return VIDEO_FORMAT_BY_EXT[m[1].toLowerCase()] || null;
-}
-
 function buildVideoPrompt(maxSegments, customPrompt, totalDurationSec, transcriptText) {
   const hasTranscript = transcriptText && transcriptText.length > 0;
   const lines = [
@@ -390,31 +367,71 @@ function parseVideoHighlightsResponse(rawText, totalDurationSec) {
   return segments;
 }
 
-async function runMultimodalStrategy({ uuid, proxyBucket, proxyKey, accountId, maxSegments, modelId, customPrompt, durationSec, region, transcriptText }) {
-  const format = videoFormatFromKey(proxyKey);
-  if (!format) {
-    throw new M2CException(`unsupported video format for proxy ${proxyKey}`);
-  }
+// TwelveLabs Pegasus on Bedrock: sync InvokeModel; bucketOwner required;
+// response is `{message: <string>, stopReason: 'stop'}` where message is the
+// generated text (may be JSON-fenced).
+async function callPegasus({ modelId, region, s3Uri, bucketOwner, prompt }) {
+  const client = xraysdkHelper(new BedrockRuntimeClient({
+    region,
+    customUserAgent: CustomUserAgent,
+    retryStrategy: retryStrategyHelper(),
+  }));
 
-  console.log(`=== multimodal: video s3://${proxyBucket}/${proxyKey} (${format}), transcript=${transcriptText ? `${transcriptText.length}ch` : 'none'} for ${uuid}`);
+  const body = {
+    inputPrompt: prompt,
+    mediaSource: {
+      s3Location: {
+        uri: s3Uri,
+        bucketOwner,
+      },
+    },
+  };
+
+  const command = new InvokeModelCommand({
+    modelId,
+    contentType: 'application/json',
+    body: JSON.stringify(body),
+  });
+
+  const response = await client.send(command)
+    .catch((e) => {
+      if (e.name === 'ResourceNotFoundException' || e.name === 'AccessDeniedException') {
+        console.log(`=== Make sure to request access to ${modelId} in ${region} (${e.name})`);
+      }
+      throw e;
+    });
+
+  const text = new TextDecoder().decode(response.body);
+  const parsed = JSON.parse(text);
+  const message = (parsed.message || '').trim();
+  if (message.length === 0) {
+    throw new M2CException('Pegasus returned empty message');
+  }
+  return { text: message };
+}
+
+async function runMultimodalStrategy({ uuid, proxyBucket, proxyKey, accountId, maxSegments, modelId, customPrompt, durationSec, region, transcriptText }) {
+  console.log(`=== multimodal (Pegasus): video s3://${proxyBucket}/${proxyKey}, transcript=${transcriptText ? `${transcriptText.length}ch` : 'none'} for ${uuid}`);
+
+  if (!accountId) {
+    throw new M2CException('multimodal requires accountId for Pegasus mediaSource.bucketOwner');
+  }
 
   const promptText = buildVideoPrompt(maxSegments, customPrompt, durationSec, transcriptText);
-  const s3Location = { uri: `s3://${proxyBucket}/${proxyKey}` };
-  if (accountId) {
-    s3Location.bucketOwner = String(accountId);
-  }
 
-  const contentBlocks = [
-    { video: { format, source: { s3Location } } },
-    { text: promptText },
-  ];
-
-  const { text: rawResponse, usage } = await callBedrockConverse(modelId, region, contentBlocks);
+  const { text: rawResponse } = await callPegasus({
+    modelId,
+    region,
+    s3Uri: `s3://${proxyBucket}/${proxyKey}`,
+    bucketOwner: String(accountId),
+    prompt: promptText,
+  });
   console.log(`=== multimodal raw response (${rawResponse.length}ch): ${rawResponse}`);
   const segments = parseVideoHighlightsResponse(rawResponse, durationSec);
   console.log(`=== multimodal parsed segments: ${segments.length}`);
 
-  return { segments, usage };
+  // Pegasus on Bedrock does not return token usage in the response body.
+  return { segments, usage: {} };
 }
 
 async function publishStatus(extra) {
@@ -458,7 +475,7 @@ exports.handler = async (event) => {
     transcriptKey,
     proxyKey,
     accountId,
-    strategy: requestedStrategy = 'auto',
+    strategy: requestedStrategy = 'multimodal',
     modelId: requestedModelId,
     prompt: customPrompt,
     maxSegments = DEFAULT_MAX_SEGMENTS,
@@ -470,7 +487,10 @@ exports.handler = async (event) => {
     throw new M2CException('uuid is required');
   }
 
-  let strategy = requestedStrategy;
+  const strategy = requestedStrategy;
+  if (strategy !== 'multimodal' && strategy !== 'transcript-llm') {
+    throw new M2CException(`unsupported strategy: ${strategy}`);
+  }
   // Allocate the highlight-set id up front so the PROCESSING row, IoT
   // events, and final COMPLETED/FAILED row all share the same key. The
   // webapp uses this id to render an in-flight banner that survives a
@@ -513,10 +533,6 @@ exports.handler = async (event) => {
         totalDuration = totalDuration || lastWordEnd;
         density = speechDensity(words, totalDuration);
       }
-    }
-
-    if (strategy === 'auto') {
-      strategy = autoPickStrategy(density);
     }
 
     await publishStatus({
@@ -606,8 +622,6 @@ exports.handler = async (event) => {
       });
       merged = mergeOverlapping(out.segments);
       extra = { proxyKey };
-    } else {
-      throw new M2CException(`unsupported strategy: ${strategy}`);
     }
 
     await publishStatus({

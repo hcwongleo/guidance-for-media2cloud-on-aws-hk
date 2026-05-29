@@ -82,10 +82,15 @@ class BaseOp {
   }
 
   onError(e) {
+    // M2CException is thrown for caller-side input problems (invalid uuid,
+    // unsupported strategy, video too long, missing transcript). Surface
+    // the real message and a 400 so the webapp can show why.
+    const isClientError = e.name === 'M2CException';
     const payload = {
-      errorCode: 500,
+      errorCode: isClientError ? 400 : 500,
       errorName: e.name || e.code,
-      errorMessage: `${this.request.method} ${this.request.path} - ${e.name || e.code || e.message || 'unknown error'}`,
+      errorMessage: e.message
+        || `${this.request.method} ${this.request.path} - ${e.name || e.code || 'unknown error'}`,
     };
     console.error('[onError]', e.name, '-', e.message);
     if (e.stack) console.error(e.stack);

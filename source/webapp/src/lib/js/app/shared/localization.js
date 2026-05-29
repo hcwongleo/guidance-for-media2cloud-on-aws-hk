@@ -582,8 +582,8 @@ export default class Localization {
           NoImage: 'No image',
           // Highlight
           DetectHighlights: 'Run highlight detection on this video. Uses the transcript and the chosen Bedrock model.',
-          HighlightStrategy: 'Detection strategy. \'Transcript-based\' picks moments from speech (text models). \'Video + transcript\' sends the proxy MP4 to a video-capable model alongside any available transcript — works for videos with or without speech. \'Auto\' picks per asset.',
-          HighlightModelTooltip: 'Bedrock model used for the detection. Video-capable models are listed for Video + transcript / Auto; text models for Transcript-based. Choose \'Default\' to use the model from your highlight settings.',
+          HighlightStrategy: 'Detection strategy. \'Multimodal\' sends the proxy MP4 to a video-capable model (Pegasus) — works for videos with or without speech, capped at 55 minutes. \'Transcript LLM\' picks moments from speech using a text-only model.',
+          HighlightModelTooltip: 'Bedrock model used for the detection. Video-capable models (e.g. TwelveLabs Pegasus) are listed for Multimodal; text models for Transcript LLM. Choose \'Default\' to use the model from your highlight settings.',
           HighlightCustomPromptTooltip: 'Optional. Override the templated prompt with your own. Leave blank to use the strategy default.',
           HighlightMaxSegmentsTooltip: 'Maximum number of highlight segments the model is allowed to return.',
           ViewHighlightSet: 'View this highlight set',

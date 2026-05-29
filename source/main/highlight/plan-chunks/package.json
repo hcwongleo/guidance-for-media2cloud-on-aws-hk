@@ -1,0 +1,20 @@
+{
+  "name": "m2c-highlight-plan-chunks",
+  "version": "1.0.0",
+  "description": "Allocate highlightSetId, write PROCESSING row, plan Pegasus chunk windows",
+  "main": "index.js",
+  "private": true,
+  "scripts": {
+    "pretest": "npm install",
+    "test": "jest --coverage --coverageDirectory=../../../coverage",
+    "build:clean": "rm -rf dist && mkdir -p dist",
+    "build:copy": "cp -rv index*.js package.json dist/",
+    "build:install": "cd dist && npm install --omit=dev",
+    "build": "npm-run-all -s build:clean build:copy build:install",
+    "zip": "cd dist && zip -rq"
+  },
+  "author": "aws-mediaent-solutions",
+  "devDependencies": {
+    "core-lib": "file:../../../layers/core-lib"
+  }
+}

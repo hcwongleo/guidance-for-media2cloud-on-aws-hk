@@ -10,6 +10,15 @@ Mappings:
         DetectHighlights:
             Package: "%%PKG_DETECT_HIGHLIGHTS%%"
             Name: detect-highlights
+        PlanChunks:
+            Package: "%%PKG_PLAN_CHUNKS%%"
+            Name: plan-chunks
+        DetectHighlightChunk:
+            Package: "%%PKG_DETECT_HIGHLIGHT_CHUNK%%"
+            Name: detect-highlight-chunk
+        MergeChunks:
+            Package: "%%PKG_MERGE_CHUNKS%%"
+            Name: merge-chunks
         # Render & Publish state machine
         RenderPublish:
             Name: render-publish
@@ -387,13 +396,6 @@ Resources:
                                 Effect: Allow
                                 Action: s3:GetObject
                                 Resource: !Sub arn:aws:s3:::${ProxyBucket}/*
-                            # DynamoDB - HighlightSets row writes
-                            -
-                                Effect: Allow
-                                Action:
-                                    - dynamodb:PutItem
-                                    - dynamodb:UpdateItem
-                                Resource: !GetAtt HighlightSetsTable.Arn
                             # Bedrock - covers every model the dropdown can offer
                             # (text + vision + video inputs, dynamically listed by modelsOp).
                             -
@@ -411,12 +413,6 @@ Resources:
                                     - !Sub arn:aws:bedrock:*:${AWS::AccountId}:inference-profile/*twelvelabs*
                                     - !Sub arn:aws:bedrock:*:${AWS::AccountId}:inference-profile/*qwen*
                                     - !Sub arn:aws:bedrock:*:${AWS::AccountId}:inference-profile/*deepseek*
-                            # IoT - publish detection progress to the same status topic the
-                            # webapp already listens on for ingest/analysis/render updates.
-                            -
-                                Effect: Allow
-                                Action: iot:Publish
-                                Resource: !Sub arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topic/${IotTopic}
 
     DetectHighlightsLambda:
         Type: AWS::Lambda::Function
@@ -472,6 +468,387 @@ Resources:
                     # the parent stack instead of hardcoding here.
                     ENV_BEDROCK_REGION: !Ref AWS::Region
                     ENV_PROXY_BUCKET: !Ref ProxyBucket
+
+    ################################################################################
+    #
+    # plan-chunks Lambda
+    # * Allocates the highlightSetId, writes the PROCESSING row, publishes
+    #   the 'started' IoT event
+    # * Decides whether multimodal needs to be split (>55min) and emits a
+    #   chunk plan for the SFN Map state
+    #
+    ################################################################################
+    PlanChunksLogGroup:
+        Type: AWS::Logs::LogGroup
+        Metadata:
+            cfn_nag:
+                rules_to_suppress:
+                    -
+                        id: W84
+                        reason: Use default encryption.
+        Properties:
+            LogGroupName: !Sub
+                - /aws/lambda/${ResourcePrefix}-${name}
+                - name: !FindInMap
+                    - Workflow
+                    - PlanChunks
+                    - Name
+            RetentionInDays: 7
+
+    PlanChunksRole:
+        Type: AWS::IAM::Role
+        Properties:
+            AssumeRolePolicyDocument:
+                Version: "2012-10-17"
+                Statement:
+                    -
+                        Effect: Allow
+                        Action: sts:AssumeRole
+                        Principal:
+                            Service: lambda.amazonaws.com
+            Path: !Sub /${ResourcePrefix}/
+            ManagedPolicyArns:
+                - arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess
+            Policies:
+                -
+                    PolicyName: PlanChunksAccess
+                    PolicyDocument:
+                        Version: "2012-10-17"
+                        Statement:
+                            -
+                                Effect: Allow
+                                Action:
+                                    - logs:CreateLogGroup
+                                    - logs:CreateLogStream
+                                    - logs:PutLogEvents
+                                Resource:
+                                    - !GetAtt PlanChunksLogGroup.Arn
+                            -
+                                Effect: Allow
+                                Action: dynamodb:PutItem
+                                Resource: !GetAtt HighlightSetsTable.Arn
+                            -
+                                Effect: Allow
+                                Action: iot:Publish
+                                Resource: !Sub arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topic/${IotTopic}
+
+    PlanChunksLambda:
+        Type: AWS::Lambda::Function
+        Metadata:
+            cfn_nag:
+                rules_to_suppress:
+                    -
+                        id: W89
+                        reason: Workflow not using VPC
+                    -
+                        id: W92
+                        reason: Workflow not limiting simultaneous executions
+        Properties:
+            FunctionName: !Sub
+                - ${ResourcePrefix}-${name}
+                - name: !FindInMap
+                    - Workflow
+                    - PlanChunks
+                    - Name
+            Description: !Sub (${SolutionLowerCaseId}) Plan Pegasus chunk windows + write PROCESSING row
+            Runtime: !FindInMap
+                - Node
+                - Runtime
+                - Version
+            MemorySize: 256
+            Timeout: 60
+            Handler: index.handler
+            Role: !GetAtt PlanChunksRole.Arn
+            Code:
+                S3Bucket: !Ref S3Bucket
+                S3Key: !Sub
+                    - ${KeyPrefix}/${package}
+                    - package: !FindInMap
+                        - Workflow
+                        - PlanChunks
+                        - Package
+            Layers:
+                - !Ref CoreLibLayer
+                - !Ref AwsSdkLayer
+            TracingConfig:
+                Mode: Active
+            Environment:
+                Variables:
+                    ENV_CUSTOM_USER_AGENT: !Ref CustomUserAgent
+                    ENV_SOLUTION_UUID: !Ref SolutionUuid
+                    ENV_SOLUTION_ID: !Ref SolutionId
+                    ENV_RESOURCE_PREFIX: !Ref ResourcePrefix
+                    ENV_PROXY_BUCKET: !Ref ProxyBucket
+                    ENV_HIGHLIGHT_SETS_TABLE: !Ref HighlightSetsTable
+                    ENV_IOT_HOST: !Ref IotHost
+                    ENV_IOT_TOPIC: !Ref IotTopic
+
+    ################################################################################
+    #
+    # detect-highlight-chunk Lambda
+    # * MediaConvert split job (stream-copy clip) for one chunk
+    # * Polls until the chunk MP4 lands in the proxy bucket
+    # * Pegasus InvokeModel on the chunk
+    # * Returns segments rebased onto the original-video timeline
+    #
+    ################################################################################
+    DetectHighlightChunkLogGroup:
+        Type: AWS::Logs::LogGroup
+        Metadata:
+            cfn_nag:
+                rules_to_suppress:
+                    -
+                        id: W84
+                        reason: Use default encryption.
+        Properties:
+            LogGroupName: !Sub
+                - /aws/lambda/${ResourcePrefix}-${name}
+                - name: !FindInMap
+                    - Workflow
+                    - DetectHighlightChunk
+                    - Name
+            RetentionInDays: 7
+
+    DetectHighlightChunkRole:
+        Type: AWS::IAM::Role
+        Metadata:
+            cfn_nag:
+                rules_to_suppress:
+                    -
+                        id: W11
+                        reason: Wildcard scoped to this stack's bedrock model arns
+        Properties:
+            AssumeRolePolicyDocument:
+                Version: "2012-10-17"
+                Statement:
+                    -
+                        Effect: Allow
+                        Action: sts:AssumeRole
+                        Principal:
+                            Service: lambda.amazonaws.com
+            Path: !Sub /${ResourcePrefix}/
+            ManagedPolicyArns:
+                - arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess
+            Policies:
+                -
+                    PolicyName: DetectHighlightChunkAccess
+                    PolicyDocument:
+                        Version: "2012-10-17"
+                        Statement:
+                            -
+                                Effect: Allow
+                                Action:
+                                    - logs:CreateLogGroup
+                                    - logs:CreateLogStream
+                                    - logs:PutLogEvents
+                                Resource:
+                                    - !GetAtt DetectHighlightChunkLogGroup.Arn
+                            # Read source proxy + write chunk MP4s under _pegasus-chunks/
+                            -
+                                Effect: Allow
+                                Action: s3:ListBucket
+                                Resource: !Sub arn:aws:s3:::${ProxyBucket}
+                            -
+                                Effect: Allow
+                                Action: s3:GetObject
+                                Resource: !Sub arn:aws:s3:::${ProxyBucket}/*
+                            -
+                                Effect: Allow
+                                Action:
+                                    - s3:PutObject
+                                Resource: !Sub arn:aws:s3:::${ProxyBucket}/*/_pegasus-chunks/*
+                            # MediaConvert: submit + poll the split job
+                            -
+                                Effect: Allow
+                                Action:
+                                    - mediaconvert:CreateJob
+                                    - mediaconvert:GetJob
+                                Resource: !Sub arn:aws:mediaconvert:${AWS::Region}:${AWS::AccountId}:*
+                            # PassRole the existing service role (same role render uses)
+                            -
+                                Effect: Allow
+                                Action: iam:PassRole
+                                Resource: !Ref ServiceDataAccessRoleArn
+                            # Bedrock - Pegasus only
+                            -
+                                Effect: Allow
+                                Action: bedrock:InvokeModel
+                                Resource:
+                                    - arn:aws:bedrock:*::foundation-model/twelvelabs.*
+                                    - !Sub arn:aws:bedrock:*:${AWS::AccountId}:inference-profile/*twelvelabs*
+
+    DetectHighlightChunkLambda:
+        Type: AWS::Lambda::Function
+        Metadata:
+            cfn_nag:
+                rules_to_suppress:
+                    -
+                        id: W89
+                        reason: Workflow not using VPC
+                    -
+                        id: W92
+                        reason: Workflow not limiting simultaneous executions
+        Properties:
+            FunctionName: !Sub
+                - ${ResourcePrefix}-${name}
+                - name: !FindInMap
+                    - Workflow
+                    - DetectHighlightChunk
+                    - Name
+            Description: !Sub (${SolutionLowerCaseId}) MC split + Pegasus per chunk
+            Runtime: !FindInMap
+                - Node
+                - Runtime
+                - Version
+            MemorySize: 512
+            # Generous: stream-copy split usually finishes < 3min; Pegasus
+            # itself returns within 30-90s. 14min ceiling absorbs MC queueing.
+            Timeout: 840
+            Handler: index.handler
+            Role: !GetAtt DetectHighlightChunkRole.Arn
+            Code:
+                S3Bucket: !Ref S3Bucket
+                S3Key: !Sub
+                    - ${KeyPrefix}/${package}
+                    - package: !FindInMap
+                        - Workflow
+                        - DetectHighlightChunk
+                        - Package
+            Layers:
+                - !Ref CoreLibLayer
+                - !Ref AwsSdkLayer
+            TracingConfig:
+                Mode: Active
+            Environment:
+                Variables:
+                    ENV_CUSTOM_USER_AGENT: !Ref CustomUserAgent
+                    ENV_SOLUTION_UUID: !Ref SolutionUuid
+                    ENV_SOLUTION_ID: !Ref SolutionId
+                    ENV_RESOURCE_PREFIX: !Ref ResourcePrefix
+                    ENV_BEDROCK_REGION: !Ref AWS::Region
+                    ENV_PROXY_BUCKET: !Ref ProxyBucket
+                    ENV_MEDIACONVERT_HOST: !Ref MediaConvertEndpoint
+                    ENV_MEDIACONVERT_ROLE_ARN: !Ref ServiceDataAccessRoleArn
+
+    ################################################################################
+    #
+    # merge-chunks Lambda
+    # * Aggregates per-chunk segments, sorts, dedupes, caps at maxSegments
+    # * Writes the COMPLETED HighlightSets row + cleans up chunk MP4s
+    # * Doubles as the FAILED-row writer when SFN Catch routes here
+    #
+    ################################################################################
+    MergeChunksLogGroup:
+        Type: AWS::Logs::LogGroup
+        Metadata:
+            cfn_nag:
+                rules_to_suppress:
+                    -
+                        id: W84
+                        reason: Use default encryption.
+        Properties:
+            LogGroupName: !Sub
+                - /aws/lambda/${ResourcePrefix}-${name}
+                - name: !FindInMap
+                    - Workflow
+                    - MergeChunks
+                    - Name
+            RetentionInDays: 7
+
+    MergeChunksRole:
+        Type: AWS::IAM::Role
+        Properties:
+            AssumeRolePolicyDocument:
+                Version: "2012-10-17"
+                Statement:
+                    -
+                        Effect: Allow
+                        Action: sts:AssumeRole
+                        Principal:
+                            Service: lambda.amazonaws.com
+            Path: !Sub /${ResourcePrefix}/
+            ManagedPolicyArns:
+                - arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess
+            Policies:
+                -
+                    PolicyName: MergeChunksAccess
+                    PolicyDocument:
+                        Version: "2012-10-17"
+                        Statement:
+                            -
+                                Effect: Allow
+                                Action:
+                                    - logs:CreateLogGroup
+                                    - logs:CreateLogStream
+                                    - logs:PutLogEvents
+                                Resource:
+                                    - !GetAtt MergeChunksLogGroup.Arn
+                            -
+                                Effect: Allow
+                                Action: dynamodb:PutItem
+                                Resource: !GetAtt HighlightSetsTable.Arn
+                            # Cleanup chunk objects after merge
+                            -
+                                Effect: Allow
+                                Action: s3:ListBucket
+                                Resource: !Sub arn:aws:s3:::${ProxyBucket}
+                            -
+                                Effect: Allow
+                                Action:
+                                    - s3:DeleteObject
+                                Resource: !Sub arn:aws:s3:::${ProxyBucket}/*/_pegasus-chunks/*
+                            -
+                                Effect: Allow
+                                Action: iot:Publish
+                                Resource: !Sub arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topic/${IotTopic}
+
+    MergeChunksLambda:
+        Type: AWS::Lambda::Function
+        Metadata:
+            cfn_nag:
+                rules_to_suppress:
+                    -
+                        id: W89
+                        reason: Workflow not using VPC
+                    -
+                        id: W92
+                        reason: Workflow not limiting simultaneous executions
+        Properties:
+            FunctionName: !Sub
+                - ${ResourcePrefix}-${name}
+                - name: !FindInMap
+                    - Workflow
+                    - MergeChunks
+                    - Name
+            Description: !Sub (${SolutionLowerCaseId}) Merge per-chunk highlight segments + finalize row
+            Runtime: !FindInMap
+                - Node
+                - Runtime
+                - Version
+            MemorySize: 256
+            Timeout: 120
+            Handler: index.handler
+            Role: !GetAtt MergeChunksRole.Arn
+            Code:
+                S3Bucket: !Ref S3Bucket
+                S3Key: !Sub
+                    - ${KeyPrefix}/${package}
+                    - package: !FindInMap
+                        - Workflow
+                        - MergeChunks
+                        - Package
+            Layers:
+                - !Ref CoreLibLayer
+                - !Ref AwsSdkLayer
+            TracingConfig:
+                Mode: Active
+            Environment:
+                Variables:
+                    ENV_CUSTOM_USER_AGENT: !Ref CustomUserAgent
+                    ENV_SOLUTION_UUID: !Ref SolutionUuid
+                    ENV_SOLUTION_ID: !Ref SolutionId
+                    ENV_RESOURCE_PREFIX: !Ref ResourcePrefix
+                    ENV_PROXY_BUCKET: !Ref ProxyBucket
                     ENV_HIGHLIGHT_SETS_TABLE: !Ref HighlightSetsTable
                     ENV_IOT_HOST: !Ref IotHost
                     ENV_IOT_TOPIC: !Ref IotTopic
@@ -515,6 +892,9 @@ Resources:
                                 Action: lambda:InvokeFunction
                                 Resource:
                                     - !GetAtt DetectHighlightsLambda.Arn
+                                    - !GetAtt PlanChunksLambda.Arn
+                                    - !GetAtt DetectHighlightChunkLambda.Arn
+                                    - !GetAtt MergeChunksLambda.Arn
                             -
                                 Effect: Allow
                                 Action:
@@ -569,13 +949,56 @@ Resources:
             DefinitionString:
                 !Sub |-
                     {
-                        "Comment": "Detect highlight segments in an ingested video and persist a HighlightSets row.",
-                        "StartAt": "Detect highlights",
+                        "Comment": "Plan chunk windows, run Pegasus single-call or split-and-Map for >55min videos, merge into final HighlightSets row.",
+                        "StartAt": "Plan",
                         "States": {
-                            "Detect highlights": {
+                            "Plan": {
+                                "Type": "Task",
+                                "Resource": "${PlanChunksLambda.Arn}",
+                                "ResultPath": "$.plan",
+                                "Next": "Split needed?",
+                                "Retry": [
+                                    {
+                                        "ErrorEquals": [
+                                            "Lambda.ClientExecutionTimeoutException",
+                                            "Lambda.ServiceException",
+                                            "Lambda.AWSLambdaException",
+                                            "Lambda.SdkClientException"
+                                        ],
+                                        "IntervalSeconds": 4,
+                                        "MaxAttempts": 3,
+                                        "BackoffRate": 2
+                                    }
+                                ]
+                            },
+                            "Split needed?": {
+                                "Type": "Choice",
+                                "Choices": [
+                                    {
+                                        "Variable": "$.plan.splitNeeded",
+                                        "BooleanEquals": true,
+                                        "Next": "Detect chunks"
+                                    }
+                                ],
+                                "Default": "Detect single"
+                            },
+                            "Detect single": {
                                 "Type": "Task",
                                 "Resource": "${DetectHighlightsLambda.Arn}",
-                                "End": true,
+                                "Parameters": {
+                                    "uuid.$": "$.plan.uuid",
+                                    "highlightSetId.$": "$.plan.highlightSetId",
+                                    "transcriptKey.$": "$.plan.transcriptKey",
+                                    "proxyKey.$": "$.plan.proxyKey",
+                                    "accountId.$": "$.plan.accountId",
+                                    "strategy.$": "$.plan.strategy",
+                                    "modelId.$": "$.plan.modelId",
+                                    "prompt.$": "$.plan.prompt",
+                                    "maxSegments.$": "$.plan.maxSegments",
+                                    "durationSec.$": "$.plan.durationSec"
+                                },
+                                "ResultPath": "$.singleResult",
+                                "Next": "Merge single",
                                 "Retry": [
                                     {
                                         "ErrorEquals": [
@@ -596,6 +1019,165 @@ Resources:
                                         "IntervalSeconds": 2,
                                         "MaxAttempts": 6,
                                         "BackoffRate": 1.5
+                                    }
+                                ],
+                                "Catch": [
+                                    {
+                                        "ErrorEquals": ["States.ALL"],
+                                        "ResultPath": "$.error",
+                                        "Next": "Merge failed"
+                                    }
+                                ]
+                            },
+                            "Detect chunks": {
+                                "Type": "Map",
+                                "ItemsPath": "$.plan.chunks",
+                                "MaxConcurrency": 4,
+                                "Parameters": {
+                                    "uuid.$": "$.plan.uuid",
+                                    "highlightSetId.$": "$.plan.highlightSetId",
+                                    "accountId.$": "$.plan.accountId",
+                                    "modelId.$": "$.plan.modelId",
+                                    "prompt.$": "$.plan.prompt",
+                                    "maxSegments.$": "$.plan.maxSegments",
+                                    "index.$": "$$.Map.Item.Value.index",
+                                    "startSec.$": "$$.Map.Item.Value.startSec",
+                                    "endSec.$": "$$.Map.Item.Value.endSec",
+                                    "durationSec.$": "$$.Map.Item.Value.durationSec",
+                                    "sourceProxyBucket.$": "$$.Map.Item.Value.sourceProxyBucket",
+                                    "sourceProxyKey.$": "$$.Map.Item.Value.sourceProxyKey"
+                                },
+                                "Iterator": {
+                                    "StartAt": "Chunk Pegasus",
+                                    "States": {
+                                        "Chunk Pegasus": {
+                                            "Type": "Task",
+                                            "Resource": "${DetectHighlightChunkLambda.Arn}",
+                                            "End": true,
+                                            "Retry": [
+                                                {
+                                                    "ErrorEquals": [
+                                                        "Lambda.ClientExecutionTimeoutException",
+                                                        "Lambda.ServiceException",
+                                                        "Lambda.AWSLambdaException",
+                                                        "Lambda.SdkClientException"
+                                                    ],
+                                                    "IntervalSeconds": 6,
+                                                    "MaxAttempts": 3,
+                                                    "BackoffRate": 2
+                                                },
+                                                {
+                                                    "ErrorEquals": [
+                                                        "Lambda.TooManyRequestsException",
+                                                        "ThrottlingException"
+                                                    ],
+                                                    "IntervalSeconds": 4,
+                                                    "MaxAttempts": 4,
+                                                    "BackoffRate": 1.5
+                                                }
+                                            ]
+                                        }
+                                    }
+                                },
+                                "ResultPath": "$.chunkResults",
+                                "Next": "Merge split",
+                                "Catch": [
+                                    {
+                                        "ErrorEquals": ["States.ALL"],
+                                        "ResultPath": "$.error",
+                                        "Next": "Merge failed"
+                                    }
+                                ]
+                            },
+                            "Merge single": {
+                                "Type": "Task",
+                                "Resource": "${MergeChunksLambda.Arn}",
+                                "Parameters": {
+                                    "uuid.$": "$.plan.uuid",
+                                    "highlightSetId.$": "$.plan.highlightSetId",
+                                    "strategy.$": "$.plan.strategy",
+                                    "modelId.$": "$.plan.modelId",
+                                    "prompt.$": "$.plan.prompt",
+                                    "owner.$": "$.plan.owner",
+                                    "durationSec.$": "$.plan.durationSec",
+                                    "proxyKey.$": "$.plan.proxyKey",
+                                    "maxSegments.$": "$.plan.maxSegments",
+                                    "startedAt.$": "$.plan.startedAt",
+                                    "chunkResults.$": "States.Array($.singleResult)"
+                                },
+                                "End": true,
+                                "Retry": [
+                                    {
+                                        "ErrorEquals": [
+                                            "Lambda.ClientExecutionTimeoutException",
+                                            "Lambda.ServiceException",
+                                            "Lambda.AWSLambdaException",
+                                            "Lambda.SdkClientException"
+                                        ],
+                                        "IntervalSeconds": 4,
+                                        "MaxAttempts": 3,
+                                        "BackoffRate": 2
+                                    }
+                                ]
+                            },
+                            "Merge split": {
+                                "Type": "Task",
+                                "Resource": "${MergeChunksLambda.Arn}",
+                                "Parameters": {
+                                    "uuid.$": "$.plan.uuid",
+                                    "highlightSetId.$": "$.plan.highlightSetId",
+                                    "strategy.$": "$.plan.strategy",
+                                    "modelId.$": "$.plan.modelId",
+                                    "prompt.$": "$.plan.prompt",
+                                    "owner.$": "$.plan.owner",
+                                    "durationSec.$": "$.plan.durationSec",
+                                    "proxyKey.$": "$.plan.proxyKey",
+                                    "maxSegments.$": "$.plan.maxSegments",
+                                    "startedAt.$": "$.plan.startedAt",
+                                    "chunkResults.$": "$.chunkResults"
+                                },
+                                "End": true,
+                                "Retry": [
+                                    {
+                                        "ErrorEquals": [
+                                            "Lambda.ClientExecutionTimeoutException",
+                                            "Lambda.ServiceException",
+                                            "Lambda.AWSLambdaException",
+                                            "Lambda.SdkClientException"
+                                        ],
+                                        "IntervalSeconds": 4,
+                                        "MaxAttempts": 3,
+                                        "BackoffRate": 2
+                                    }
+                                ]
+                            },
+                            "Merge failed": {
+                                "Type": "Task",
+                                "Resource": "${MergeChunksLambda.Arn}",
+                                "Parameters": {
+                                    "uuid.$": "$.plan.uuid",
+                                    "highlightSetId.$": "$.plan.highlightSetId",
+                                    "strategy.$": "$.plan.strategy",
+                                    "modelId.$": "$.plan.modelId",
+                                    "prompt.$": "$.plan.prompt",
+                                    "owner.$": "$.plan.owner",
+                                    "durationSec.$": "$.plan.durationSec",
+                                    "proxyKey.$": "$.plan.proxyKey",
+                                    "startedAt.$": "$.plan.startedAt",
+                                    "error.$": "$.error"
+                                },
+                                "End": true,
+                                "Retry": [
+                                    {
+                                        "ErrorEquals": [
+                                            "Lambda.ClientExecutionTimeoutException",
+                                            "Lambda.ServiceException",
+                                            "Lambda.AWSLambdaException",
+                                            "Lambda.SdkClientException"
+                                        ],
+                                        "IntervalSeconds": 4,
+                                        "MaxAttempts": 3,
+                                        "BackoffRate": 2
                                     }
                                 ]
                             }
@@ -1384,6 +1966,24 @@ Outputs:
     DetectHighlightsLambdaName:
         Value: !Ref DetectHighlightsLambda
         Description: DetectHighlightsLambdaName
+    PlanChunksLambdaArn:
+        Value: !GetAtt PlanChunksLambda.Arn
+        Description: PlanChunksLambdaArn
+    PlanChunksLambdaName:
+        Value: !Ref PlanChunksLambda
+        Description: PlanChunksLambdaName
+    DetectHighlightChunkLambdaArn:
+        Value: !GetAtt DetectHighlightChunkLambda.Arn
+        Description: DetectHighlightChunkLambdaArn
+    DetectHighlightChunkLambdaName:
+        Value: !Ref DetectHighlightChunkLambda
+        Description: DetectHighlightChunkLambdaName
+    MergeChunksLambdaArn:
+        Value: !GetAtt MergeChunksLambda.Arn
+        Description: MergeChunksLambdaArn
+    MergeChunksLambdaName:
+        Value: !Ref MergeChunksLambda
+        Description: MergeChunksLambdaName
     HighlightDetectionStateMachineArn:
         Value: !Ref HighlightDetectionStateMachine
         Description: HighlightDetectionStateMachineArn

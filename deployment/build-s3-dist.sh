@@ -219,6 +219,9 @@ PKG_SHOPPABLE_API=
 
 # Highlight clipping + editor
 PKG_DETECT_HIGHLIGHTS=
+PKG_PLAN_CHUNKS=
+PKG_DETECT_HIGHLIGHT_CHUNK=
+PKG_MERGE_CHUNKS=
 PKG_COMPOSE_EDL=
 PKG_START_RENDER=
 PKG_RENDER_STATUS=
@@ -1321,10 +1324,61 @@ function build_highlight_packages() {
   echo "[Highlight] Building Highlight Workflow Packages"
   echo "------------------------------------------------------------------------------"
   build_detect_highlights_package
+  build_plan_chunks_package
+  build_detect_highlight_chunk_package
+  build_merge_chunks_package
   build_compose_edl_package
   build_start_render_package
   build_render_status_package
   build_publish_to_library_package
+}
+
+function build_plan_chunks_package() {
+  echo "------------------------------------------------------------------------------"
+  echo "[Highlight] Building plan-chunks lambda package"
+  echo "------------------------------------------------------------------------------"
+  local workflow="highlight"
+  local lambda="plan-chunks"
+  local package="${workflow}-${lambda}"
+  PKG_PLAN_CHUNKS="${package}-${VERSION}.zip"
+  pushd "$SOURCE_DIR/main/highlight/${lambda}"
+  npm install
+  npm run build
+  npm run zip -- "$PKG_PLAN_CHUNKS" .
+  cp -v "./dist/$PKG_PLAN_CHUNKS" "$BUILD_DIST_DIR"
+  popd
+}
+
+function build_detect_highlight_chunk_package() {
+  echo "------------------------------------------------------------------------------"
+  echo "[Highlight] Building detect-highlight-chunk lambda package"
+  echo "------------------------------------------------------------------------------"
+  local workflow="highlight"
+  local lambda="detect-highlight-chunk"
+  local package="${workflow}-${lambda}"
+  PKG_DETECT_HIGHLIGHT_CHUNK="${package}-${VERSION}.zip"
+  pushd "$SOURCE_DIR/main/highlight/${lambda}"
+  npm install
+  npm run build
+  npm run zip -- "$PKG_DETECT_HIGHLIGHT_CHUNK" .
+  cp -v "./dist/$PKG_DETECT_HIGHLIGHT_CHUNK" "$BUILD_DIST_DIR"
+  popd
+}
+
+function build_merge_chunks_package() {
+  echo "------------------------------------------------------------------------------"
+  echo "[Highlight] Building merge-chunks lambda package"
+  echo "------------------------------------------------------------------------------"
+  local workflow="highlight"
+  local lambda="merge-chunks"
+  local package="${workflow}-${lambda}"
+  PKG_MERGE_CHUNKS="${package}-${VERSION}.zip"
+  pushd "$SOURCE_DIR/main/highlight/${lambda}"
+  npm install
+  npm run build
+  npm run zip -- "$PKG_MERGE_CHUNKS" .
+  cp -v "./dist/$PKG_MERGE_CHUNKS" "$BUILD_DIST_DIR"
+  popd
 }
 
 function build_detect_highlights_package() {
@@ -1627,6 +1681,15 @@ function build_cloudformation_templates() {
   echo "Updating %%PKG_DETECT_HIGHLIGHTS%% param in cloudformation templates..."
   sed -i'.bak' -e "s|%%PKG_DETECT_HIGHLIGHTS%%|${PKG_DETECT_HIGHLIGHTS}|g" *.yaml || exit 1
 
+  echo "Updating %%PKG_PLAN_CHUNKS%% param in cloudformation templates..."
+  sed -i'.bak' -e "s|%%PKG_PLAN_CHUNKS%%|${PKG_PLAN_CHUNKS}|g" *.yaml || exit 1
+
+  echo "Updating %%PKG_DETECT_HIGHLIGHT_CHUNK%% param in cloudformation templates..."
+  sed -i'.bak' -e "s|%%PKG_DETECT_HIGHLIGHT_CHUNK%%|${PKG_DETECT_HIGHLIGHT_CHUNK}|g" *.yaml || exit 1
+
+  echo "Updating %%PKG_MERGE_CHUNKS%% param in cloudformation templates..."
+  sed -i'.bak' -e "s|%%PKG_MERGE_CHUNKS%%|${PKG_MERGE_CHUNKS}|g" *.yaml || exit 1
+
   echo "Updating %%PKG_COMPOSE_EDL%% param in cloudformation templates..."
   sed -i'.bak' -e "s|%%PKG_COMPOSE_EDL%%|${PKG_COMPOSE_EDL}|g" *.yaml || exit 1
 
@@ -1716,6 +1779,9 @@ function on_complete() {
   echo "** PKG_SHOPPABLE_API=${PKG_SHOPPABLE_API} **"
   ## Highlight Workflow ##
   echo "** PKG_DETECT_HIGHLIGHTS=${PKG_DETECT_HIGHLIGHTS} **"
+  echo "** PKG_PLAN_CHUNKS=${PKG_PLAN_CHUNKS} **"
+  echo "** PKG_DETECT_HIGHLIGHT_CHUNK=${PKG_DETECT_HIGHLIGHT_CHUNK} **"
+  echo "** PKG_MERGE_CHUNKS=${PKG_MERGE_CHUNKS} **"
   echo "** PKG_COMPOSE_EDL=${PKG_COMPOSE_EDL} **"
   echo "** PKG_START_RENDER=${PKG_START_RENDER} **"
   echo "** PKG_RENDER_STATUS=${PKG_RENDER_STATUS} **"

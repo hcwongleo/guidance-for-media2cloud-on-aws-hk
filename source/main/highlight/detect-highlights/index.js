@@ -6,14 +6,6 @@ const {
   ConverseCommand,
   InvokeModelCommand,
 } = require('@aws-sdk/client-bedrock-runtime');
-const {
-  DynamoDBClient,
-} = require('@aws-sdk/client-dynamodb');
-const {
-  DynamoDBDocumentClient,
-  PutCommand,
-} = require('@aws-sdk/lib-dynamodb');
-const CRYPTO = require('node:crypto');
 
 const {
   CommonUtils,
@@ -24,18 +16,14 @@ const {
       },
     },
   },
-  IotStatus,
   xraysdkHelper,
   retryStrategyHelper,
   M2CException,
 } = require('core-lib');
 
-const IOT_TYPE = 'detect-highlight';
-
 const REQUIRED_ENVS = [
   'ENV_BEDROCK_REGION',
   'ENV_PROXY_BUCKET',
-  'ENV_HIGHLIGHT_SETS_TABLE',
 ];
 
 const DEFAULT_TRANSCRIPT_MODEL = 'us.amazon.nova-2-lite-v1:0';
@@ -117,13 +105,6 @@ function flattenItems(items) {
       end: Number(it.end_time),
     }))
     .filter((it) => it.word.length > 0);
-}
-
-function speechDensity(words, durationSec) {
-  if (!durationSec || durationSec <= 0 || words.length === 0) {
-    return 0;
-  }
-  return words.length / durationSec;
 }
 
 function findTimeframe(targetText, words) {
@@ -434,30 +415,10 @@ async function runMultimodalStrategy({ uuid, proxyBucket, proxyKey, accountId, m
   return { segments, usage: {} };
 }
 
-async function publishStatus(extra) {
-  // Fire-and-forget — failures only log, never break the run.
-  try {
-    return await IotStatus.publish({
-      type: IOT_TYPE,
-      ...extra,
-    });
-  } catch (e) {
-    console.log(`=== publishStatus failed: ${e.message}`);
-    return undefined;
-  }
-}
-
-async function persistHighlightSet(table, row) {
-  const ddb = xraysdkHelper(new DynamoDBClient({
-    customUserAgent: CustomUserAgent,
-    retryStrategy: retryStrategyHelper(),
-  }));
-  const doc = DynamoDBDocumentClient.from(ddb, {
-    marshallOptions: { removeUndefinedValues: true },
-  });
-  await doc.send(new PutCommand({ TableName: table, Item: row }));
-}
-
+// Single-call worker. Step Functions owns lifecycle: plan-chunks writes
+// the PROCESSING row + 'started' IoT event upstream, merge-chunks writes
+// COMPLETED/FAILED + final IoT event downstream. This handler just
+// computes segments for the whole video and returns them.
 exports.handler = async (event) => {
   console.log('event:', JSON.stringify(event));
 
@@ -468,242 +429,102 @@ exports.handler = async (event) => {
 
   const region = process.env.ENV_BEDROCK_REGION;
   const proxyBucket = process.env.ENV_PROXY_BUCKET;
-  const tableName = process.env.ENV_HIGHLIGHT_SETS_TABLE;
 
   const {
     uuid,
+    highlightSetId,
     transcriptKey,
     proxyKey,
     accountId,
-    strategy: requestedStrategy = 'multimodal',
+    strategy = 'multimodal',
     modelId: requestedModelId,
     prompt: customPrompt,
     maxSegments = DEFAULT_MAX_SEGMENTS,
-    owner = 'unknown',
     durationSec,
   } = event;
 
-  if (!uuid) {
-    throw new M2CException('uuid is required');
+  if (!uuid || !highlightSetId) {
+    throw new M2CException('uuid and highlightSetId are required');
   }
-
-  const strategy = requestedStrategy;
   if (strategy !== 'multimodal' && strategy !== 'transcript-llm') {
     throw new M2CException(`unsupported strategy: ${strategy}`);
   }
-  // Allocate the highlight-set id up front so the PROCESSING row, IoT
-  // events, and final COMPLETED/FAILED row all share the same key. The
-  // webapp uses this id to render an in-flight banner that survives a
-  // page refresh.
-  const highlightSetId = CRYPTO.randomUUID();
-  const startedAt = new Date().toISOString();
 
-  try {
-    await publishStatus({
-      uuid,
-      highlightSetId,
-      strategy,
-      status: 'started',
-      percent: 0,
-    });
+  let words = [];
+  let totalDuration = durationSec || 0;
 
-    await persistHighlightSet(tableName, {
-      uuid,
-      highlightSetId,
-      strategy,
-      modelId: requestedModelId || null,
-      prompt: customPrompt || null,
-      segments: [],
-      status: 'PROCESSING',
-      createdAt: startedAt,
-      createdBy: owner,
-      durationSec: durationSec || 0,
-    });
-
-    // Transcript is required for transcript-llm; multimodal uses it when available.
-    let words = [];
-    let totalDuration = durationSec || 0;
-    let density = 0;
-
-    if (transcriptKey) {
-      const transcriptJson = await readTranscript(proxyBucket, transcriptKey);
-      words = extractWords(transcriptJson);
-      if (words.length > 0) {
-        const lastWordEnd = words[words.length - 1].end;
-        totalDuration = totalDuration || lastWordEnd;
-        density = speechDensity(words, totalDuration);
-      }
+  if (transcriptKey) {
+    const transcriptJson = await readTranscript(proxyBucket, transcriptKey);
+    words = extractWords(transcriptJson);
+    if (words.length > 0) {
+      const lastWordEnd = words[words.length - 1].end;
+      totalDuration = totalDuration || lastWordEnd;
     }
-
-    await publishStatus({
-      uuid,
-      highlightSetId,
-      strategy,
-      status: 'processing',
-      percent: 30,
-      phase: 'data-loaded',
-    });
-
-    let merged;
-    let modelId;
-    let usage = {};
-    let extra = {};
-
-    if (strategy === 'transcript-llm') {
-      if (words.length === 0) {
-        throw new M2CException('transcript-llm requires a transcript; none found for this asset');
-      }
-      modelId = ensureInferenceProfile(requestedModelId || DEFAULT_TRANSCRIPT_MODEL);
-      const transcriptText = joinTranscriptText(words);
-      const prompt = buildPrompt(transcriptText, maxSegments, customPrompt);
-      const out = await callBedrock(modelId, prompt, region);
-      usage = out.usage;
-      await publishStatus({
-        uuid,
-        highlightSetId,
-        strategy,
-        status: 'processing',
-        percent: 70,
-        phase: 'model-completed',
-      });
-      const rawHighlights = parseHighlightsResponse(out.text);
-      const segments = [];
-      for (let i = 0; i < rawHighlights.length; i += 1) {
-        const h = rawHighlights[i];
-        const quote = (h.quote || '').replace(/\[\.\.\.\]/g, ' ').trim();
-        if (quote.length === 0) {
-          continue;
-        }
-        const tf = findTimeframe(quote, words);
-        if (!tf) {
-          console.log(`=== anchor failed for #${i + 1}: "${(h.title || '').slice(0, 60)}"`);
-          continue;
-        }
-        segments.push({
-          kind: 'highlight',
-          title: h.title || `Highlight ${i + 1}`,
-          reason: h.reason || '',
-          quote: h.quote || '',
-          startSec: tf.startSec,
-          endSec: tf.endSec,
-          startTimecode: secondsToTimecode(tf.startSec),
-          endTimecode: secondsToTimecode(tf.endSec),
-          anchorRatio: Number(tf.ratio.toFixed(3)),
-          text: quote,
-        });
-      }
-      merged = mergeOverlapping(segments);
-    } else if (strategy === 'multimodal') {
-      if (!proxyKey) {
-        throw new M2CException('multimodal requires a proxyKey; ensure ingest produced a video proxy');
-      }
-      modelId = ensureInferenceProfile(requestedModelId || DEFAULT_VLM_MODEL);
-      const transcriptText = words.length > 0 ? joinTranscriptText(words) : '';
-      const out = await runMultimodalStrategy({
-        uuid,
-        proxyBucket,
-        proxyKey,
-        accountId,
-        maxSegments,
-        modelId,
-        customPrompt,
-        durationSec: totalDuration,
-        region,
-        transcriptText,
-      });
-      usage = out.usage;
-      await publishStatus({
-        uuid,
-        highlightSetId,
-        strategy,
-        status: 'processing',
-        percent: 70,
-        phase: 'model-completed',
-      });
-      merged = mergeOverlapping(out.segments);
-      extra = { proxyKey };
-    }
-
-    await publishStatus({
-      uuid,
-      highlightSetId,
-      strategy,
-      status: 'processing',
-      percent: 90,
-      phase: 'anchored',
-      segmentCount: merged.length,
-    });
-
-    const row = {
-      uuid,
-      highlightSetId,
-      strategy,
-      modelId,
-      prompt: customPrompt || null,
-      segments: merged,
-      status: 'COMPLETED',
-      createdAt: startedAt,
-      finishedAt: new Date().toISOString(),
-      createdBy: owner,
-      speechDensity: Number(density.toFixed(3)),
-      durationSec: totalDuration,
-      cost: {
-        inputTokens: usage.inputTokens || 0,
-        outputTokens: usage.outputTokens || 0,
-      },
-      ...extra,
-    };
-
-    await persistHighlightSet(tableName, row);
-
-    await publishStatus({
-      uuid,
-      highlightSetId,
-      strategy,
-      status: 'completed',
-      percent: 100,
-      segmentCount: merged.length,
-    });
-
-    return {
-      uuid,
-      highlightSetId,
-      strategy,
-      modelId,
-      segmentCount: merged.length,
-      segments: merged,
-      status: 'COMPLETED',
-    };
-  } catch (e) {
-    const errorMessage = e.message || String(e);
-    // Stamp the row as FAILED so the webapp can list it after a refresh.
-    // Best-effort — if persistence itself blew up we still rethrow the
-    // original error to surface in Step Functions.
-    try {
-      await persistHighlightSet(tableName, {
-        uuid,
-        highlightSetId,
-        strategy,
-        modelId: requestedModelId || null,
-        prompt: customPrompt || null,
-        segments: [],
-        status: 'FAILED',
-        error: errorMessage,
-        createdAt: startedAt,
-        finishedAt: new Date().toISOString(),
-        createdBy: owner,
-        durationSec: durationSec || 0,
-      });
-    } catch (persistErr) {
-      console.log(`=== persist FAILED row failed: ${persistErr.message}`);
-    }
-    await publishStatus({
-      uuid,
-      highlightSetId,
-      strategy,
-      status: 'error',
-      error: errorMessage,
-    });
-    throw e;
   }
+
+  let segments = [];
+  let modelId;
+
+  if (strategy === 'transcript-llm') {
+    if (words.length === 0) {
+      throw new M2CException('transcript-llm requires a transcript; none found for this asset');
+    }
+    modelId = ensureInferenceProfile(requestedModelId || DEFAULT_TRANSCRIPT_MODEL);
+    const transcriptText = joinTranscriptText(words);
+    const prompt = buildPrompt(transcriptText, maxSegments, customPrompt);
+    const out = await callBedrock(modelId, prompt, region);
+    const rawHighlights = parseHighlightsResponse(out.text);
+    const built = [];
+    for (let i = 0; i < rawHighlights.length; i += 1) {
+      const h = rawHighlights[i];
+      const quote = (h.quote || '').replace(/\[\.\.\.\]/g, ' ').trim();
+      if (quote.length === 0) {
+        continue;
+      }
+      const tf = findTimeframe(quote, words);
+      if (!tf) {
+        console.log(`=== anchor failed for #${i + 1}: "${(h.title || '').slice(0, 60)}"`);
+        continue;
+      }
+      built.push({
+        kind: 'highlight',
+        title: h.title || `Highlight ${i + 1}`,
+        reason: h.reason || '',
+        quote: h.quote || '',
+        startSec: tf.startSec,
+        endSec: tf.endSec,
+        startTimecode: secondsToTimecode(tf.startSec),
+        endTimecode: secondsToTimecode(tf.endSec),
+        anchorRatio: Number(tf.ratio.toFixed(3)),
+        text: quote,
+      });
+    }
+    segments = mergeOverlapping(built);
+  } else {
+    if (!proxyKey) {
+      throw new M2CException('multimodal requires a proxyKey; ensure ingest produced a video proxy');
+    }
+    modelId = ensureInferenceProfile(requestedModelId || DEFAULT_VLM_MODEL);
+    const transcriptText = words.length > 0 ? joinTranscriptText(words) : '';
+    const out = await runMultimodalStrategy({
+      uuid,
+      proxyBucket,
+      proxyKey,
+      accountId,
+      maxSegments,
+      modelId,
+      customPrompt,
+      durationSec: totalDuration,
+      region,
+      transcriptText,
+    });
+    segments = mergeOverlapping(out.segments);
+  }
+
+  return {
+    uuid,
+    highlightSetId,
+    modelId,
+    segments,
+  };
 };

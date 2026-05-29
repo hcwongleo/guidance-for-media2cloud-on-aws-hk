@@ -61,11 +61,6 @@ const BaseOp = require('./baseOp');
 
 const REGION = process.env.AWS_REGION;
 const ANALYSIS_TYPE_AUDIO = 'audio';
-// TwelveLabs Pegasus on Bedrock rejects videos longer than ~60 minutes
-// ("Unprocessable video, please check the video codec or duration").
-// Pre-flight here so the user gets a synchronous, actionable error
-// instead of a silent SFN failure ~17s into the run.
-const PEGASUS_MAX_DURATION_SEC = 55 * 60;
 
 function ddbDocClient() {
   const ddb = xraysdkHelper(new DynamoDBClient({
@@ -126,18 +121,6 @@ class HighlightOp extends BaseOp {
     const ingestDurationSec = (ingestRow && ingestRow.duration)
       ? Math.round(ingestRow.duration / 1000)
       : 0;
-
-    // Pegasus duration cap. Reject up front instead of after 17s of SFN burn.
-    if (strategy === 'multimodal'
-        && ingestDurationSec > 0
-        && ingestDurationSec > PEGASUS_MAX_DURATION_SEC) {
-      const min = Math.round(ingestDurationSec / 60);
-      const cap = Math.round(PEGASUS_MAX_DURATION_SEC / 60);
-      throw new M2CException(
-        `video is ${min} min; multimodal (Pegasus) supports up to ${cap} min. `
-        + 'Use strategy=transcript-llm.'
-      );
-    }
 
     const sfnInput = {
       uuid,

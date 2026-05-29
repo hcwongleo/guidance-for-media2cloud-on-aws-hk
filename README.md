@@ -330,12 +330,25 @@ __
 
 To update your deployed Media2Cloud stack with new features or bug fixes:
 
+> **Region.** This fork runs in **`us-west-2`** only. Pass `--region us-west-2` to every `aws` command in this section. The artefact S3 bucket must be the **same bucket the stack was originally deployed from** — pulling templates from a different bucket will break the nested-stack URL chain. To confirm the current deploy bucket and version, inspect the stack's `TemplateURL`:
+> ```sh
+> aws cloudformation describe-stacks \
+>   --stack-name media2cloudv4 \
+>   --region us-west-2 \
+>   --query 'Stacks[0].Parameters[?ParameterKey==`Version`||ParameterKey==`SolutionId`]'
+> # or get the template URL the stack last deployed from:
+> aws cloudformation get-template-summary --stack-name media2cloudv4 --region us-west-2 \
+>   --query 'Metadata' --output text
+> ```
+
 ### Step 1: Build New Version
 
 ```sh
 cd deployment
 
-# Increment version number (e.g., v4.0.10 → v4.0.11)
+# Always bump the version. Reusing an existing version can leave Lambda
+# code stale even when CFN reports UPDATE_COMPLETE (CFN compares S3 keys,
+# not zip contents — same key = no redeploy).
 bash build-s3-dist.sh \
   --bucket YOUR-BUCKET-NAME \
   --version v4.0.11 \
@@ -351,21 +364,24 @@ bash deploy-s3-dist.sh \
   --single-region
 ```
 
+The deploy script auto-detects the bucket's region from `s3api get-bucket-location` and prints the resulting `media2cloud.template` HTTPS URL — copy that URL for Step 3.
+
 ### Step 3: Update CloudFormation Stack
 
 **Option A - AWS Console (Recommended):**
-1. Go to [CloudFormation Console](https://console.aws.amazon.com/cloudformation/)
-2. Select your stack → Click **Update**
-3. Choose **Replace current template**
-4. Enter the new template URL from deploy output
-5. Keep all existing parameters (do not change)
-6. Submit and wait for `UPDATE_COMPLETE` (10-20 minutes)
+1. Open the [CloudFormation Console](https://console.aws.amazon.com/cloudformation/home?region=us-west-2) **in `us-west-2`**.
+2. Select your stack → Click **Update**.
+3. Choose **Replace current template**.
+4. Paste the new template URL from Step 2's deploy output.
+5. Keep all existing parameters (do not change).
+6. Submit and wait for `UPDATE_COMPLETE` (10–20 minutes).
 
 **Option B - AWS CLI:**
 ```sh
 aws cloudformation update-stack \
   --stack-name media2cloudv4 \
-  --template-url https://YOUR-BUCKET.s3.amazonaws.com/media2cloud/v4.0.11/media2cloud.template \
+  --region us-west-2 \
+  --template-url https://YOUR-BUCKET.s3.us-west-2.amazonaws.com/media2cloud/v4.0.11/media2cloud.template \
   --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND \
   --parameters \
     ParameterKey=Email,UsePreviousValue=true \
@@ -375,6 +391,23 @@ aws cloudformation update-stack \
     ParameterKey=OpenSearchCluster,UsePreviousValue=true \
     ParameterKey=BedrockSecondaryRegionAccess,UsePreviousValue=true \
     ParameterKey=BedrockModel,UsePreviousValue=true
+```
+
+> Use the **regional** virtual-host URL `https://<bucket>.s3.us-west-2.amazonaws.com/...`, not the legacy regionless `s3.amazonaws.com` form — newer buckets in `us-west-2` reject the regionless host.
+
+**Troubleshooting — `UPDATE_COMPLETE` but Lambda still runs old code.** This happens when CFN's nested-stack child template hash didn't change for that Lambda's `S3Key`. Force the Lambda(s) to redeploy from the freshly uploaded zip:
+
+```sh
+# List affected functions (filter by stack ID prefix or workflow name)
+aws lambda list-functions --region us-west-2 \
+  --query 'Functions[?starts_with(FunctionName, `so0050-`)].FunctionName' --output text
+
+# Push the new code for each function
+aws lambda update-function-code \
+  --function-name <function-name> \
+  --s3-bucket YOUR-BUCKET-NAME \
+  --s3-key media2cloud/v4.0.11/<package-name>.zip \
+  --region us-west-2
 ```
 
 **Important:** Stack updates modify Lambda code and infrastructure, but **preserve all your data** (S3 files, DynamoDB tables, OpenSearch indices, user accounts).

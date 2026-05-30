@@ -364,26 +364,20 @@ The deploy script auto-detects the bucket's region from `s3api get-bucket-locati
 **Option A - AWS Console (Recommended):**
 1. Open the [CloudFormation Console](https://console.aws.amazon.com/cloudformation/home?region=us-west-2) **in `us-west-2`**.
 2. Select your stack → Click **Update**.
-3. Choose **Replace current template**.
-4. Paste the new template URL from Step 2's deploy output.
+3. Choose **Replace existing template**.
+4. Paste the new template URL printed by `deploy-s3-dist.sh` in Step 2.
 5. Keep all existing parameters (do not change).
 6. Submit and wait for `UPDATE_COMPLETE` (10–20 minutes).
 
 **Option B - AWS CLI:**
 ```sh
+# Omitting --parameters tells CFN to keep every existing parameter value.
+# (Any parameter omitted from --parameters defaults to UsePreviousValue=true.)
 aws cloudformation update-stack \
   --stack-name media2cloudv4 \
   --region us-west-2 \
   --template-url https://YOUR-BUCKET.s3.us-west-2.amazonaws.com/media2cloud/v4.0.11/media2cloud.template \
-  --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND \
-  --parameters \
-    ParameterKey=Email,UsePreviousValue=true \
-    ParameterKey=DefaultAIOptions,UsePreviousValue=true \
-    ParameterKey=PriceClass,UsePreviousValue=true \
-    ParameterKey=StartOnObjectCreation,UsePreviousValue=true \
-    ParameterKey=OpenSearchCluster,UsePreviousValue=true \
-    ParameterKey=BedrockSecondaryRegionAccess,UsePreviousValue=true \
-    ParameterKey=BedrockModel,UsePreviousValue=true
+  --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND
 ```
 
 > Use the **regional** virtual-host URL `https://<bucket>.s3.us-west-2.amazonaws.com/...`, not the legacy regionless `s3.amazonaws.com` form — newer buckets in `us-west-2` reject the regionless host.

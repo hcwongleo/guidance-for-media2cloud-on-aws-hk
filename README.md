@@ -7,6 +7,7 @@
 - [Stack parameters](#stack-parameters)
 - [Building Media2Cloud V4 on your environment](#building-media2cloud-v4-on-your-environment)
 - [Updating an Existing Stack](#updating-an-existing-stack)
+- [Destroying an Existing Stack](#destroying-an-existing-stack)
 - [Cost Estimation](#cost-estimation)
 - [Deep dive into Media2Cloud V4](#deep-dive-into-media2cloud-v4)
 - [V4 Demo Video Gallery](#v4-demo-video-gallery)
@@ -408,6 +409,107 @@ aws lambda update-function-code \
 ```
 
 **Important:** Stack updates modify Lambda code and infrastructure, but **preserve all your data** (S3 files, DynamoDB tables, OpenSearch indices, user accounts).
+
+__
+
+## Destroying an Existing Stack
+
+> **Irreversible.** This deletes the CFN stack, empties **every S3 bucket owned by the stack** (Ingest, Proxy, Web), and empties the artefact bucket prefixes. All ingested videos, proxies, transcripts, renders, and published outputs are gone. DynamoDB tables, OpenSearch indices, and Cognito users may be retained by the template's `DeletionPolicy`; deal with those in Step 4.
+
+### Step 1: Capture current parameters (so you can redeploy with the same config)
+
+```sh
+aws cloudformation describe-stacks \
+  --stack-name media2cloudv4 \
+  --region us-west-2 \
+  --query 'Stacks[0].Parameters' --output json > /tmp/m2c-params.json
+cat /tmp/m2c-params.json
+```
+
+### Step 2: Empty every S3 bucket owned by the stack
+
+```sh
+# List S3 buckets created by the stack and all nested stacks
+for s in $(aws cloudformation list-stack-resources --stack-name media2cloudv4 --region us-west-2 \
+            --query 'StackResourceSummaries[?ResourceType==`AWS::CloudFormation::Stack`].PhysicalResourceId' \
+            --output text) media2cloudv4; do
+  aws cloudformation list-stack-resources --stack-name "$s" --region us-west-2 \
+    --query 'StackResourceSummaries[?ResourceType==`AWS::S3::Bucket`].PhysicalResourceId' --output text
+done | tr '\t' '\n' | sort -u
+
+# Empty each bucket (including all object versions if versioning is on)
+for b in <bucket-1> <bucket-2> ...; do
+  aws s3 rm "s3://$b" --recursive --region us-west-2
+  # Versioned buckets: also clear noncurrent versions and delete markers
+  aws s3api list-object-versions --bucket "$b" --region us-west-2 \
+    --query '{Objects:[Versions[].{Key:Key,VersionId:VersionId}, DeleteMarkers[].{Key:Key,VersionId:VersionId}][]}' \
+    --output json > /tmp/v.json
+  if [ "$(jq '.Objects | length' /tmp/v.json)" -gt 0 ]; then
+    aws s3api delete-objects --bucket "$b" --region us-west-2 --delete file:///tmp/v.json
+  fi
+done
+```
+
+Empty the artefact bucket's deploy prefixes too (keeps the bucket itself for the rebuild):
+
+```sh
+aws s3 rm s3://media2cloud-artefact-385085470441/media2cloud/ --recursive --region us-west-2
+```
+
+### Step 3: Delete the stack
+
+```sh
+aws cloudformation delete-stack --stack-name media2cloudv4 --region us-west-2
+aws cloudformation wait stack-delete-complete --stack-name media2cloudv4 --region us-west-2
+```
+
+If the wait fails with `DELETE_FAILED`, inspect events:
+
+```sh
+aws cloudformation describe-stack-events --stack-name media2cloudv4 --region us-west-2 \
+  --query 'StackEvents[?ResourceStatus==`DELETE_FAILED`].[LogicalResourceId,ResourceStatusReason]' --output table
+```
+
+The most common cause is a non-empty bucket — empty it (Step 2) and rerun `delete-stack` with `--retain-resources` for any resource that already failed.
+
+### Step 4: Clean up retained resources (optional)
+
+The upstream template marks several resources `DeletionPolicy: Retain` so they survive the stack delete. For a fresh rebuild you usually want them gone:
+
+```sh
+# Cognito user pool (otherwise the new stack creates a second pool)
+aws cognito-idp list-user-pools --max-results 60 --region us-west-2 \
+  --query 'UserPools[?starts_with(Name, `media2cloud`)].[Id,Name]' --output table
+# aws cognito-idp delete-user-pool --user-pool-id <id> --region us-west-2
+
+# Orphan log groups
+aws logs describe-log-groups --region us-west-2 \
+  --log-group-name-prefix /aws/lambda/so0050- \
+  --query 'logGroups[].logGroupName' --output text
+# for lg in <names>; do aws logs delete-log-group --log-group-name "$lg" --region us-west-2; done
+```
+
+OpenSearch and DynamoDB are deleted with the stack in V4 (no `Retain`); skip them unless `describe-stacks` says otherwise.
+
+### Step 5: Wipe the local checkout and re-clone
+
+```sh
+rm -rf /Users/hcwong/Solution/guidance-for-media2cloud-on-aws-hk
+cd /Users/hcwong/Solution
+git clone https://github.com/hcwongleo/guidance-for-media2cloud-on-aws-hk
+```
+
+Then jump to [Building Media2Cloud V4 on your environment](#building-media2cloud-v4-on-your-environment), Steps 3-5 (skip Step 1, the artefact bucket already exists; skip Step 2, you just cloned). On the Step 5 `create-stack`, replay the parameters captured in Step 1 of this section — the simplest way is to pass them through `jq`:
+
+```sh
+PARAMS=$(jq -c 'map({ParameterKey, ParameterValue})' /tmp/m2c-params.json)
+aws cloudformation create-stack \
+  --stack-name media2cloudv4 \
+  --region us-west-2 \
+  --template-url <URL from deploy-s3-dist.sh> \
+  --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND \
+  --parameters "$PARAMS"
+```
 
 __
 

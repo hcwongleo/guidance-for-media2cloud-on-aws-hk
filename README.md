@@ -413,190 +413,112 @@ __
 
 ## Cost Estimation
 
-> **Disclaimer.** All numbers below are **rough order-of-magnitude estimates** based on public AWS list pricing in `us-west-2` as of 2026-05-21. Real costs vary by Region, contract discount (EDP / private pricing), traffic profile, OpenSearch sizing, and whether Bedrock cross-region inference is enabled. Prices change without notice — always confirm with the [AWS Pricing Calculator](https://calculator.aws) before quoting a customer. Costs are quoted in **USD**. Bedrock token volumes are estimates derived from average transcript length per minute of speech (~150 words/min ≈ 200 tokens/min in Chinese).
+> **Disclaimer.** Numbers below are **rough order-of-magnitude estimates** at AWS public list pricing in `us-west-2` as of 2026-05-21. Real costs vary by Region, EDP/private discount, traffic, OpenSearch sizing, and Bedrock cross-region inference. Always reconfirm with the [AWS Pricing Calculator](https://calculator.aws). All figures USD.
 
-Three cost categories to keep separate in your head:
+Three buckets to keep separate:
 
-| Category | Trigger | Billing cadence |
+| Category | Trigger | Cadence |
 |---|---|---|
-| **A. Always-on infrastructure** | The CFN stack exists | Monthly, whether or not anyone uses it |
-| **B. One-shot, per action** | User uploads a video, clicks Detect highlights, clicks Render, clicks Publish | Once, when the action runs |
-| **C. Recurring storage** | An asset (master / proxy / render / publish output) is in S3 | Monthly per GB, until Deleted |
+| **A. Always-on infrastructure** | Stack exists | Monthly |
+| **B. One-shot per action** | Upload, Detect highlights, Render, Publish | Once per action |
+| **C. Recurring storage** | Asset persists in S3 | $/GB-month |
 
-Section §5 stitches A + B + C together for a representative customer demo.
+### A. Always-on infrastructure
 
-### 1. (Category A) Always-on infrastructure — per month
+What you pay just for the stack to exist, before any video is ingested. OpenSearch dominates.
 
-What you pay just for the stack to exist, **before any video is ingested**. Most cost concentrates in OpenSearch and (if enabled) Neptune.
-
-| Component | Configuration | ~Monthly cost |
+| Component | Configuration | ~Monthly |
 |---|---|---|
-| Amazon OpenSearch (Dev/Test) | 1× `m5.large.search`, 10 GB gp2, 1 AZ | ~ **$110** |
-| Amazon OpenSearch (Production) | 3× `m5.large.search`, 100 GB gp2, 2 AZ + 3 dedicated masters | ~ **$650** |
-| Amazon DynamoDB | On-demand, 9 small tables (Ingest, Analysis, Faces, AdBreak, HighlightSets, EditProjects, Renders, HighlightSettings, etc.) — only billed on use | ~ **$1–5** at idle |
-| Amazon CloudFront + S3 (web app) | 1 distribution + ~30 MB static assets | ~ **$1** |
-| Amazon API Gateway | Idle | ~ **$0** (per-request) |
-| AWS Lambda | Idle | ~ **$0** (per-invocation) |
-| AWS IoT Core | 1 thing, low MQTT volume | ~ **$0–1** |
-| Amazon Cognito User Pool | < 50 MAU | **$0** (free tier) |
-| Amazon Neptune (only if `EnableKnowledgeGraph=YES`) | 1× `db.t3.medium` | ~ **$60** |
-| **Subtotal — idle stack (no Neptune, Dev OpenSearch)** | | **~ $115/mo** |
-| **Subtotal — idle stack (no Neptune, Prod OpenSearch)** | | **~ $655/mo** |
+| OpenSearch — Dev/Test | 1× m5.large.search, 10 GB gp2, 1 AZ | **~$110** |
+| OpenSearch — Production | 3× m5.large.search, 100 GB gp2, 2 AZ + 3 dedicated masters | **~$650** |
+| Neptune (only if `EnableKnowledgeGraph=YES`) | 1× db.t3.medium serverless | ~$60 |
+| Everything else (DynamoDB on-demand × 11, CloudFront, API Gateway, Lambda, IoT Core, Cognito) | Idle | ~$3–7 |
+| **Idle subtotal — Dev OpenSearch, no Neptune** | | **~$115/mo** |
+| **Idle subtotal — Prod OpenSearch, no Neptune** | | **~$655/mo** |
 
-> Biggest single line item is OpenSearch. For demos/POCs use the Dev/Test cluster size; switch to Production sizing only when you start ingesting your real catalogue.
+### B. One-shot per video — Ingest + Analysis
 
-### 2. (Category B) One-shot per video — Ingest + Analysis
+Charged once per upload. Scales with **duration**, not file size. Assumes H.264 1080p source, default V4 AI options (Rekognition Labels + Celebs + Faces + Segments, Transcribe, dynamic-frame analysis ~1 frame/3s, scene description per scene).
 
-Variable cost for **one upload + analyze run**. Charged once when the user uploads. The pipeline scales linearly with **video duration**, not file size, because almost every downstream service is billed per-minute.
+| Service | 5 min | 30 min | 60 min |
+|---|---|---|---|
+| MediaConvert (proxy + frames) | $0.04 | $0.23 | $0.45 |
+| Transcribe ($0.024/min) | $0.12 | $0.72 | $1.44 |
+| Rekognition Video — Labels + Celebs + Faces + Segments ($0.35/min combined) | $1.75 | $10.50 | $21.00 |
+| Rekognition Image (dynamic frames @ $0.001/image) | $0.10 | $0.60 | $1.20 |
+| Bedrock Haiku 4.5 (scene desc, IAB/GARM, sentiment) | ~$0.05 | ~$0.45 | ~$0.90 |
+| Lambda + Step Functions + DDB | ~$0.05 | ~$0.20 | ~$0.40 |
+| **Total per analyze run** | **~$2.10** | **~$12.50** | **~$25.30** |
 
-Assumptions: H.264 1080p source, single audio track, English/Chinese transcript, default V4 AI options (Rekognition Video labels + Celebrities + Faces + Segments, Transcribe, dynamic frame analysis with average ~1 frame every 3 sec, scene description on every detected scene).
+Storage isn't in this table — it lives in C.
 
-| Service | What it does | Unit price (us-west-2) | 5 min | 30 min | 60 min |
-|---|---|---|---|---|---|
-| AWS Elemental MediaConvert (proxy + frames) | Builds the MP4 proxy, HLS, audio proxy, frame thumbs | ~$0.0075/min (Pro tier) | **$0.04** | **$0.23** | **$0.45** |
-| Amazon Transcribe | Speech-to-text | $0.024/min | **$0.12** | **$0.72** | **$1.44** |
-| Amazon Rekognition Video — Labels | DetectLabels on segments | $0.10/min | **$0.50** | **$3.00** | **$6.00** |
-| Amazon Rekognition Video — Celebrities | RecognizeCelebrities | $0.10/min | **$0.50** | **$3.00** | **$6.00** |
-| Amazon Rekognition Video — Faces | DetectFaces + IndexFaces | $0.10/min + $0.001/face indexed | **$0.50** | **$3.00** | **$6.00** |
-| Amazon Rekognition Video — Segments | Shot/segment detection | $0.05/min | **$0.25** | **$1.50** | **$3.00** |
-| Amazon Rekognition Image (dynamic frame analysis) | Per selected keyframe | $0.001/image | ~$0.10 (~100 frames) | ~$0.60 (~600 frames) | ~$1.20 (~1200 frames) |
-| Amazon Bedrock — Claude Haiku 4.5 (scene description, IAB/GARM, sentiment) | Vision + Text per scene | $0.25/MTok in, $1.25/MTok out | ~$0.05 | ~$0.30–$0.60 | ~$0.60–$1.20 |
-| Amazon Bedrock — embeddings (Titan v2) | One vector per keyframe | $0.00002/1K tok | < $0.01 | < $0.05 | < $0.10 |
-| Amazon DynamoDB writes | On-demand WCUs | $1.25/M writes | < $0.01 | < $0.01 | < $0.01 |
-| AWS Lambda + Step Functions | Orchestration | per-invocation | ~$0.05 | ~$0.20 | ~$0.40 |
-| **Total per analyze run (one-shot)** | | | **~ $2.10** | **~ $12.50** | **~ $25.30** |
+### B. One-shot per action — Detect highlights + Render + Publish
 
-> The Bedrock vision line scales with the number of keyframes × ~1.5K image tokens each — the range above brackets denser vs. sparser scene cuts. Storage for the proxy / frames / JSON is **not** in this table; it lives in §4 because it's monthly.
+**On top of** the analyze cost, only when the user clicks the action.
 
-**Sensitivities**
-- **Disabling Celebrities or Faces** drops ~$0.10/min each — flip them off in `DefaultAIOptions` if not needed.
-- **Switching Bedrock model from Haiku 4.5 → Sonnet 4.6** raises the Bedrock line ~5×.
-- **Auto highlight detection** does **not** run during the analyze pipeline — it's a separate one-click action billed under §3a.
+#### Detect highlights
 
-### 3. (Category B) One-shot per action — Highlight detection + Render + Publish
+Auto-picked by speech density (≥0.6 wps → transcript-llm; < 0.6 → multimodal). User can override.
 
-**Additional** costs on top of §2, only billed when the user actually clicks **Detect highlights**, **Render**, or **Publish**.
-
-#### 3a. Highlight detection (one click → one or more Bedrock calls)
-
-The detect-highlights pipeline picks one of two strategies based on speech density (≥0.6 words/sec → transcript-llm, < 0.6 → multimodal). The user can override. Multimodal videos longer than 30 min are auto-chunked into 25-minute Pegasus calls (see [Highlight clipping + video editor](#highlight-clipping--video-editor-short-form-video)).
-
-**transcript-llm path** — sends the full transcript text only. Cost is dominated by transcript length.
-
-Default model is **Amazon Nova Pro** (us-west-2 list: $0.80 / MTok input, $3.20 / MTok output).
-
-| Source duration | ~Tokens in / out | Nova Pro (default) | Claude Haiku 4.5 | Claude Sonnet 4.6 |
-|---|---|---|---|---|
-| 5 min | ~1.5K in / 1K out | **~ $0.005** | ~ $0.002 | ~ $0.02 |
-| 30 min | ~9K in / 2K out | **~ $0.014** | ~ $0.005 | ~ $0.05 |
-| 60 min | ~18K in / 3K out | **~ $0.024** | ~ $0.008 | ~ $0.08 |
-| 2 h | ~36K in / 4K out | **~ $0.042** | ~ $0.014 | ~ $0.13 |
-
-**multimodal path** — sends the proxy MP4 directly to Bedrock as a native video input. The default model is **TwelveLabs Pegasus 1.2** (us-west-2 list: **$0.0015 / second of video** = $0.09 / min, plus a fixed text-output line item that's < $0.01 in practice). Pegasus is the cost-leader for multimodal video understanding because it bills by source seconds, not by image-token expansion of every frame.
-
-| Source duration | Pegasus 1.2 (default) | Notes |
+| Source | transcript-llm (Nova Pro default) | multimodal (Pegasus 1.2 default) |
 |---|---|---|
-| 5 min | **~ $0.45** | Single Pegasus call |
-| 30 min | **~ $2.70** | Single Pegasus call (right at the auto-chunk boundary) |
-| 60 min | **~ $5.40** | Auto-chunked into 3× 25-min Pegasus calls + 1 MediaConvert split job (~$0.45) ≈ **~ $5.85** |
-| 2 h | **~ $10.80** | Auto-chunked into ~5× 25-min Pegasus calls + 1 MediaConvert split job (~$0.90) ≈ **~ $11.70** |
+| 5 min | ~$0.005 | ~$0.45 |
+| 30 min | ~$0.014 | ~$2.70 |
+| 60 min | ~$0.024 | ~$5.85 (auto-chunked: 3× Pegasus + 1 split job) |
+| 2 h | ~$0.042 | ~$11.70 (5× Pegasus + 1 split job) |
 
-> Multimodal is **roughly 200×** more expensive than transcript-llm. Prefer it only when the transcript is sparse or absent (silent demos, b-roll, action footage, sports). The auto-picker already does this for you.
+> Multimodal is **~200× more expensive** than transcript-llm — only worth it for sparse-speech footage (b-roll, action, sports). The auto-picker handles this; manual override comes from the highlight Settings UI ([Features and Customizations](#features-and-customizations)).
 
-> **MediaConvert split job overhead.** Chunking uses stream-copy (`Codec: PASSTHROUGH`) so the split is encoder-free for video, but audio is re-encoded to AAC 96 kbps. At ~$0.0075/min (Basic tier, single output) a 60-min video splits for ~$0.45 — small relative to Pegasus.
+Pegasus 1.2 lists at **$0.0015/source-second** ($0.09/min). Chunking uses MediaConvert PASSTHROUGH so split-job overhead is small (~$0.45 for 60 min) relative to the Pegasus calls themselves.
 
-Lambda + DDB cost is < $0.01 per detection on either path. Switch models from the highlight Settings UI (the Bedrock model registry described in [Features and Customizations](#features-and-customizations)).
+#### Render (compose-edl → MediaConvert HLS 1080p/720p/480p + MP4)
 
-#### 3b. Render (compose-edl → MediaConvert clip-and-stitch)
-
-The user picks N segments totaling D minutes; MediaConvert renders HLS (1080p/720p/480p) + an MP4 proxy.
-
-| Output duration (sum of segments) | MediaConvert (Pro tier, 4 outputs ≈ 4× minutes) | **One-shot cost** |
-|---|---|---|
-| 1 min | ~$0.030 | **~ $0.03** |
-| 3 min | ~$0.090 | **~ $0.09** |
-| 5 min | ~$0.150 | **~ $0.15** |
-| 10 min | ~$0.300 | **~ $0.30** |
-
-> The Pro tier kicks in because of HD H.264 + 3 outputs ≥ 30 fps. Use the **Basic** tier (~$0.0075/min) by dropping the 1080p rung if cost matters more than quality. (Render output bytes are stored in S3 — see §4.)
-
-#### 3c. Publish-to-VOD (16:9 or 9:16 portrait)
-
-Same MediaConvert math as 3b, but billed against the **published** asset duration. For the 9:16 portrait preset, MediaConvert SMART_CROP additionally invokes **AWS Elemental Inference**, billed per output minute on top of the Pro tier line.
-
-**Elemental Inference list pricing (us-west-2)** — bundled discount when features stack in the same job:
-- 1 feature (e.g. SMART_CROP only) → **$0.15/min** ($9.00/hour)
-- 2 features (e.g. SMART_CROP + ImageInserter) → **$0.23/min** ($13.80/hour)
-
-| Aspect | Per-minute cost |
+| Output duration | One-shot |
 |---|---|
-| 16:9 landscape | ~$0.030/min (Pro tier, 4 outputs) |
-| 9:16 portrait (SMART_CROP, 1 inference feature) | ~$0.030/min Pro + **$0.15/min inference** ≈ **$0.18/min** |
+| 1 min | ~$0.03 |
+| 5 min | ~$0.15 |
+| 10 min | ~$0.30 |
 
-A 60-second short published in portrait ≈ **$0.18** + storage (§4).
+#### Publish-to-VOD (16:9 or 9:16 portrait)
 
-### 4. (Category C) Recurring storage — per month, per asset
+Same per-minute MediaConvert math, billed against published-asset duration. Portrait adds Elemental Inference (SMART_CROP) at **$0.15/min** ($0.23/min if SMART_CROP + ImageInserter stack). A 60-second portrait short ≈ **$0.18** + storage.
 
-Every asset persists in S3 until you delete it (the Publish tab's **Delete files** button removes Render + Publish output prefixes on demand). All four prefixes below are **S3 Standard at $0.023/GB-mo**.
+### C. Recurring storage — per asset, per month
 
-| Bucket / prefix | What's in it | Typical size for one 60-min 1080p source |
+S3 Standard at $0.023/GB-mo. The Publish tab's **Delete files** button cleans render + publish prefixes on demand.
+
+| Asset profile | Total GB | Storage / mo |
 |---|---|---|
-| Ingest bucket | Original master upload | ~ 3 GB |
-| Proxy bucket — `proxies/{uuid}/` | MediaConvert proxy + frames + JSON metadata | ~ 1.5 GB |
-| Proxy bucket — `renders/{uuid}/{renderId}/` | One highlight render output | ~ 0.25 GB per render |
-| Proxy bucket — `outputs/{uuid}/{outputId}/` | One publish output | ~ 0.05 GB per 60-sec portrait short |
+| 30-min source only | ~2.3 GB | ~$0.05 |
+| 60-min source only | ~4.5 GB | ~$0.10 |
+| 60-min source + 1 render + 1 publish | ~4.8 GB | ~$0.11 |
 
-| Asset profile | Total GB | **Storage cost / month** |
+Lifecycle to Glacier Instant Retrieval ($0.004/GB-mo) for ~80% savings on cold assets — the ingest master is usually the heaviest line.
+
+### End-to-end example
+
+Single 30-min Cantonese source on the **Dev/Test stack**: analyze + 1 transcript-llm highlight detection + 1 render of a 90-second short + 1 publish in 9:16 portrait.
+
+| When | Line | Cost |
 |---|---|---|
-| 30-min source, no renders/publishes | ~ 2.3 GB | **~ $0.05/mo** |
-| 60-min source, no renders/publishes | ~ 4.5 GB | **~ $0.10/mo** |
-| 60-min source + 1 render + 1 publish | ~ 4.8 GB | **~ $0.11/mo** |
+| Month 1 | A — Always-on (Dev/Test) | $115.00 |
+| Month 1 | B — Analyze | $12.50 |
+| Month 1 | B — Detect highlights (transcript-llm) | $0.01 |
+| Month 1 | B — Render 90 s | $0.05 |
+| Month 1 | B — Publish 90 s portrait | $0.27 |
+| Month 1 | C — Storage (1 mo) | $0.10 |
+| | **Month 1 total** | **~$128** |
+| Month 2+ | A + C only (no new activity) | **~$115/mo** |
+| Each extra 30-min video | B-only marginal | **~$12.83 + ~$0.10/mo storage** |
 
-> Move analyzed-but-cold assets to S3 Glacier Instant Retrieval (~$0.004/GB-mo) for ~80% savings. The ingest master is usually the largest line — consider lifecycle to Glacier after the proxy is built.
+Switching that detection from transcript-llm to **multimodal Pegasus 1.2** raises the per-video marginal to ~$15.50.
 
-### 5. End-to-end example (one customer demo)
-
-Single 30-minute Cantonese source, on the **Dev/Test stack**, doing: full analyze + 1 highlight detection (transcript-llm) + 1 render of a 90-second short + 1 publish in 9:16 portrait.
-
-**Month 1 — first time the customer uses the stack:**
-
-| Category | Step | Cost |
-|---|---|---|
-| A | Always-on infra (1 month) | $115.00 |
-| B | Analyze run (30 min source, default AI options) | $12.50 |
-| B | Highlight detection (Nova Pro, transcript-llm) | $0.01 |
-| B | Render 90 s short | $0.05 |
-| B | Publish 90 s portrait (SMART_CROP, 1 inference feature) | $0.27 |
-| C | Storage for master + proxy + render + publish (1 month) | $0.10 |
-| | **Total** | **~ $128** |
-
-**Month 2 onwards — same customer keeps that one asset around but does nothing new:**
-
-| Category | Step | Cost |
-|---|---|---|
-| A | Always-on infra | $115.00 |
-| C | Storage for the asset | $0.10 |
-| | **Total** | **~ $115/mo** |
-
-**Each *additional* 30-min video processed the same way (one-shot, Category B only):**
-
-| Step | Cost |
-|---|---|
-| Analyze run | $12.50 |
-| Highlight detection (Nova Pro, transcript-llm) | $0.01 |
-| Render 90 s short | $0.05 |
-| Publish 90 s portrait | $0.27 |
-| **Marginal one-shot per video** | **~ $12.83** |
-
-Each new asset then adds **~$0.10/mo** to the storage tail until it's deleted. Switching that highlight detection from transcript-llm to **multimodal Pegasus 1.2** would push the per-video one-shot to ~$15.50 instead of $12.83.
-
-**Cost-saving levers**
-1. Run on **Dev/Test OpenSearch** for POCs (–$540/mo vs Production sizing — biggest single lever).
-2. Disable Rekognition Video Celebrities + Faces if you don't need them (–$0.20/min ≈ –$6/30-min video).
-3. Use **Claude Haiku 4.5** for scene description on non-hero content (–~80% on the Bedrock vision line).
-4. Let highlight detection auto-pick its strategy — only force multimodal when speech is sparse (it's 20–60× the cost).
-5. Move analyzed-but-cold assets to **S3 Glacier Instant Retrieval** (–80% on storage tail).
-6. Use the publish tab's **Delete files** button after a render is exported elsewhere — render outputs are easily 250 MB+ each.
+**Top cost levers** (biggest first):
+1. **Dev/Test OpenSearch instead of Production** — $540/mo gap, biggest lever by far.
+2. **Disable Rekognition Celebs + Faces** if you don't need them — saves ~$0.20/min (~$6 per 30-min video).
+3. **Use Haiku 4.5 over Sonnet 4.6** for scene description — Sonnet is ~5× the Bedrock line.
+4. **Let highlight detection auto-pick** — only force multimodal for sparse-speech footage (200× cost gap).
+5. **Lifecycle cold assets to Glacier IR** — 80% off the storage tail; **Delete files** button for render/publish outputs that have been exported elsewhere.
 
 __
 

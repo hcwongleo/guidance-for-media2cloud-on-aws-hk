@@ -472,24 +472,41 @@ aws cloudformation describe-stack-events --stack-name media2cloudv4 --region us-
 
 The most common cause is a non-empty bucket — empty it (Step 2) and rerun `delete-stack` with `--retain-resources` for any resource that already failed.
 
-### Step 4: Clean up retained resources (optional)
+### Step 4: Clean up retained resources
 
-The upstream template marks several resources `DeletionPolicy: Retain` so they survive the stack delete. For a fresh rebuild you usually want them gone:
+The four S3 buckets (`...-ingest`, `...-logs`, `...-proxy`, `...-web`) are marked `DeletionPolicy: Retain` and **survive the stack delete even though they're empty**. The new stack will create fresh buckets with a different `stackId` segment, so the old four are orphans — delete them:
 
 ```sh
-# Cognito user pool (otherwise the new stack creates a second pool)
-aws cognito-idp list-user-pools --max-results 60 --region us-west-2 \
-  --query 'UserPools[?starts_with(Name, `media2cloud`)].[Id,Name]' --output table
-# aws cognito-idp delete-user-pool --user-pool-id <id> --region us-west-2
+# List the orphans (your stack-id segment will differ)
+aws s3 ls --region us-west-2 | grep '^.*so0050-[a-f0-9]\{12\}-' | awk '{print $3}'
 
-# Orphan log groups
-aws logs describe-log-groups --region us-west-2 \
-  --log-group-name-prefix /aws/lambda/so0050- \
-  --query 'logGroups[].logGroupName' --output text
-# for lg in <names>; do aws logs delete-log-group --log-group-name "$lg" --region us-west-2; done
+# Delete each one. The logs bucket may still have version markers
+# accumulated during the stack delete itself — clear those first.
+for b in <bucket-1> <bucket-2> ...; do
+  aws s3api list-object-versions --bucket "$b" --region us-west-2 \
+    --query '{Objects:[Versions[].{Key:Key,VersionId:VersionId}, DeleteMarkers[].{Key:Key,VersionId:VersionId}][]}' \
+    --output json > /tmp/v.json
+  if [ "$(jq '.Objects | length' /tmp/v.json)" -gt 0 ]; then
+    jq -c '.Objects | _nwise(1000) | {Objects: .}' /tmp/v.json | while IFS= read -r chunk; do
+      echo "$chunk" > /tmp/v_chunk.json
+      aws s3api delete-objects --bucket "$b" --region us-west-2 --delete file:///tmp/v_chunk.json > /dev/null
+    done
+  fi
+  aws s3api delete-bucket --bucket "$b" --region us-west-2
+done
 ```
 
-OpenSearch and DynamoDB are deleted with the stack in V4 (no `Retain`); skip them unless `describe-stacks` says otherwise.
+Other resources to check (V4 typically deletes these with the stack — only act if they linger):
+
+```sh
+aws cognito-idp list-user-pools --max-results 60 --region us-west-2 \
+  --query 'UserPools[?starts_with(Name, `media2cloud`)].[Id,Name]' --output table
+aws logs describe-log-groups --region us-west-2 --log-group-name-prefix /aws/lambda/so0050- \
+  --query 'logGroups[].logGroupName' --output text
+aws opensearch list-domain-names --region us-west-2 --query 'DomainNames[].DomainName' --output text
+```
+
+Keep the **artefact bucket** itself (`media2cloud-artefact-<account>`) — Step 2 only emptied its `media2cloud/` prefixes; the bucket is reused by the rebuild.
 
 ### Step 5: Wipe the local checkout and re-clone
 

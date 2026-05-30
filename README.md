@@ -22,10 +22,6 @@ This build adds five extensions on top of the upstream V4 baseline plus Cantones
 
 > **Per-feature architecture diagrams.** Each major feature below has a PNG render and a draw.io source under [`deployment/tutorials/diagrams/`](./deployment/tutorials/diagrams/). Open the `.drawio.xml` files with [app.diagrams.net](https://app.diagrams.net) or the VS Code [drawio extension](https://marketplace.visualstudio.com/items?itemName=hediet.vscode-drawio).
 
-### Tab-stacking bug fix (analysis tabs)
-Switching between analysis tabs (Transcribe, Scenes, Ad Break, etc.) while a previous tab was still loading caused tabs to "stack" on top of each other. Replaced with a one-line sibling-active gate that drops late-arriving content if the user has already moved on.
-- Spec: `docs/superpowers/specs/2026-05-18-tab-stacking-bug-fix-design.md`
-
 ### Dynamic Bedrock model registry + editable prompts
 Hard-coded Claude/Nova model IDs and system prompts are replaced with a runtime registry (`source/layers/core-lib/lib/genai/bedrockModel.js` + `source/api/lib/operations/modelsOp.js`).
 
@@ -47,8 +43,7 @@ A side-by-side "AI editor" on the Transcribe tab that lets a producer rewrite, t
 **AWS services in play**
 - [Amazon Transcribe](https://docs.aws.amazon.com/transcribe/latest/dg/) — async speech-to-text with speaker identification; output is word-level JSON with timestamps.
 - [Amazon Bedrock Runtime](https://docs.aws.amazon.com/bedrock/latest/userguide/inference.html) — Claude Haiku/Sonnet `InvokeModel` for cleanup, translation, and re-segmentation.
-- [Amazon S3](https://docs.aws.amazon.com/AmazonS3/latest/userguide/) — stores the raw `transcribe.json` and the cleaned `transcribe.vtt` next to the proxy.
-- [Amazon OpenSearch Service](https://docs.aws.amazon.com/opensearch-service/latest/developerguide/) — the cleaned VTT is broken into phrases and indexed for search.
+- [Amazon S3](https://docs.aws.amazon.com/AmazonS3/latest/userguide/) — stores the raw `transcribe.json` and the cleaned `transcribe.vtt` next to the proxy; the editor PUTs the edited VTT back here on save.
 
 **What it does**
 - New tab UI: `source/webapp/src/lib/js/app/.../analysis/transcribe/transcribeTab.js`

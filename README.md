@@ -2,7 +2,6 @@
 
 ## Table of Contents
 
-- [Compatibility Notes](#compatibility-notes)
 - [Features and Customizations](#features-and-customizations)
 - [Upstream V4 features — architecture deep dive](#upstream-v4-features--architecture-deep-dive)
 - [Introduction](#introduction)
@@ -14,19 +13,6 @@
 - [V4 Demo Video Gallery](#v4-demo-video-gallery)
 - [LICENSE](#license)
 - [Collection of Operational Metrics](#collection-of-operational-metrics)
-
-__
-
-## Compatibility Notes
-
-If you are running Media2Cloud Version 3, **do not** update your existing stack. Version 4 is **not** compatible with Version 3 in a few areas:
-
-- The format of the generated metadata JSON files is different.
-- The indices of the Amazon OpenSearch cluster have been optimized and condensed into a single index, `content`, instead of multiple indices such as `celeb` and `label`.
-
-We are working on a migration path to ensure you can move your Version 3 data files into the Version 4 environment.
-
-If you are looking for Version 3, please switch to [v3/maintenance](https://github.com/aws-solutions-library-samples/guidance-for-media2cloud-on-aws/tree/v3/maintenance) branch.
 
 __
 

@@ -4,7 +4,7 @@
 
 - [Features and Customizations](#features-and-customizations)
 - [Upstream V4 features — architecture deep dive](#upstream-v4-features--architecture-deep-dive)
-- [Installation](#installation)
+- [Stack parameters](#stack-parameters)
 - [Building Media2Cloud V4 on your environment](#building-media2cloud-v4-on-your-environment)
 - [Updating an Existing Stack](#updating-an-existing-stack)
 - [Cost Estimation](#cost-estimation)
@@ -203,58 +203,13 @@ V3 sampled frames at a fixed FPS. V4 replaces that with **perceptual-hash sampli
 
 __
 
-## Installation
-
-### Prerequisite
-
-Select `YES` in `Allow access to Amazon Bedrock service in other regions` input field enables [Amazon Bedrock Global cross-Region inference](https://docs.aws.amazon.com/bedrock/latest/userguide/global-cross-region-inference.html) when Media2Cloud uses Anthropic Claude family models. Select `NO` implies disabling the use of Amazon Bedrock models.
-
-
-### Create Media2Cloud V4 stack with AWS CloudFormation
-
-#### _Using AWS Console_
-Log on to AWS CloudFormation console to create a new stack and follow the steps in the following video.
-
-![AWS CloudFormation](./deployment/tutorials/images/aws-cloudformation-create-stack.gif)
-
-#### _Using AWS CLI_
-
-> This build is validated only in **`us-west-2`**. Pass `--region us-west-2` so the stack lands in the supported region; without it the call uses your shell's default region (often `us-east-1`) where the Bedrock model IDs and Elemental Inference features assumed by this build may not be GA.
-
-```sh
-
-aws cloudformation create-stack \
-  --stack-name media2cloudv4 \
-  --region us-west-2 \
-  --template-url https://{S3URL}/media2cloud.template \
-  --parameters \
-    "ParameterKey=VersionCompatibilityStatement,ParameterValue=\"Yes, I understand and proceed\"" \
-    "ParameterKey=Email,ParameterValue=\"YOUR@EMAIL.COM\"" \
-    "ParameterKey=DefaultAIOptions,ParameterValue=\"Recommended V4 features (v4.default)\"" \
-    "ParameterKey=PriceClass,ParameterValue=\"Use Only U.S., Canada and Europe (PriceClass_100)\"" \
-    "ParameterKey=StartOnObjectCreation,ParameterValue=\"NO\"" \
-    "ParameterKey=UserDefinedIngestBucket,ParameterValue=\"\"" \
-    "ParameterKey=OpenSearchCluster,ParameterValue=\"Development and Testing (t3.medium=0,m5.large=1,gp2=10,az=1)\"" \
-    "ParameterKey=EnableKnowledgeGraph,ParameterValue=\"NO\"" \
-    "ParameterKey=CidrBlock,ParameterValue=\"172.31.0.0/16\"" \
-    "ParameterKey=BedrockSecondaryRegionAccess,ParameterValue=\"YES\"" \
-    "ParameterKey=BedrockModel,ParameterValue=\"Anthropic Claude Haiku 4.5\"" \
-  --tags \
-    "Key=SolutionName,Value=Media2Cloud" \
-    "Key=SolutionID,Value=SO0050" \
-  --capabilities \
-    "CAPABILITY_IAM" \
-    "CAPABILITY_NAMED_IAM" \
-    "CAPABILITY_AUTO_EXPAND"
-
-```
+## Stack parameters
 
 > **No one-click template.** This build is **only** distributed by building from source — see [Building Media2Cloud V4 on your environment](#building-media2cloud-v4-on-your-environment). Build artefacts are not published to the upstream `awsi-megs-guidances-*` buckets, so the upstream "Launch stack" buttons would deploy the upstream V4 (no Pegasus highlight, no AI subtitle editor, no SMART_CROP publish, no zh-HK).
 
-The stack creation takes about 30 minutes to complete. Upon completion, you should receive an email invitation to the Media2Cloud web portal.
+These are the parameters you set when launching (or updating) the CloudFormation stack with the template produced by `deploy-s3-dist.sh`. Stack creation takes about 30 minutes; on completion you receive an email invitation to the Media2Cloud web portal.
 
-
-#### _Input Parameters_
+`BedrockSecondaryRegionAccess=YES` enables [Amazon Bedrock global cross-Region inference](https://docs.aws.amazon.com/bedrock/latest/userguide/global-cross-region-inference.html) for Anthropic Claude family models. `NO` disables Bedrock-backed Generative AI models.
 
 | ParameterKey | ParameterValue | Description |
 |:-- |:-- |:--|
@@ -264,7 +219,7 @@ The stack creation takes about 30 minutes to complete. Upon completion, you shou
 |PriceClass|Use Only U.S., Canada and Europe (PriceClass_100)|Choose the most appropriate Amazon CloudFront price class for your region |
 |StartOnObjectCreation|YES|Enable auto-ingestion when a new object is uploaded to the Amazon S3 bucket (IngestBucket)|
 |UserDefinedIngestBucket|LEAVE IT BLANK|Optionally you can connect your existing ingest bucket to the Media2Cloud|
-|OpenSearchCluster|Development and Testing (t3.medium=0,m5.large=1,gp2=10,az=1)|For testing and evaluation purpose, recommed to use a single instance. For stagging and production environment, consider to use the Production configuration.|
+|OpenSearchCluster|Development and Testing (t3.medium=0,m5.large=1,gp2=10,az=1)|For testing and evaluation, a single instance is recommended. For staging and production, consider the Production configuration.|
 |EnableKnowledgeGraph|NO|Select **YES** if you would like to enable Amazon Neptune graph database which allows you to visualize how your contents are connected in some ways.|
 |CidrBlock|172.31.0.0/16|Applicable only if you enable Amazon Neptune graph|
 |BedrockSecondaryRegionAccess|YES|`YES` allows Bedrock to use global cross-region inference. `NO` disables Generative AI models|
@@ -339,21 +294,39 @@ bash deploy-s3-dist.sh \
 
 The script prints the `media2cloud.template` HTTPS URL at the end (look for the line beginning `HTTPS URL:`); copy that URL for the next step.
 
+#### _Step 5: Launch the CloudFormation stack_
+
+Use the URL from Step 4 to create the stack. Parameter values are documented in [Stack parameters](#stack-parameters); minimal example:
+
+```sh
+aws cloudformation create-stack \
+  --stack-name media2cloudv4 \
+  --region us-west-2 \
+  --template-url https://yourname-artefact-bucket.s3.us-west-2.amazonaws.com/media2cloud/v4.1234/media2cloud.template \
+  --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND \
+  --parameters \
+    "ParameterKey=VersionCompatibilityStatement,ParameterValue=Yes, I understand and proceed" \
+    "ParameterKey=Email,ParameterValue=YOUR@EMAIL.COM" \
+    "ParameterKey=BedrockSecondaryRegionAccess,ParameterValue=YES" \
+    "ParameterKey=BedrockModel,ParameterValue=Anthropic Claude Haiku 4.5"
+```
+
+Stack creation takes ~30 minutes. On completion you receive a Cognito invitation email at the address you supplied.
+
 __
 
 ## Updating an Existing Stack
 
 To update your deployed Media2Cloud stack with new features or bug fixes:
 
-> **Region.** This build runs in **`us-west-2`** only. Pass `--region us-west-2` to every `aws` command in this section. The artefact S3 bucket must be the **same bucket the stack was originally deployed from** — pulling templates from a different bucket will break the nested-stack URL chain. To confirm the current deploy bucket and version, inspect the stack's `TemplateURL`:
+> **Region.** This build runs in **`us-west-2`** only. Pass `--region us-west-2` to every `aws` command in this section. The artefact S3 bucket must be the **same bucket the stack was originally deployed from** — pulling templates from a different bucket will break the nested-stack URL chain. To find which version a Lambda in the stack is currently running (which equals the deploy bucket prefix), inspect any so0050-prefixed function's code location:
 > ```sh
-> aws cloudformation describe-stacks \
->   --stack-name media2cloudv4 \
->   --region us-west-2 \
->   --query 'Stacks[0].Parameters[?ParameterKey==`Version`||ParameterKey==`SolutionId`]'
-> # or get the template URL the stack last deployed from:
-> aws cloudformation get-template-summary --stack-name media2cloudv4 --region us-west-2 \
->   --query 'Metadata' --output text
+> FN=$(aws lambda list-functions --region us-west-2 \
+>        --query 'Functions[?starts_with(FunctionName, `so0050-`)] | [0].FunctionName' \
+>        --output text)
+> aws lambda get-function --region us-west-2 --function-name "$FN" \
+>   --query 'Code.Location' --output text
+> # → https://<bucket>.s3.<region>.amazonaws.com/media2cloud/<version>/<package>.zip?...
 > ```
 
 ### Step 1: Build New Version
@@ -410,19 +383,29 @@ aws cloudformation update-stack \
 
 > Use the **regional** virtual-host URL `https://<bucket>.s3.us-west-2.amazonaws.com/...`, not the legacy regionless `s3.amazonaws.com` form — newer buckets in `us-west-2` reject the regionless host.
 
-**Troubleshooting — `UPDATE_COMPLETE` but Lambda still runs old code.** This happens when CFN's nested-stack child template hash didn't change for that Lambda's `S3Key`. Force the Lambda(s) to redeploy from the freshly uploaded zip:
+**Troubleshooting — `UPDATE_COMPLETE` but features still broken (same-version rebuild only).** If you skip the version bump and reuse e.g. `v4.0.11`, CFN compares S3 keys (not zip bytes) and treats every Lambda, layer, and webapp custom-resource as already up-to-date — so `UPDATE_COMPLETE` finishes but the live stack runs the previous code. Symptoms: new API operations return `M2CException: operation '...' not supported`; runtime throws `TypeError: Cannot read properties of undefined` because the **layer** still has the old `core-lib` (missing newly added exports); the webapp keeps loading the old `app.min.js`.
+
+**The clean fix is to bump the version (e.g. `v4.0.11` → `v4.0.12`) and rerun Steps 1-3 — unique S3 keys make CFN diff cleanly and refresh everything in one shot.**
+
+If you must iterate on the same version, you have to manually refresh all three layers:
 
 ```sh
-# List affected functions (filter by stack ID prefix or workflow name)
-aws lambda list-functions --region us-west-2 \
-  --query 'Functions[?starts_with(FunctionName, `so0050-`)].FunctionName' --output text
-
-# Push the new code for each function
+# 1. Lambda code — for every so0050-prefixed function
 aws lambda update-function-code \
   --function-name <function-name> \
   --s3-bucket YOUR-BUCKET-NAME \
   --s3-key media2cloud/v4.0.11/<package-name>.zip \
   --region us-west-2
+
+# 2. Layers — publish a new version for each layer (core-lib, aws-sdk-lib,
+#    tokenizer, fixity-lib, image-process-lib, jimp, mediainfo, pdf-lib,
+#    service-backlog-lib), then re-attach every Lambda to the new layer ARN
+#    via `update-function-configuration --layers ...:N+1`. Without re-attach,
+#    the new layer exists but no Lambda uses it.
+
+# 3. Webapp — sync the new bundle into the WebBucket and invalidate CloudFront
+#    (preserve solution-manifest.js / appConfig.js — the CopyWebContent custom
+#    resource writes those at stack-update time).
 ```
 
 **Important:** Stack updates modify Lambda code and infrastructure, but **preserve all your data** (S3 files, DynamoDB tables, OpenSearch indices, user accounts).

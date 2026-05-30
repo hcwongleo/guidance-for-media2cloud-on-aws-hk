@@ -209,6 +209,11 @@ __
 
 These are the parameters you set when launching (or updating) the CloudFormation stack with the template produced by `deploy-s3-dist.sh`. Stack creation takes about 30 minutes; on completion you receive an email invitation to the Media2Cloud web portal.
 
+**Where parameters are set.** The parameter list itself is defined in the parent template `deployment/media2cloud.yaml` (the `Parameters:` block at the top of the file — that's where defaults and allowed values live). You supply values **at stack-create / stack-update time** in one of two places:
+
+- **CloudFormation Console:** Stacks → Create / Update → on the *Specify stack details* page, every parameter from the table below shows up as a labelled input.
+- **AWS CLI:** pass `--parameters ParameterKey=...,ParameterValue=...` to `aws cloudformation create-stack` / `update-stack`. See Step 5 in [Building Media2Cloud V4 on your environment](#building-media2cloud-v4-on-your-environment) for a working example, or use `UsePreviousValue=true` on `update-stack` to keep what's already set.
+
 `BedrockSecondaryRegionAccess=YES` enables [Amazon Bedrock global cross-Region inference](https://docs.aws.amazon.com/bedrock/latest/userguide/global-cross-region-inference.html) for Anthropic Claude family models. `NO` disables Bedrock-backed Generative AI models.
 
 | ParameterKey | ParameterValue | Description |
@@ -217,7 +222,7 @@ These are the parameters you set when launching (or updating) the CloudFormation
 | Email | YOUR@EMAIL.COM | (Mandatory) Fill in your email address. The email address is used to sign up to Amazon Cognito UserPool and to receive an invitation email to the Media2Cloud web portal |
 |DefaultAIOptions | Recommended V4 features (v4.default) | Choose the default AI/ML settings. The settings can also be modified via the Media2Cloud web portal under the Settings page |
 |PriceClass|Use Only U.S., Canada and Europe (PriceClass_100)|Choose the most appropriate Amazon CloudFront price class for your region |
-|StartOnObjectCreation|YES|Enable auto-ingestion when a new object is uploaded to the Amazon S3 bucket (IngestBucket)|
+|StartOnObjectCreation|NO|Enable auto-ingestion when a new object is uploaded to the Amazon S3 bucket (IngestBucket). Set to `YES` to start the analysis workflow on every upload; `NO` requires a manual start from the web portal.|
 |UserDefinedIngestBucket|LEAVE IT BLANK|Optionally you can connect your existing ingest bucket to the Media2Cloud|
 |OpenSearchCluster|Development and Testing (t3.medium=0,m5.large=1,gp2=10,az=1)|For testing and evaluation, a single instance is recommended. For staging and production, consider the Production configuration.|
 |EnableKnowledgeGraph|NO|Select **YES** if you would like to enable Amazon Neptune graph database which allows you to visualize how your contents are connected in some ways.|

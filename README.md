@@ -127,7 +127,6 @@ Auto-detects highlight moments in a long-form video and lets the user assemble a
 ### Build-system tweaks
 
 - **Pre-built Lambda layer packages** — `deployment/build-s3-dist.sh` now downloads the official AWS-built ExifTool (`image-process-lib-v4.0.9.zip`) and PDF (`pdf-lib-v4.0.9.zip`) layers from `s3://awsi-megs-guidances-us-east-1/media2cloud/v4.0.9/` instead of running the local Docker build for each. This drops ~10–15 min off every build, fixes the `canvas.node` native-module errors that occasionally hit document processing, and falls back to Docker only if the download fails. Modified functions: `build_image_process_layer`, `build_pdf_layer`.
-- **Webapp deploy via Rollup-at-deploy + SRI** — surgical updates skip the full CloudFormation cycle and deploy a webapp change in ~3 minutes (`deployment/build-s3-dist.sh` enhancements). Useful for iterating on the highlight editor and publish tab without re-running CFN.
 
 __
 

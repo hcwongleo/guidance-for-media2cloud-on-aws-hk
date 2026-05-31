@@ -144,6 +144,28 @@ async function waitForMediaConvert(mc, jobId) {
   throw new M2CException(`split job did not complete within ${(MC_POLL_INTERVAL_MS * MC_POLL_MAX_TRIES) / 1000}s`);
 }
 
+// Stream-copy InputClipping snaps the front of the cut to the nearest IDR
+// keyframe at-or-before the requested StartTimecode. The chunk MP4 therefore
+// begins at some actualStart ≤ requestedStart; the front-snap can be up to
+// one source GOP (typically 2-5s) off. The back is bounded by the requested
+// EndTimecode. We read the produced output's DurationInMs from MC and
+// recover actualStart = requestedEnd - actualDurationSec, then use that as
+// the offset when re-basing Pegasus's chunk-relative timestamps onto the
+// original timeline. Without this, every chunk past the first carries the
+// IDR-snap drift directly into the highlight start times.
+function actualChunkStartSec(job, requestedEndSec) {
+  const groups = (job || {}).OutputGroupDetails || [];
+  for (const g of groups) {
+    const outs = (g || {}).OutputDetails || [];
+    for (const o of outs) {
+      if (Number.isFinite(o.DurationInMs) && o.DurationInMs > 0) {
+        return Math.max(0, requestedEndSec - (o.DurationInMs / 1000));
+      }
+    }
+  }
+  return undefined;
+}
+
 function buildVideoPrompt(customPrompt, totalDurationSec, transcriptText) {
   const hasTranscript = transcriptText && transcriptText.length > 0;
   const lines = [
@@ -339,10 +361,16 @@ exports.handler = async (event) => {
     throw new M2CException('MediaConvert CreateJob returned no job id');
   }
   console.log(`=== MC split job ${jobId} submitted; polling`);
-  await waitForMediaConvert(mc, jobId);
+  const completedJob = await waitForMediaConvert(mc, jobId);
   // MC writes the file as `<dstPrefix>.mp4` because the output has no NameModifier.
   const chunkKey = `${dstPrefix}.mp4`;
   console.log(`=== chunk ${index} ready: s3://${proxyBucket}/${chunkKey}`);
+
+  const measuredStartSec = actualChunkStartSec(completedJob, endSec);
+  const offsetSec = (measuredStartSec === undefined) ? startSec : measuredStartSec;
+  if (measuredStartSec !== undefined && Math.abs(measuredStartSec - startSec) > 0.05) {
+    console.log(`=== chunk ${index} IDR-snap correction: requested=${startSec}s actual=${measuredStartSec.toFixed(3)}s drift=${(measuredStartSec - startSec).toFixed(3)}s`);
+  }
 
   // 2. Pegasus on the chunk. Use chunk-relative duration in the prompt and
   // add the chunk start offset to every returned segment.
@@ -357,7 +385,7 @@ exports.handler = async (event) => {
   });
   console.log(`=== chunk ${index} Pegasus raw (${raw.length}ch): ${raw}`);
 
-  let segments = parseSegments(raw, chunkDurationSec, startSec, Number(minConfidence) || 0);
+  let segments = parseSegments(raw, chunkDurationSec, offsetSec, Number(minConfidence) || 0);
   console.log(`=== chunk ${index} parsed ${segments.length} segments (minConfidence=${minConfidence})`);
 
   // Per-chunk runaway guard: if Pegasus ignored the conservative ask and

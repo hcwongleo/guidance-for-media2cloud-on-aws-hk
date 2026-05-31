@@ -371,15 +371,26 @@ The deploy script auto-detects the bucket's region from `s3api get-bucket-locati
 6. Submit and wait for `UPDATE_COMPLETE` (10–20 minutes).
 
 **Option B - AWS CLI:**
+
+`--parameters` is **required** when the template has any mandatory parameter (Email, VersionCompatibilityStatement) — omitting it errors with `Parameters: [...] must have values`. The simplest way to keep every existing value is to feed CFN a JSON file with `UsePreviousValue=true` for each key:
+
 ```sh
-# Omitting --parameters tells CFN to keep every existing parameter value.
-# (Any parameter omitted from --parameters defaults to UsePreviousValue=true.)
+# Build the param list from the live stack — no manual editing needed.
+aws cloudformation describe-stacks \
+  --stack-name media2cloudv4 \
+  --region us-west-2 \
+  --query 'Stacks[0].Parameters[].{ParameterKey:ParameterKey,UsePreviousValue:`true`}' \
+  --output json > /tmp/m2c-update-params.json
+
 aws cloudformation update-stack \
   --stack-name media2cloudv4 \
   --region us-west-2 \
   --template-url https://YOUR-BUCKET.s3.us-west-2.amazonaws.com/media2cloud/v4.0.11/media2cloud.template \
-  --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND
+  --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND \
+  --parameters file:///tmp/m2c-update-params.json
 ```
+
+> The shorthand form (`--parameters ParameterKey=...,UsePreviousValue=true ...`) is fragile under shell quoting — use the JSON file. There is no `--use-previous-parameters` flag; that's a common typo.
 
 > Use the **regional** virtual-host URL `https://<bucket>.s3.us-west-2.amazonaws.com/...`, not the legacy regionless `s3.amazonaws.com` form — newer buckets in `us-west-2` reject the regionless host.
 

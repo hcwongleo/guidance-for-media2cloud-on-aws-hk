@@ -167,7 +167,13 @@ export default class HighlightEditorModal {
       </div>
     `);
 
-    modal.find('.modal-title').text(`${MSG_TITLE} — ${ep.name}`);
+    const promptStr = (typeof this.highlightSet.prompt === 'string' ? this.highlightSet.prompt : '').trim();
+    const promptTail = promptStr.length > 0
+      ? ` · "${promptStr.length > 60 ? `${promptStr.slice(0, 60)}…` : promptStr}"`
+      : '';
+    modal.find('.modal-title')
+      .text(`${MSG_TITLE} — ${ep.name}${promptTail}`)
+      .attr('title', promptStr || '(default prompt)');
 
     const player = modal.find('video[data-role="player"]')[0];
     if (player && this.state.proxyUrl) {

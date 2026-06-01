@@ -431,18 +431,23 @@ export default class OutputTab extends mxAlert(BaseAnalysisTab) {
         const ts = s.createdAt ? new Date(s.createdAt).toLocaleString() : s.highlightSetId.slice(0, 8);
         const cnt = (s.segments || []).length || s.segmentCount || 0;
         const st = s.status || 'COMPLETED';
+        const promptStr = (typeof s.prompt === 'string' ? s.prompt : '').trim();
+        const promptTail = promptStr.length > 0
+          ? ` · "${promptStr.length > 60 ? `${promptStr.slice(0, 60)}…` : promptStr}"`
+          : '';
         let label;
         if (st === 'PROCESSING') {
-          label = `⚙ ${ts} · ${s.strategy || '-'} · running`;
+          label = `⚙ ${ts} · ${s.strategy || '-'} · running${promptTail}`;
         } else if (st === 'FAILED') {
           const err = (s.error || 'failed').slice(0, 60);
-          label = `✗ ${ts} · ${s.strategy || '-'} · ${err}`;
+          label = `✗ ${ts} · ${s.strategy || '-'} · ${err}${promptTail}`;
         } else {
-          label = `${ts} · ${s.strategy || '-'} · ${cnt} seg`;
+          label = `${ts} · ${s.strategy || '-'} · ${cnt} seg${promptTail}`;
         }
         select.append($('<option/>')
           .attr('value', s.highlightSetId)
           .attr('data-status', st)
+          .attr('title', promptStr || '(default prompt)')
           .text(label));
       });
       // Prefer the most recent COMPLETED set so the editor/render flow

@@ -29,13 +29,14 @@ const REQUIRED_ENVS = [
   'ENV_HIGHLIGHT_SETS_TABLE',
 ];
 
-// Pegasus tops out around 60 minutes per call, but timestamp precision
-// drifts on long inputs — accuracy is noticeably worse in the latter half
-// of a 50-min chunk. 25-minute chunks trade extra Bedrock calls for
-// tighter timestamps, with margin for MC stream-copy GOP overshoot.
-const CHUNK_TARGET_SEC = 25 * 60;
-// Anything ≤30 min runs as a single Pegasus call; longer videos get split.
-const SINGLE_CALL_MAX_SEC = 30 * 60;
+// Pegasus's frame-sampling budget is fixed per call, so longer inputs
+// translate to coarser internal time resolution. Empirically a 25-min
+// chunk produced 60s+ start-time drift on basketball plays. 5-min chunks
+// give the model ~5x finer temporal granularity per sampled frame.
+const CHUNK_TARGET_SEC = 5 * 60;
+// Force chunking for anything longer than the target chunk size so
+// medium-length videos don't fall back to a single coarse call.
+const SINGLE_CALL_MAX_SEC = CHUNK_TARGET_SEC;
 
 const IOT_TYPE = 'detect-highlight';
 

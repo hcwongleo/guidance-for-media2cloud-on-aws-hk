@@ -4,14 +4,19 @@
 import Localization from '../../../../../../shared/localization.js';
 import BaseMedia from '../../../../../../shared/media/baseMedia.js';
 
-const _Sortable = (typeof window !== 'undefined') ? window.Sortable : undefined;
+const _interact = (typeof window !== 'undefined') ? window.interact : undefined;
+
+// Snap tolerance in pixels — within this many px of a snap target we lock to it.
+const SNAP_PX = 5;
+// Hard floor on segment duration in seconds.
+const MIN_SEG_SEC = 1.0;
+// Width of the left/right grab strips on a chip, in px.
+const TRIM_HANDLE_PX = 6;
 
 const {
   Messages: {
-    HighlightEditorEditTrack: MSG_EDIT,
     HighlightEditorInspector: MSG_INSPECTOR,
     HighlightEditorEmptyEdit: MSG_EMPTY,
-    HighlightEditorAddCustom: MSG_ADD_CUSTOM,
     HighlightEditorIn: MSG_IN,
     HighlightEditorOut: MSG_OUT,
     HighlightEditorDrop: MSG_DROP,
@@ -76,21 +81,19 @@ export default class EditorTracks {
     this.$player = player;
     this.$highlightSet = highlightSet;
     this.$state = state;
-    this.$sortable = null;
     this.$totalSec = _totalSourceSec(highlightSet);
     // Active preview: auto-pause when the player crosses endSec.
     this.$previewEndSec = null;
     // Chained compilation playback: when set, advance to next segment instead of pausing.
     this.$compilationQueue = null;
     this.$compilationIndex = 0;
-    this.$playhead = null;
     this.$onTimeUpdate = () => {
       if (!this.$player) return;
       if (this.$previewEndSec != null
         && this.$player.currentTime >= this.$previewEndSec) {
         this._onSegmentBoundaryReached();
       }
-      this._updatePlayhead();
+      this._updateSourcePlayhead();
     };
     // Re-render once the video reports its real duration so chip widths
     // (scaled to total video length) match the playhead position.
@@ -112,9 +115,11 @@ export default class EditorTracks {
   }
 
   destroy() {
-    if (this.$sortable) {
-      try { this.$sortable.destroy(); } catch (e) { /* noop */ }
-      this.$sortable = null;
+    if (this.$interact && _interact) {
+      this.$interact.forEach((el) => {
+        try { _interact(el).unset(); } catch (e) { /* noop */ }
+      });
+      this.$interact = [];
     }
     if (this.$player && this.$onTimeUpdate) {
       this.$player.removeEventListener('timeupdate', this.$onTimeUpdate);
@@ -124,7 +129,6 @@ export default class EditorTracks {
     }
     this.$previewEndSec = null;
     this.$compilationQueue = null;
-    this.$playhead = null;
     this.$tracks.empty();
     this.$inspector.empty();
   }
@@ -238,120 +242,94 @@ export default class EditorTracks {
     this.$tracks.empty();
     this.$tracks.append(this._buildEditTrack());
     this._renderInspector();
+    // Source-ribbon interact.js bindings need the ribbon DOM to exist before
+    // they can attach. _buildSourceRow set up this callback.
+    if (this._pendingInteractWire) {
+      const wire = this._pendingInteractWire;
+      this._pendingInteractWire = null;
+      wire();
+    }
   }
 
-  _updatePlayhead() {
-    if (!this.$playhead || !this.$player) return;
-    const editSegs = this.$state.editProject.segments;
-    if (!editSegs || editSegs.length === 0) {
-      this.$playhead.css('display', 'none');
-      return;
-    }
-    const cur = this.$player.currentTime || 0;
-
-    // Resolve which edit clip is active. Compilation playback drives index
-    // explicitly; otherwise fall back to source-time containment.
-    let activeIdx = -1;
-    if (this.$compilationQueue) {
-      activeIdx = this.$compilationIndex;
-    } else {
-      for (let i = 0; i < editSegs.length; i += 1) {
-        const s = Number(editSegs[i].startSec) || 0;
-        const e = Number(editSegs[i].endSec) || 0;
-        if (cur >= s && cur < e) { activeIdx = i; break; }
-      }
-    }
-
-    if (activeIdx < 0) {
-      this.$playhead.css('display', 'none');
-      return;
-    }
-
-    const seg = editSegs[activeIdx];
-    const segStart = Number(seg.startSec) || 0;
-    const segEnd = Number(seg.endSec) || 0;
-    const segDur = Math.max(0.001, segEnd - segStart);
-    const offset = Math.max(0, Math.min(1, (cur - segStart) / segDur));
-
-    // Anchor to the active chip's actual DOM rect inside the ribbon. Chips have
-    // margins + min-width clamps, so a pure time-fraction over the ribbon width
-    // drifts away from the visible edge — snapping to the chip rect keeps the
-    // red bar aligned to where the user clicked.
-    const ribbonEl = this.$playhead.parent()[0];
-    const chipEl = ribbonEl
-      && ribbonEl.querySelector(`[data-edit-index="${activeIdx}"]`);
-    if (!ribbonEl || !chipEl) {
-      this.$playhead.css('display', 'none');
-      return;
-    }
-    const ribbonRect = ribbonEl.getBoundingClientRect();
-    const chipRect = chipEl.getBoundingClientRect();
-    if (ribbonRect.width <= 0) {
-      this.$playhead.css('display', 'none');
-      return;
-    }
-    const xWithinRibbon = (chipRect.left - ribbonRect.left)
-      + offset * chipRect.width;
-    const pct = (xWithinRibbon / ribbonRect.width) * 100;
-    this.$playhead.css({ display: '', left: `${pct}%` });
-  }
-
-  // ---------- Edit ribbon: two-row (source map + playback sequence) ----------
+  // Single source-aligned timeline. Segments sit at their absolute time
+  // on the original video; drag the body to move on the source, drag the
+  // edges to trim. Reordering for compilation playback is in the inspector.
   _buildEditTrack() {
     const block = $('<div/>').addClass('mb-3');
-
-    const header = $('<div/>').addClass('d-flex align-items-center mb-1');
-    header.append($('<p/>').addClass('lead-xs text-muted mb-0 mr-2').text(MSG_EDIT));
-
     const editSegs = this.$state.editProject.segments;
-    const totalDur = editSegs.reduce((acc, s) =>
-      acc + Math.max(0, (Number(s.endSec) || 0) - (Number(s.startSec) || 0)), 0);
 
-    if (editSegs.length > 0) {
-      const playAllBtn = $('<button/>')
-        .addClass('btn btn-sm btn-success py-0 mr-2')
-        .css({ fontSize: '11px', lineHeight: '18px' })
-        .attr('type', 'button')
-        .attr('title', 'Play all edit segments back-to-back')
-        .html(`▶ Play compilation (${_fmt(totalDur)})`);
-      playAllBtn.on('click', () => this._previewCompilation());
-      header.append(playAllBtn);
-    }
-    block.append(header);
+    // Transport row: source play, reel preview, add at playhead.
+    block.append(this._buildTransportRow(editSegs));
 
     if (editSegs.length === 0) {
       block.append($('<p/>')
         .addClass('lead-xs text-muted font-italic')
         .text(MSG_EMPTY));
-      this._wireSortable(null);
       return block;
     }
 
-    // Row 1: source-positioned ribbon (where each edit clip lives in the original).
     block.append(this._buildSourceRow(editSegs));
-
-    // Row 2: playback-sequence ribbon (left-to-right in playback order).
-    const sequenceRibbon = this._buildSequenceRow(editSegs);
-    block.append(sequenceRibbon);
-
-    this._wireSortable(sequenceRibbon.find('[data-role="edit-ribbon"]')[0]);
     return block;
   }
 
+  _buildTransportRow(editSegs) {
+    const row = $('<div/>').addClass('d-flex flex-wrap align-items-center mb-2');
+
+    const playSourceBtn = $('<button/>')
+      .addClass('btn btn-sm btn-outline-secondary mr-2 mb-1')
+      .attr('type', 'button')
+      .attr('title', 'Play the original source video')
+      .html('▶ Play source');
+    playSourceBtn.on('click', () => {
+      if (!this.$player) return;
+      this.$previewEndSec = null;
+      this.$compilationQueue = null;
+      this.$player.play().catch(() => {});
+    });
+    row.append(playSourceBtn);
+
+    if (editSegs.length > 0) {
+      const totalDur = editSegs.reduce((acc, s) =>
+        acc + Math.max(0, (Number(s.endSec) || 0) - (Number(s.startSec) || 0)), 0);
+      const playReelBtn = $('<button/>')
+        .addClass('btn btn-sm btn-success mr-2 mb-1')
+        .attr('type', 'button')
+        .attr('title', 'Play all reel segments back-to-back')
+        .html(`▶ Play reel preview (${_fmt(totalDur)})`);
+      playReelBtn.on('click', () => this._previewCompilation());
+      row.append(playReelBtn);
+    }
+
+    const addBtn = $('<button/>')
+      .addClass('btn btn-sm btn-outline-primary mr-2 mb-1')
+      .attr('type', 'button')
+      .attr('title', 'Add a custom segment starting at the current playhead')
+      .html('+ Add segment @ playhead');
+    addBtn.on('click', () => this._addCustomFromPlayhead());
+    row.append(addBtn);
+
+    return row;
+  }
+
   _buildSourceRow(editSegs) {
-    const wrap = $('<div/>').addClass('mb-2');
+    const wrap = $('<div/>').addClass('mb-3');
     wrap.append($('<p/>')
-      .addClass('lead-xs mb-1 text-muted')
-      .text('Source positions'));
+      .addClass('lead-s mb-1')
+      .text('Source video'));
 
     const dur = (this.$player && Number.isFinite(this.$player.duration)
       && this.$player.duration > 0)
       ? this.$player.duration
       : this.$totalSec;
 
+    // Time ruler: ticks every minute up to the source duration. Major
+    // ticks every 60s with timecode labels; minor ticks every 15s.
+    wrap.append(this._buildTimeRuler(dur));
+
     const ribbon = $('<div/>')
       .addClass('w-100 position-relative bg-light rounded')
-      .css({ height: '24px', cursor: 'pointer' });
+      .attr('data-role', 'source-ribbon')
+      .css({ height: '70px', cursor: 'pointer' });
 
     editSegs.forEach((seg, idx) => {
       const start = Number(seg.startSec) || 0;
@@ -364,88 +342,76 @@ export default class EditorTracks {
       const left = `${(start / dur) * 100}%`;
       const width = `${Math.max(0.5, ((end - start) / dur) * 100)}%`;
 
+      const segTitle = (seg.title || (isCustom ? 'Custom' : '')).trim();
       const chip = $('<div/>')
-        .addClass('position-absolute rounded d-flex align-items-center justify-content-center text-truncate')
+        .addClass('position-absolute rounded source-chip')
         .attr('data-source-index', idx)
-        .attr('title', `#${idx + 1} ${seg.title || (isCustom ? 'Custom' : '')} — ${_fmt(start)}→${_fmt(end)}`)
+        .attr('title', `#${idx + 1} ${segTitle} — ${_fmt(start)}→${_fmt(end)}`)
         .css({
           left,
           width,
-          top: '2px',
-          bottom: '2px',
-          cursor: 'pointer',
+          top: '4px',
+          bottom: '4px',
           color: '#fff',
-          fontSize: '10px',
           background: isSelected ? '#0d6efd' : '#28a745',
           border: isSelected ? '2px solid #0a58ca' : '1px solid rgba(0,0,0,0.2)',
-          opacity: isSelected ? 1 : 0.85,
-        })
-        .text(`#${idx + 1}`);
+          opacity: isSelected ? 1 : 0.9,
+          touchAction: 'none',
+          userSelect: 'none',
+          overflow: 'hidden',
+        });
 
-      chip.on('click', (evt) => {
-        evt.stopPropagation();
-        this.$state.selectedEditIndex = idx;
-        this.render();
-        this._previewSegment(start, end);
-      });
-
-      ribbon.append(chip);
-    });
-
-    ribbon.on('click', (evt) => {
-      const el = ribbon[0];
-      const rect = el.getBoundingClientRect();
-      const x = (evt.clientX != null ? evt.clientX
-        : (evt.originalEvent && evt.originalEvent.touches
-          ? evt.originalEvent.touches[0].clientX : 0)) - rect.left;
-      const ratio = Math.max(0, Math.min(1, x / rect.width));
-      this._seekTo(ratio * dur);
-    });
-
-    wrap.append(ribbon);
-    return wrap;
-  }
-
-  _buildSequenceRow(editSegs) {
-    const wrap = $('<div/>').addClass('mb-1');
-    wrap.append($('<p/>')
-      .addClass('lead-xs mb-1 text-muted')
-      .text('Playback sequence'));
-
-    const ribbon = $('<div/>')
-      .addClass('w-100 position-relative bg-light rounded d-flex flex-nowrap')
-      .attr('data-role', 'edit-ribbon')
-      .css({ height: '32px' });
-
-    const totalEditSec = editSegs.reduce((acc, s) =>
-      acc + Math.max(0, (Number(s.endSec) || 0) - (Number(s.startSec) || 0)), 0) || 1;
-
-    editSegs.forEach((seg, idx) => {
-      const segDur = Math.max(0, (Number(seg.endSec) || 0) - (Number(seg.startSec) || 0));
-      const widthPct = Math.max(0.5, (segDur / totalEditSec) * 100);
-
-      const isSelected = idx === this.$state.selectedEditIndex;
-      const isCustom = seg.kind === KIND_CUSTOM;
-      const label = `#${idx + 1} ${seg.title || (isCustom ? 'Custom' : '')}`.trim();
-
-      const chip = $('<div/>')
-        .addClass('edit-segment d-flex align-items-center justify-content-center text-truncate rounded px-1')
-        .attr('data-edit-index', idx)
-        .attr('title', `${label} — ${_fmt(segDur)} (source ${_fmt(seg.startSec)}→${_fmt(seg.endSec)})`)
+      // Body — drag here to MOVE the segment. Two-line label inside:
+      // "#N · title" on top, "in→out · duration" below. The text-truncate
+      // keeps long titles from breaking the chip width on narrow segments.
+      const body = $('<div/>')
+        .addClass('source-chip-body d-flex flex-column justify-content-center px-1')
         .css({
-          flex: `0 0 calc(${widthPct}% - 2px)`,
-          height: '28px',
-          margin: '2px 1px',
+          position: 'absolute',
+          left: `${TRIM_HANDLE_PX}px`,
+          right: `${TRIM_HANDLE_PX}px`,
+          top: '0',
+          bottom: '0',
           cursor: 'grab',
-          color: '#fff',
-          background: isSelected ? '#0d6efd' : '#28a745',
-          border: isSelected ? '2px solid #0a58ca' : '1px solid rgba(0,0,0,0.15)',
           fontSize: '11px',
+          lineHeight: '1.2',
           minWidth: 0,
-        })
-        .text(label);
+        });
+      body.append($('<div/>')
+        .addClass('text-truncate font-weight-bold')
+        .text(`#${idx + 1}${segTitle ? ` · ${segTitle}` : ''}`));
+      body.append($('<div/>')
+        .addClass('text-truncate')
+        .css({ fontSize: '9px', opacity: 0.85 })
+        .text(`${_fmt(start)} → ${_fmt(end)} · ${_fmt(end - start)}`));
 
-      chip.on('click', (evt) => {
+      // Two thin grab strips at the edges — drag here to TRIM.
+      const handleL = $('<div/>')
+        .addClass('source-chip-handle source-chip-handle-l')
+        .css({
+          position: 'absolute',
+          left: '0',
+          top: '0',
+          bottom: '0',
+          width: `${TRIM_HANDLE_PX}px`,
+          cursor: 'ew-resize',
+          background: 'rgba(0,0,0,0.35)',
+        });
+      const handleR = $('<div/>')
+        .addClass('source-chip-handle source-chip-handle-r')
+        .css({
+          position: 'absolute',
+          right: '0',
+          top: '0',
+          bottom: '0',
+          width: `${TRIM_HANDLE_PX}px`,
+          cursor: 'ew-resize',
+          background: 'rgba(0,0,0,0.35)',
+        });
+
+      chip.append(handleL).append(body).append(handleR);
+
+      body.on('click', (evt) => {
         evt.stopPropagation();
         this.$state.selectedEditIndex = idx;
         this.render();
@@ -455,66 +421,313 @@ export default class EditorTracks {
       ribbon.append(chip);
     });
 
-    const playhead = $('<div/>')
-      .addClass('position-absolute')
+    ribbon.on('click', (evt) => {
+      // Background click only — segment drags/clicks are handled on the chip.
+      if ($(evt.target).closest('.source-chip').length) return;
+      const el = ribbon[0];
+      const rect = el.getBoundingClientRect();
+      const x = (evt.clientX != null ? evt.clientX : 0) - rect.left;
+      const ratio = Math.max(0, Math.min(1, x / rect.width));
+      this._seekTo(ratio * dur);
+    });
+
+    // Vertical playhead — spans the source timeline, tracks the player's
+    // currentTime. The outer 12px-wide bar is a grab target; the inner
+    // 2px line is the visible cue. Drag the outer bar to scrub the source.
+    const sourcePlayhead = $('<div/>')
+      .attr('data-role', 'source-playhead')
       .css({
-        top: '-2px',
-        bottom: '-2px',
+        position: 'absolute',
+        top: '-4px',
+        bottom: '-4px',
         left: '0%',
-        width: '2px',
-        background: '#dc3545',
-        pointerEvents: 'none',
+        width: '12px',
+        marginLeft: '-6px',
+        cursor: 'ew-resize',
         zIndex: 10,
+        touchAction: 'none',
       });
-    ribbon.append(playhead);
-    this.$playhead = playhead;
+    sourcePlayhead.append($('<div/>').css({
+      position: 'absolute',
+      top: '0',
+      bottom: '0',
+      left: '5px',
+      width: '2px',
+      background: '#dc3545',
+      pointerEvents: 'none',
+    }));
+    ribbon.append(sourcePlayhead);
+    this.$sourcePlayhead = sourcePlayhead;
+    this.$sourceDur = dur;
 
     wrap.append(ribbon);
-    setTimeout(() => this._updatePlayhead(), 0);
+    // Wire interact.js after the chips are attached to the DOM by render().
+    this._pendingInteractWire = () => {
+      this._wireSourceInteract(ribbon[0], dur);
+      this._wirePlayheadDrag(ribbon[0], sourcePlayhead[0], dur);
+    };
+    setTimeout(() => this._updateSourcePlayhead(), 0);
     return wrap;
   }
 
-  _refreshChipLabels() {
-    const editSegs = this.$state.editProject.segments;
-    if (!editSegs) return;
-    editSegs.forEach((seg, idx) => {
-      const isCustom = seg.kind === KIND_CUSTOM;
-      const label = `#${idx + 1} ${seg.title || (isCustom ? 'Custom' : '')}`.trim();
-      const segDur = Math.max(0, (Number(seg.endSec) || 0) - (Number(seg.startSec) || 0));
-      const seqChip = this.$tracks.find(`[data-edit-index="${idx}"]`);
-      if (seqChip.length) {
-        seqChip.text(label);
-        seqChip.attr('title',
-          `${label} — ${_fmt(segDur)} (source ${_fmt(seg.startSec)}→${_fmt(seg.endSec)})`);
-      }
-      const srcChip = this.$tracks.find(`[data-source-index="${idx}"]`);
-      if (srcChip.length) {
-        srcChip.attr('title',
-          `#${idx + 1} ${seg.title || (isCustom ? 'Custom' : '')} — ${_fmt(seg.startSec)}→${_fmt(seg.endSec)}`);
-      }
+  // Drag the playhead bar to scrub the source video. Same pattern as the
+  // chip drag: convert pixel delta to seconds via the ribbon's actual
+  // width, set <video>.currentTime, and update the bar's CSS left so the
+  // user sees the seek even while paused.
+  _wirePlayheadDrag(ribbonEl, headEl, dur) {
+    if (!_interact || !ribbonEl || !headEl) return;
+    this.$interact = this.$interact || [];
+    this.$interact.push(headEl);
+    const pxPerSec = () => ribbonEl.getBoundingClientRect().width / Math.max(1, dur);
+    _interact(headEl).draggable({
+      listeners: {
+        start: () => {
+          this.$wasPlaying = this.$player && !this.$player.paused;
+          if (this.$player && this.$wasPlaying) this.$player.pause();
+          // While scrubbing manually, cancel any preview/compilation auto-pause.
+          this.$previewEndSec = null;
+          this.$compilationQueue = null;
+        },
+        move: (event) => {
+          if (!this.$player) return;
+          const next = (this.$player.currentTime || 0) + event.dx / pxPerSec();
+          this.$player.currentTime = Math.max(0, Math.min(dur, next));
+          this._updateSourcePlayhead();
+        },
+        end: () => {
+          if (this.$player && this.$wasPlaying) this.$player.play().catch(() => {});
+          this.$wasPlaying = false;
+        },
+      },
     });
   }
 
-  _wireSortable(ribbonEl) {
-    if (this.$sortable) {
-      try { this.$sortable.destroy(); } catch (e) { /* noop */ }
-      this.$sortable = null;
+  // Time ruler over the source timeline. Major ticks every minute (with
+  // timecode label); minor ticks every 15 s. Width scales with the player's
+  // duration so ticks always align with the ribbon below.
+  _buildTimeRuler(dur) {
+    const ruler = $('<div/>')
+      .addClass('w-100 position-relative')
+      .css({ height: '14px', borderBottom: '1px solid #dee2e6' });
+    if (!Number.isFinite(dur) || dur <= 0) return ruler;
+    const majorEvery = 60;
+    const minorEvery = 15;
+    for (let t = 0; t <= dur; t += minorEvery) {
+      const isMajor = (t % majorEvery) === 0;
+      const tick = $('<div/>')
+        .css({
+          position: 'absolute',
+          left: `${(t / dur) * 100}%`,
+          top: isMajor ? '4px' : '8px',
+          bottom: '0',
+          width: '1px',
+          background: isMajor ? '#6c757d' : '#adb5bd',
+        });
+      ruler.append(tick);
+      if (isMajor) {
+        const label = $('<div/>')
+          .css({
+            position: 'absolute',
+            left: `${(t / dur) * 100}%`,
+            top: '-1px',
+            fontSize: '9px',
+            color: '#6c757d',
+            transform: 'translateX(-50%)',
+            lineHeight: '1',
+            paddingTop: '1px',
+          })
+          .text(_fmt(t));
+        ruler.append(label);
+      }
     }
-    if (!ribbonEl || !_Sortable) return;
-    this.$sortable = _Sortable.create(ribbonEl, {
-      animation: 150,
-      draggable: '.edit-segment',
-      onEnd: (evt) => {
-        if (evt.oldIndex === evt.newIndex) return;
-        const segs = this.$state.editProject.segments;
-        const [moved] = segs.splice(evt.oldIndex, 1);
-        segs.splice(evt.newIndex, 0, moved);
-        if (this.$state.selectedEditIndex === evt.oldIndex) {
-          this.$state.selectedEditIndex = evt.newIndex;
-        }
-        this.render();
-      },
+    return ruler;
+  }
+
+  _updateSourcePlayhead() {
+    if (!this.$sourcePlayhead || !this.$player) return;
+    const dur = this.$sourceDur || (this.$player && this.$player.duration) || this.$totalSec;
+    if (!Number.isFinite(dur) || dur <= 0) return;
+    const cur = this.$player.currentTime || 0;
+    const pct = Math.max(0, Math.min(100, (cur / dur) * 100));
+    this.$sourcePlayhead.css('left', `${pct}%`);
+  }
+
+  // Bind interact.js drag (body) and resizable (edges) on each source chip.
+  // We update seg.startSec/endSec live during the gesture and only call
+  // render() on `end` — keeps the drag smooth without re-creating the DOM
+  // every frame. The inspector's timecode inputs are kept in sync via the
+  // inline updater so the user sees the values change as they drag.
+  _wireSourceInteract(ribbonEl, dur) {
+    if (!_interact || !ribbonEl) return;
+
+    // Tear down any prior bindings — render() rebuilds the ribbon.
+    if (this.$interact && this.$interact.length) {
+      this.$interact.forEach((el) => {
+        try { _interact(el).unset(); } catch (e) { /* noop */ }
+      });
+    }
+    this.$interact = [];
+
+    const chips = ribbonEl.querySelectorAll('.source-chip');
+    chips.forEach((chipEl) => {
+      this.$interact.push(chipEl);
+      const idxOf = () => Number(chipEl.dataset.sourceIndex);
+      const segOf = () => this.$state.editProject.segments[idxOf()];
+      const ribbonRect = () => ribbonEl.getBoundingClientRect();
+      const pxPerSec = () => ribbonRect().width / Math.max(1, dur);
+
+      // Drag the body — translate startSec & endSec together.
+      const bodyEl = chipEl.querySelector('.source-chip-body');
+      _interact(bodyEl).draggable({
+        listeners: {
+          start: () => { chipEl.style.zIndex = '5'; },
+          move: (event) => {
+            const seg = segOf();
+            if (!seg) return;
+            const deltaSec = event.dx / pxPerSec();
+            this._applyDragDelta(seg, deltaSec, deltaSec, dur);
+            this._updateChipGeometry(chipEl, seg, dur);
+            this._updateInspectorInputs(seg);
+          },
+          end: () => {
+            chipEl.style.zIndex = '';
+            this._clampSegment(segOf(), dur);
+            this.render();
+          },
+        },
+      });
+
+      // Drag the edges — resize start or end independently.
+      const handleL = chipEl.querySelector('.source-chip-handle-l');
+      const handleR = chipEl.querySelector('.source-chip-handle-r');
+      _interact(handleL).draggable({
+        listeners: {
+          start: () => { chipEl.style.zIndex = '5'; },
+          move: (event) => {
+            const seg = segOf();
+            if (!seg) return;
+            const deltaSec = event.dx / pxPerSec();
+            this._applyDragDelta(seg, deltaSec, 0, dur);
+            this._updateChipGeometry(chipEl, seg, dur);
+            this._updateInspectorInputs(seg);
+          },
+          end: () => {
+            chipEl.style.zIndex = '';
+            this._clampSegment(segOf(), dur);
+            this.render();
+          },
+        },
+      });
+      _interact(handleR).draggable({
+        listeners: {
+          start: () => { chipEl.style.zIndex = '5'; },
+          move: (event) => {
+            const seg = segOf();
+            if (!seg) return;
+            const deltaSec = event.dx / pxPerSec();
+            this._applyDragDelta(seg, 0, deltaSec, dur);
+            this._updateChipGeometry(chipEl, seg, dur);
+            this._updateInspectorInputs(seg);
+          },
+          end: () => {
+            chipEl.style.zIndex = '';
+            this._clampSegment(segOf(), dur);
+            this.render();
+          },
+        },
+      });
     });
+  }
+
+  // Apply a delta in seconds to seg.startSec and/or seg.endSec, snapping
+  // to the playhead and neighbor edges. Hard floor on duration (MIN_SEG_SEC).
+  _applyDragDelta(seg, dStart, dEnd, dur) {
+    let nextStart = (Number(seg.startSec) || 0) + dStart;
+    let nextEnd = (Number(seg.endSec) || 0) + dEnd;
+
+    // Clamp into [0, dur].
+    nextStart = Math.max(0, Math.min(dur, nextStart));
+    nextEnd = Math.max(0, Math.min(dur, nextEnd));
+
+    // Hard floor: keep at least MIN_SEG_SEC apart.
+    if (nextEnd - nextStart < MIN_SEG_SEC) {
+      if (dStart !== 0 && dEnd === 0) nextStart = nextEnd - MIN_SEG_SEC;
+      else if (dEnd !== 0 && dStart === 0) nextEnd = nextStart + MIN_SEG_SEC;
+      else nextEnd = nextStart + MIN_SEG_SEC;
+    }
+
+    // Snap each moving edge to the nearest snap target.
+    const snaps = this._snapTargets(seg);
+    if (dStart !== 0) nextStart = this._snap(nextStart, snaps, dur);
+    if (dEnd !== 0) nextEnd = this._snap(nextEnd, snaps, dur);
+
+    // Re-enforce the floor after snapping.
+    if (nextEnd - nextStart < MIN_SEG_SEC) {
+      if (dStart !== 0) nextStart = nextEnd - MIN_SEG_SEC;
+      else nextEnd = nextStart + MIN_SEG_SEC;
+    }
+
+    seg.startSec = nextStart;
+    seg.endSec = nextEnd;
+  }
+
+  // Snap targets: current playhead + every other segment's start/end.
+  _snapTargets(self) {
+    const out = [];
+    if (this.$player && Number.isFinite(this.$player.currentTime)) {
+      out.push(this.$player.currentTime);
+    }
+    const segs = this.$state.editProject.segments || [];
+    segs.forEach((s) => {
+      if (s === self) return;
+      out.push(Number(s.startSec) || 0);
+      out.push(Number(s.endSec) || 0);
+    });
+    return out;
+  }
+
+  _snap(valSec, targets, dur) {
+    if (!targets || targets.length === 0) return valSec;
+    // Tolerance in seconds: SNAP_PX projected through current ribbon scale.
+    const ribbonEl = this.$tracks.find('[data-role="source-ribbon"]')[0];
+    if (!ribbonEl) return valSec;
+    const tolSec = SNAP_PX / (ribbonEl.getBoundingClientRect().width / Math.max(1, dur));
+    let bestVal = valSec;
+    let bestDelta = tolSec;
+    for (const t of targets) {
+      const d = Math.abs(t - valSec);
+      if (d < bestDelta) { bestDelta = d; bestVal = t; }
+    }
+    return bestVal;
+  }
+
+  _updateChipGeometry(chipEl, seg, dur) {
+    const start = Number(seg.startSec) || 0;
+    const end = Number(seg.endSec) || 0;
+    chipEl.style.left = `${(start / dur) * 100}%`;
+    chipEl.style.width = `${Math.max(0.5, ((end - start) / dur) * 100)}%`;
+  }
+
+  _clampSegment(seg, dur) {
+    if (!seg) return;
+    seg.startSec = Math.max(0, Math.min(dur, Number(seg.startSec) || 0));
+    seg.endSec = Math.max(0, Math.min(dur, Number(seg.endSec) || 0));
+    if (seg.endSec - seg.startSec < MIN_SEG_SEC) {
+      seg.endSec = Math.min(dur, seg.startSec + MIN_SEG_SEC);
+      if (seg.endSec - seg.startSec < MIN_SEG_SEC) {
+        seg.startSec = Math.max(0, seg.endSec - MIN_SEG_SEC);
+      }
+    }
+  }
+
+  _updateInspectorInputs(seg) {
+    if (!seg) return;
+    const idx = this.$state.editProject.segments.indexOf(seg);
+    if (idx < 0) return;
+    const inSec = $(this.$inspector).find(`[data-role="inspector-in"][data-idx="${idx}"]`);
+    const outSec = $(this.$inspector).find(`[data-role="inspector-out"][data-idx="${idx}"]`);
+    if (inSec.length) inSec.val(_fmtTimeEdit(seg.startSec));
+    if (outSec.length) outSec.val(_fmtTimeEdit(seg.endSec));
   }
 
   // ---------- Inspector ----------
@@ -530,65 +743,107 @@ export default class EditorTracks {
     if (!seg) {
       wrap.append($('<p/>')
         .addClass('lead-xs text-muted font-italic')
-        .text(MSG_EMPTY));
-    } else {
-      const title = $('<input/>')
-        .addClass('form-control form-control-sm mb-2 lead-xs')
-        .attr('type', 'text')
-        .attr('placeholder', 'Title')
-        .val(seg.title || '');
-      title.on('input', () => {
-        seg.title = title.val();
-        this._refreshChipLabels();
-      });
-      wrap.append($('<label/>').addClass('lead-xs mb-1').text('Title'));
-      wrap.append(title);
-
-      const reason = $('<textarea/>')
-        .addClass('form-control form-control-sm mb-2 lead-xs')
-        .attr('rows', 2)
-        .attr('placeholder', 'Reason / notes')
-        .val(seg.reason || '');
-      reason.on('blur', () => {
-        seg.reason = reason.val();
-      });
-      wrap.append($('<label/>').addClass('lead-xs mb-1').text('Reason'));
-      wrap.append(reason);
-
-      wrap.append($('<div/>').addClass('lead-xs text-muted mb-2')
-        .text(`Duration: ${_fmt(seg.endSec - seg.startSec)}`));
-
-      wrap.append(this._buildTimeEditor('In', seg, 'startSec'));
-      wrap.append(this._buildTimeEditor('Out', seg, 'endSec'));
-
-      const removeBtn = $('<button/>')
-        .addClass('btn btn-outline-danger btn-sm d-block mt-2')
-        .attr('type', 'button')
-        .text(seg.kind === KIND_HIGHLIGHT ? MSG_DROP : MSG_REMOVE);
-      removeBtn.on('click', () => {
-        segs.splice(idx, 1);
-        this.$state.selectedEditIndex = Math.min(idx, segs.length - 1);
-        this.render();
-      });
-      wrap.append(removeBtn);
+        .text('Click a segment on the timeline to edit it.'));
+      this.$inspector.append(wrap);
+      return;
     }
 
-    const divider = $('<hr/>');
-    wrap.append(divider);
+    // Header line: "Reel position #N of M" + AI rank badge + reorder/drop.
+    const headerRow = $('<div/>').addClass('d-flex align-items-center mb-2');
+    headerRow.append($('<span/>')
+      .addClass('lead-xs font-weight-bold mr-2')
+      .text(`Reel #${idx + 1} of ${segs.length}`));
+    if (Number.isFinite(seg.rank)) {
+      headerRow.append($('<span/>')
+        .addClass('badge badge-info mr-2')
+        .css({ fontSize: '10px', fontWeight: 'normal' })
+        .attr('title', 'Rank by AI relevance to your prompt — 1 is the strongest match. Stays the same when you reorder for the reel.')
+        .text(`AI rank #${seg.rank}`));
+    }
 
-    const addBtn = $('<button/>')
-      .addClass('btn btn-outline-primary btn-sm d-block')
+    const upBtn = $('<button/>')
+      .addClass('btn btn-outline-secondary btn-sm py-0 px-2 mr-1')
       .attr('type', 'button')
-      .text(MSG_ADD_CUSTOM);
-    addBtn.on('click', () => {
-      this._addCustomFromPlayhead();
+      .attr('title', 'Move earlier in reel order')
+      .prop('disabled', idx === 0)
+      .html('▲');
+    upBtn.on('click', () => {
+      if (idx === 0) return;
+      [segs[idx - 1], segs[idx]] = [segs[idx], segs[idx - 1]];
+      this.$state.selectedEditIndex = idx - 1;
+      this.render();
     });
-    wrap.append(addBtn);
+    headerRow.append(upBtn);
+
+    const downBtn = $('<button/>')
+      .addClass('btn btn-outline-secondary btn-sm py-0 px-2 mr-2')
+      .attr('type', 'button')
+      .attr('title', 'Move later in reel order')
+      .prop('disabled', idx >= segs.length - 1)
+      .html('▼');
+    downBtn.on('click', () => {
+      if (idx >= segs.length - 1) return;
+      [segs[idx + 1], segs[idx]] = [segs[idx], segs[idx + 1]];
+      this.$state.selectedEditIndex = idx + 1;
+      this.render();
+    });
+    headerRow.append(downBtn);
+
+    const removeBtn = $('<button/>')
+      .addClass('btn btn-outline-danger btn-sm py-0 px-2 ml-auto')
+      .attr('type', 'button')
+      .text(seg.kind === KIND_HIGHLIGHT ? MSG_DROP : MSG_REMOVE);
+    removeBtn.on('click', () => {
+      segs.splice(idx, 1);
+      this.$state.selectedEditIndex = Math.min(idx, segs.length - 1);
+      this.render();
+    });
+    headerRow.append(removeBtn);
+    wrap.append(headerRow);
+
+    const title = $('<input/>')
+      .addClass('form-control form-control-sm mb-2 lead-xs')
+      .attr('type', 'text')
+      .attr('placeholder', 'Title')
+      .val(seg.title || '');
+    title.on('input', () => {
+      seg.title = title.val();
+      // Update the affected source-timeline chip's tooltip in place; full
+      // render() would steal focus from this input mid-typing.
+      const isCustom = seg.kind === KIND_CUSTOM;
+      const titleStr = (seg.title || (isCustom ? 'Custom' : '')).trim();
+      const srcChip = this.$tracks.find(`[data-source-index="${idx}"]`);
+      if (srcChip.length) {
+        srcChip.attr('title',
+          `#${idx + 1} ${titleStr} — ${_fmt(seg.startSec)}→${_fmt(seg.endSec)}`);
+        srcChip.find('.source-chip-body > div:first-child')
+          .text(`#${idx + 1}${titleStr ? ` · ${titleStr}` : ''}`);
+      }
+    });
+    wrap.append($('<label/>').addClass('lead-xs mb-1').text('Title'));
+    wrap.append(title);
+
+    const reason = $('<textarea/>')
+      .addClass('form-control form-control-sm mb-2 lead-xs')
+      .attr('rows', 2)
+      .attr('placeholder', 'Reason / notes')
+      .val(seg.reason || '');
+    reason.on('blur', () => {
+      seg.reason = reason.val();
+    });
+    wrap.append($('<label/>').addClass('lead-xs mb-1').text('Reason'));
+    wrap.append(reason);
+
+    wrap.append($('<div/>').addClass('lead-xs text-muted mb-2')
+      .text(`Duration: ${_fmt(seg.endSec - seg.startSec)}`));
+
+    wrap.append(this._buildTimeEditor('In', seg, 'startSec', idx));
+    wrap.append(this._buildTimeEditor('Out', seg, 'endSec', idx));
 
     this.$inspector.append(wrap);
   }
 
-  _buildTimeEditor(label, seg, field) {
+  _buildTimeEditor(label, seg, field, idx) {
     const isStart = field === 'startSec';
     const block = $('<div/>').addClass('mb-2 p-2 border rounded');
 
@@ -602,6 +857,8 @@ export default class EditorTracks {
       .attr('type', 'text')
       .attr('inputmode', 'decimal')
       .attr('placeholder', 'MM:SS.mm')
+      .attr('data-role', isStart ? 'inspector-in' : 'inspector-out')
+      .attr('data-idx', String(idx))
       .val(_fmtTimeEdit(seg[field]));
 
     const commit = () => {

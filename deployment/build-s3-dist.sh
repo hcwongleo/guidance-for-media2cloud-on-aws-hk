@@ -1120,6 +1120,7 @@ function build_webapp_dependencies() {
     "crypto-js-bundle" \
     "echarts-js-bundle" \
     "sortablejs-bundle" \
+    "interactjs-bundle" \
   )
   for bundle in ${bundles[@]}
   do

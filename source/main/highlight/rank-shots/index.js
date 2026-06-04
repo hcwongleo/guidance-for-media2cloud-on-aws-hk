@@ -338,17 +338,15 @@ exports.handler = async (event) => {
     };
   });
 
-  // Take top maxSegments by score, then assign rank prefix to title and
-  // re-sort by startSec for the editor timeline.
+  // Take top maxSegments by score and stamp a rank field (1 = best). Title
+  // stays clean — the editor renders "#<reelIdx> · <title>" client-side
+  // using the reel position; rank lives as its own field so the UI can
+  // surface "Rank #N by AI" without colliding with reel order.
   const cap = Number(maxSegments) || 10;
-  const top = [...scored]
+  const segments = [...scored]
     .sort((a, b) => b.score - a.score)
-    .slice(0, cap);
-
-  // #1 is the rank LLM's strongest pick. Prefix the title so every UI
-  // surface (editor, dropdown, render history) shows the rank for free.
-  const segments = top
-    .map((s, i) => ({ ...s, rank: i + 1, title: `#${i + 1} · ${s.title}` }))
+    .slice(0, cap)
+    .map((s, i) => ({ ...s, rank: i + 1 }))
     .sort((a, b) => a.startSec - b.startSec);
 
   console.log(`=== ranked ${scored.length} → ${segments.length} kept (maxSegments=${cap})`);

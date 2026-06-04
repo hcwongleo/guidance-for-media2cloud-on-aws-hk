@@ -108,13 +108,18 @@ export default class HighlightEditorModal {
       return existing;
     }
 
+    // Older highlight sets (pre-v4.0.27) baked the rank into the title as
+    // "#1 · Title". Strip that prefix so the editor's reel-order numbering
+    // doesn't collide with the leftover rank prefix.
+    const stripRankPrefix = (s) => (s || '').replace(/^#\d+\s*·\s*/, '').trim();
     const seedSegments = (this.highlightSet.segments || []).map((seg, i) => ({
       kind: 'highlight',
       sourceSegmentIndex: i,
       startSec: Number(seg.startSec) || 0,
       endSec: Number(seg.endSec) || 0,
-      title: seg.title || '',
+      title: stripRankPrefix(seg.title),
       reason: seg.reason || '',
+      rank: Number.isFinite(seg.rank) ? seg.rank : (i + 1),
       highlightSetId: editProjectId,
     }));
 
@@ -144,9 +149,46 @@ export default class HighlightEditorModal {
             <div class="modal-body">
               <div class="row">
                 <div class="col-12 col-lg-8 px-2">
-                  <video data-role="player" controls preload="metadata"
-                         class="w-100 bg-dark"
-                         style="max-height:50vh;"></video>
+                  <style>
+                    /*
+                     * Hide the native <video controls> scrub bar — our
+                     * source timeline below is the one true scrub surface.
+                     * Volume/fullscreen/playback-rate stay intact.
+                     * Webkit selectors cover Chromium browsers (Chrome,
+                     * Edge, Brave, Arc, etc.), where most of our users live.
+                     */
+                    video[data-role="player"]::-webkit-media-controls-timeline,
+                    video[data-role="player"]::-webkit-media-controls-current-time-display,
+                    video[data-role="player"]::-webkit-media-controls-time-remaining-display {
+                      display: none !important;
+                    }
+                    /* Seek spinner — overlays the video while the browser
+                     * is mid-fetch on a seek. seeking → show, seeked → hide.
+                     * Also hide when the buffer ahead is comfortable. */
+                    .seek-spinner {
+                      position: absolute;
+                      top: 50%;
+                      left: 50%;
+                      transform: translate(-50%, -50%);
+                      background: rgba(0,0,0,0.6);
+                      color: #fff;
+                      padding: 6px 12px;
+                      border-radius: 4px;
+                      font-size: 12px;
+                      pointer-events: none;
+                      z-index: 5;
+                      display: none;
+                    }
+                  </style>
+                  <div class="position-relative">
+                    <video data-role="player" controls preload="auto"
+                           class="w-100 bg-dark"
+                           style="max-height:50vh;"></video>
+                    <div data-role="seek-spinner" class="seek-spinner">
+                      <span class="spinner-border spinner-border-sm align-middle mr-2"></span>
+                      <span class="align-middle">Buffering…</span>
+                    </div>
+                  </div>
                   <div data-role="tracks" class="mt-3"></div>
                 </div>
                 <div class="col-12 col-lg-4 px-2">
@@ -187,8 +229,45 @@ export default class HighlightEditorModal {
       player.src = this.state.proxyUrl;
     }
 
+    // Buffering overlay: the browser fires `seeking` when a seek begins,
+    // `seeked` when it lands, and `waiting` whenever playback stalls for
+    // buffer. We show the spinner on seeking/waiting, hide on seeked/playing.
+    // 100ms grace prevents the spinner from flickering on near-instant seeks
+    // within the cached range.
+    const spinnerEl = modal.find('[data-role="seek-spinner"]');
+    if (player && spinnerEl.length) {
+      let showTimer = null;
+      const showSoon = () => {
+        if (showTimer) return;
+        showTimer = setTimeout(() => { spinnerEl.css('display', 'block'); showTimer = null; }, 100);
+      };
+      const hideNow = () => {
+        if (showTimer) { clearTimeout(showTimer); showTimer = null; }
+        spinnerEl.css('display', 'none');
+      };
+      player.addEventListener('seeking', showSoon);
+      player.addEventListener('waiting', showSoon);
+      player.addEventListener('seeked', hideNow);
+      player.addEventListener('playing', hideNow);
+      player.addEventListener('canplay', hideNow);
+      this.$spinnerCleanup = () => {
+        player.removeEventListener('seeking', showSoon);
+        player.removeEventListener('waiting', showSoon);
+        player.removeEventListener('seeked', hideNow);
+        player.removeEventListener('playing', hideNow);
+        player.removeEventListener('canplay', hideNow);
+        if (showTimer) clearTimeout(showTimer);
+      };
+    }
+
     modal.find('button[data-role="save"]').on('click', () => this._onSave());
     modal.on('hidden.bs.modal', () => this._onHidden());
+
+    // Editor-style keyboard shortcuts: Space play/pause, ←/→ frame nudge,
+    // Shift+←/→ ±1s. Bound document-wide while the modal is open and torn
+    // down on hidden. Ignore when typing in inputs/textareas.
+    this.$onKeyDown = (e) => this._onKeyDown(e);
+    document.addEventListener('keydown', this.$onKeyDown);
 
     $('body').append(modal);
     this.$modal = modal;
@@ -201,6 +280,32 @@ export default class HighlightEditorModal {
       state: this.state,
     });
     this.$tracks.render();
+  }
+
+  _onKeyDown(e) {
+    const tag = (e.target && e.target.tagName) || '';
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+    if (e.target && e.target.isContentEditable) return;
+    const player = this.$modal && this.$modal.find('video[data-role="player"]')[0];
+    if (!player) return;
+    const FRAME_SEC = 1 / 25;
+    const STEP = e.shiftKey ? 1.0 : FRAME_SEC;
+    if (e.code === 'Space') {
+      e.preventDefault();
+      if (player.paused) player.play().catch(() => {});
+      else player.pause();
+      return;
+    }
+    if (e.code === 'ArrowLeft') {
+      e.preventDefault();
+      player.currentTime = Math.max(0, (player.currentTime || 0) - STEP);
+      return;
+    }
+    if (e.code === 'ArrowRight') {
+      e.preventDefault();
+      const dur = Number.isFinite(player.duration) ? player.duration : Infinity;
+      player.currentTime = Math.min(dur, (player.currentTime || 0) + STEP);
+    }
   }
 
   // Compact "video › rank" suffix for the modal title. Keeps just the
@@ -231,6 +336,7 @@ export default class HighlightEditorModal {
         endSec: Number(seg.endSec),
         title: seg.title || '',
         reason: seg.reason || '',
+        ...(Number.isFinite(seg.rank) ? { rank: seg.rank } : {}),
         ...(seg.sourceSegmentIndex !== undefined
           ? { sourceSegmentIndex: seg.sourceSegmentIndex }
           : {}),
@@ -262,6 +368,14 @@ export default class HighlightEditorModal {
   }
 
   _onHidden() {
+    if (this.$onKeyDown) {
+      document.removeEventListener('keydown', this.$onKeyDown);
+      this.$onKeyDown = null;
+    }
+    if (this.$spinnerCleanup) {
+      this.$spinnerCleanup();
+      this.$spinnerCleanup = null;
+    }
     if (this.$tracks) {
       this.$tracks.destroy();
       this.$tracks = null;

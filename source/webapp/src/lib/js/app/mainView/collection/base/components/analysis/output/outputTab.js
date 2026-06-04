@@ -98,7 +98,7 @@ export default class OutputTab extends mxAlert(BaseAnalysisTab) {
 
   createIntro() {
     const wrap = $('<div/>').addClass('mb-3');
-    wrap.append($('<p/>').addClass('lead mb-1').html('Output'));
+    wrap.append($('<p/>').addClass('lead mb-1').html('Video Edit'));
     wrap.append($('<p/>').addClass('lead-xs text-muted mb-0').html(
       'Render and publish this video. By default the full source is re-encoded '
       + 'with the chosen MediaConvert template (HLS + MP4). Switch to '

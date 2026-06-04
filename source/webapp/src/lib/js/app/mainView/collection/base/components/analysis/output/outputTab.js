@@ -100,9 +100,10 @@ export default class OutputTab extends mxAlert(BaseAnalysisTab) {
     const wrap = $('<div/>').addClass('mb-3');
     wrap.append($('<p/>').addClass('lead mb-1').html('Video Edit'));
     wrap.append($('<p/>').addClass('lead-xs text-muted mb-0').html(
-      'Render and publish this video. By default the full source is re-encoded '
-      + 'with the chosen MediaConvert template (HLS + MP4). Switch to '
-      + '<em>Highlight cuts</em> to stitch segments from a highlight set. '
+      'Edit and export your video. Auto-detect highlights, trim segments on the timeline, '
+      + 'reorder them in the reel preview, then export as HLS + MP4 with the chosen '
+      + 'MediaConvert template. Switch <em>Source range</em> below to <em>Highlight cuts</em> '
+      + 'to stitch a reel from a highlight set, or <em>Full video</em> to re-encode the whole source. '
       + 'Burn-in subtitles and per-resolution logo overlays are optional add-ons.'
     ));
     return wrap;
@@ -705,7 +706,7 @@ export default class OutputTab extends mxAlert(BaseAnalysisTab) {
     const renderBtn = $('<button/>').attr('type', 'button')
       .addClass('btn btn-sm btn-primary mr-2 mb-1')
       .attr('data-role', 'render')
-      .html('Render &amp; publish');
+      .html('Export');
     const refreshBtn = $('<button/>').attr('type', 'button')
       .addClass('btn btn-sm btn-outline-secondary mr-2 mb-1')
       .attr('data-role', 'refresh')

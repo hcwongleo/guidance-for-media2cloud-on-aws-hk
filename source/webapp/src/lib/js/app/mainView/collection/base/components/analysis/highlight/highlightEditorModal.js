@@ -162,42 +162,16 @@ export default class HighlightEditorModal {
                     video[data-role="player"]::-webkit-media-controls-time-remaining-display {
                       display: none !important;
                     }
-                    /* Seek spinner — overlays the video while the browser
-                     * is mid-fetch on a seek. seeking → show, seeked → hide.
-                     * Also hide when the buffer ahead is comfortable. */
-                    .seek-spinner {
-                      position: absolute;
-                      top: 50%;
-                      left: 50%;
-                      transform: translate(-50%, -50%);
-                      background: rgba(0,0,0,0.6);
-                      color: #fff;
-                      padding: 6px 12px;
-                      border-radius: 4px;
-                      font-size: 12px;
-                      pointer-events: none;
-                      z-index: 5;
-                      display: none;
-                    }
                   </style>
-                  <div class="position-relative">
-                    <video data-role="player" controls preload="auto"
-                           class="w-100 bg-dark"
-                           style="max-height:50vh;"></video>
-                    <div data-role="seek-spinner" class="seek-spinner">
-                      <span class="spinner-border spinner-border-sm align-middle mr-2"></span>
-                      <span class="align-middle">Buffering…</span>
-                    </div>
-                  </div>
+                  <video data-role="player" controls preload="auto"
+                         class="w-100 bg-dark"
+                         style="max-height:50vh;"></video>
                   <div data-role="tracks" class="mt-3"></div>
                 </div>
                 <div class="col-12 col-lg-4 px-2">
                   <div data-role="inspector"></div>
                 </div>
               </div>
-              <p class="lead-xs text-muted mt-3 mb-0">
-                Render and publish from the Output tab once you're happy with the segments.
-              </p>
             </div>
             <div class="modal-footer flex-wrap">
               <button type="button" class="btn btn-secondary btn-sm"
@@ -228,37 +202,8 @@ export default class HighlightEditorModal {
     if (player && this.state.proxyUrl) {
       player.src = this.state.proxyUrl;
     }
-
-    // Buffering overlay: the browser fires `seeking` when a seek begins,
-    // `seeked` when it lands, and `waiting` whenever playback stalls for
-    // buffer. We show the spinner on seeking/waiting, hide on seeked/playing.
-    // 100ms grace prevents the spinner from flickering on near-instant seeks
-    // within the cached range.
-    const spinnerEl = modal.find('[data-role="seek-spinner"]');
-    if (player && spinnerEl.length) {
-      let showTimer = null;
-      const showSoon = () => {
-        if (showTimer) return;
-        showTimer = setTimeout(() => { spinnerEl.css('display', 'block'); showTimer = null; }, 100);
-      };
-      const hideNow = () => {
-        if (showTimer) { clearTimeout(showTimer); showTimer = null; }
-        spinnerEl.css('display', 'none');
-      };
-      player.addEventListener('seeking', showSoon);
-      player.addEventListener('waiting', showSoon);
-      player.addEventListener('seeked', hideNow);
-      player.addEventListener('playing', hideNow);
-      player.addEventListener('canplay', hideNow);
-      this.$spinnerCleanup = () => {
-        player.removeEventListener('seeking', showSoon);
-        player.removeEventListener('waiting', showSoon);
-        player.removeEventListener('seeked', hideNow);
-        player.removeEventListener('playing', hideNow);
-        player.removeEventListener('canplay', hideNow);
-        if (showTimer) clearTimeout(showTimer);
-      };
-    }
+    // The browser's native <video controls> already shows a buffering
+    // spinner when readyState drops — no need for our own overlay.
 
     modal.find('button[data-role="save"]').on('click', () => this._onSave());
     modal.on('hidden.bs.modal', () => this._onHidden());
@@ -371,10 +316,6 @@ export default class HighlightEditorModal {
     if (this.$onKeyDown) {
       document.removeEventListener('keydown', this.$onKeyDown);
       this.$onKeyDown = null;
-    }
-    if (this.$spinnerCleanup) {
-      this.$spinnerCleanup();
-      this.$spinnerCleanup = null;
     }
     if (this.$tracks) {
       this.$tracks.destroy();

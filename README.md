@@ -100,7 +100,7 @@ start-pipeline → detect-shots (OpenCV) → Map(describe-shot, video LLM) → r
 - `start-pipeline/` — allocates `highlightSetId`, persists the PROCESSING row, publishes the IoT `started` event. Requires both `modelId` (video describer) and `rankModelId` (text ranker) — no defaults, no silent fallbacks.
 - `detect-shots/` — Python 3.12 + `scenedetect` + `opencv-python-headless`. Adaptive: vision-detected boundaries when cut density is high enough, fixed 30s clips otherwise. Merges sub-5s shots (Pegasus rejects clips <4s) and splits >60s shots.
 - `describe-shot/` — Map state worker. MediaConvert clips one shot, HEAD-probes S3 to absorb the eventual-consistency lag, calls the chosen video model. Returns `{title, description}` only — no scoring.
-- `rank-shots/` — final stage. Loads the Transcribe JSON (if any), slices spoken words per shot, sends one Bedrock Converse call to the chosen text model with all shot descriptions + their dialogue, then takes the top-K by score. Output segments are prefixed with `#1 ·`, `#2 ·`… in the title so every UI surface (editor, dropdowns, render history) shows the rank automatically.
+- `rank-shots/` — final stage. Loads the Transcribe JSON (if any), slices spoken words per shot, sends one Bedrock Converse call to the chosen text model with all shot descriptions + their dialogue, then takes the top-K by score. Each kept segment is stamped with a `rank` field (1 = strongest match). Title stays clean — the editor numbers chips by reel order, and AI rank is surfaced as a separate inspector badge so reorder doesn't collide with relevance ranking.
 - `compose-edl/` — converts the user-edited segment list into a MediaConvert clip-and-stitch job spec (HLS 1080p/720p/480p + MP4 proxy), 25 fps, CBR.
 - `start-render/`, `render-status/`, `publish-to-library/` — render-stage Lambdas.
 
@@ -112,9 +112,9 @@ start-pipeline → detect-shots (OpenCV) → Map(describe-shot, video LLM) → r
 - `rendersOp.js` — submit / list / get / delete renders. `DELETE` paginates the S3 prefix and removes every output object before deleting the DDB row.
 
 **Frontend (`source/webapp/src/lib/js/app/.../analysis/highlight/`)**
-- `highlightTab.js` — list/edit/delete highlight sets, render history.
-- `highlightEditorModal.js` + `editorTracks.js` — drag-to-trim segment timeline with frame-accurate scrubbing.
-- `outputTab.js` — detection form. Two model dropdowns (Video describer / Rank model), both with empty placeholders; submit stays disabled until both are picked.
+- `highlightTab.js` — list/edit/delete highlight sets, render history. Dropdown labels keep timestamp + segment count + prompt — the model IDs live in the editor modal title (so two runs differ by what *changed*, not by which models were always-the-same).
+- `highlightEditorModal.js` + `editorTracks.js` — single source-aligned timeline (segment chips at their absolute time on the original video). Drag a chip body to move on source, drag the L/R edges to trim, drag the red playhead to scrub. Snap-to-playhead and snap-to-neighbor at 5 px tolerance. Spacebar play/pause and arrow-key frame nudge (Shift = ±1s). Reordering for compilation is in the inspector via ▲/▼ buttons. Native `<video>` scrubber is hidden via CSS — the timeline below is the one true scrub surface. `preload="auto"` + a "Buffering…" spinner overlay (driven by `seeking`/`waiting`/`seeked` events) make seeks feel as fast as the cache allows. Drag/resize gestures are powered by [interact.js](https://interactjs.io/) (vendored under `webapp/third_party/interactjs-bundle/`).
+- `outputTab.js` — the **Video Edit** tab. Detection form with two model dropdowns (Video describer / Rank model), both with empty placeholders; submit stays disabled until both are picked.
 
 **Why this shape**
 - **Frame-grounded timestamps.** Shot boundaries come from OpenCV frame-difference math, not from a model "guessing" where to cut. No more drift accumulation, no more LLM-style regular-grid hallucinations (0/10/20/30 s patterns we saw when Pegasus was asked to pick its own timestamps).

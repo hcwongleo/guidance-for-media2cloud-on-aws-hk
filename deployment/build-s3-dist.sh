@@ -154,6 +154,7 @@ LAYER_FIXITY_LIB=
 LAYER_PDF_LIB=
 LAYER_BACKLOG=
 LAYER_TOKENIZER=
+LAYER_SCENEDETECT=
 # note: core-lib for custom resource
 CORE_LIB_LOCAL_PKG=
 
@@ -218,10 +219,10 @@ PKG_ANALYSIS_SHOPPABLE=
 PKG_SHOPPABLE_API=
 
 # Highlight clipping + editor
-PKG_DETECT_HIGHLIGHTS=
-PKG_PLAN_CHUNKS=
-PKG_DETECT_HIGHLIGHT_CHUNK=
-PKG_MERGE_CHUNKS=
+PKG_START_PIPELINE=
+PKG_DETECT_SHOTS=
+PKG_DESCRIBE_SHOT=
+PKG_RANK_SHOTS=
 PKG_COMPOSE_EDL=
 PKG_START_RENDER=
 PKG_RENDER_STATUS=
@@ -291,6 +292,7 @@ function build_layer_packages() {
   build_pdf_layer
   build_backlog_layer
   build_tokenizer_layer
+  build_scenedetect_layer
 }
 
 function build_awssdk_layer() {
@@ -480,6 +482,30 @@ function build_tokenizer_layer() {
   npm run build
   npm run zip -- "$LAYER_TOKENIZER" .
   cp -v "./dist/${LAYER_TOKENIZER}" "$BUILD_DIST_DIR"
+  popd
+}
+
+function build_scenedetect_layer() {
+  echo "------------------------------------------------------------------------------"
+  echo "Building scenedetect layer package (Docker, Python 3.12)"
+  echo "------------------------------------------------------------------------------"
+  local package="scenedetect-lib"
+  LAYER_SCENEDETECT="${package}-${VERSION}.zip"
+  pushd "$SOURCE_DIR/layers/${package}"
+
+  mkdir -p ./dist
+
+  # docker builds opencv-python-headless + scenedetect against the Lambda
+  # python:3.12 base image so manylinux wheels match the runtime ABI.
+  docker build -t ${package} .
+  [ $? -ne 0 ] && exit 1
+
+  local id=$(docker create ${package})
+  docker cp ${id}:/var/task/package.zip ./dist/${LAYER_SCENEDETECT}
+  docker rm -v $id
+  docker rmi ${package}
+
+  cp -v "./dist/${LAYER_SCENEDETECT}" "$BUILD_DIST_DIR"
   popd
 }
 
@@ -1323,77 +1349,78 @@ function build_highlight_packages() {
   echo "------------------------------------------------------------------------------"
   echo "[Highlight] Building Highlight Workflow Packages"
   echo "------------------------------------------------------------------------------"
-  build_detect_highlights_package
-  build_plan_chunks_package
-  build_detect_highlight_chunk_package
-  build_merge_chunks_package
+  build_start_pipeline_package
+  build_detect_shots_package
+  build_describe_shot_package
+  build_rank_shots_package
   build_compose_edl_package
   build_start_render_package
   build_render_status_package
   build_publish_to_library_package
 }
 
-function build_plan_chunks_package() {
+function build_start_pipeline_package() {
   echo "------------------------------------------------------------------------------"
-  echo "[Highlight] Building plan-chunks lambda package"
+  echo "[Highlight] Building start-pipeline lambda package"
   echo "------------------------------------------------------------------------------"
   local workflow="highlight"
-  local lambda="plan-chunks"
+  local lambda="start-pipeline"
   local package="${workflow}-${lambda}"
-  PKG_PLAN_CHUNKS="${package}-${VERSION}.zip"
+  PKG_START_PIPELINE="${package}-${VERSION}.zip"
   pushd "$SOURCE_DIR/main/highlight/${lambda}"
   npm install
   npm run build
-  npm run zip -- "$PKG_PLAN_CHUNKS" .
-  cp -v "./dist/$PKG_PLAN_CHUNKS" "$BUILD_DIST_DIR"
+  npm run zip -- "$PKG_START_PIPELINE" .
+  cp -v "./dist/$PKG_START_PIPELINE" "$BUILD_DIST_DIR"
   popd
 }
 
-function build_detect_highlight_chunk_package() {
+function build_detect_shots_package() {
   echo "------------------------------------------------------------------------------"
-  echo "[Highlight] Building detect-highlight-chunk lambda package"
+  echo "[Highlight] Building detect-shots lambda package (Python)"
   echo "------------------------------------------------------------------------------"
   local workflow="highlight"
-  local lambda="detect-highlight-chunk"
+  local lambda="detect-shots"
   local package="${workflow}-${lambda}"
-  PKG_DETECT_HIGHLIGHT_CHUNK="${package}-${VERSION}.zip"
+  PKG_DETECT_SHOTS="${package}-${VERSION}.zip"
   pushd "$SOURCE_DIR/main/highlight/${lambda}"
-  npm install
-  npm run build
-  npm run zip -- "$PKG_DETECT_HIGHLIGHT_CHUNK" .
-  cp -v "./dist/$PKG_DETECT_HIGHLIGHT_CHUNK" "$BUILD_DIST_DIR"
+  # No deps to install — heavy libs ship in the SceneDetect layer.
+  rm -rf dist && mkdir -p dist
+  cp -v index.py dist/
+  pushd dist && zip -rq "$PKG_DETECT_SHOTS" . && popd
+  cp -v "./dist/$PKG_DETECT_SHOTS" "$BUILD_DIST_DIR"
   popd
 }
 
-function build_merge_chunks_package() {
+function build_describe_shot_package() {
   echo "------------------------------------------------------------------------------"
-  echo "[Highlight] Building merge-chunks lambda package"
+  echo "[Highlight] Building describe-shot lambda package"
   echo "------------------------------------------------------------------------------"
   local workflow="highlight"
-  local lambda="merge-chunks"
+  local lambda="describe-shot"
   local package="${workflow}-${lambda}"
-  PKG_MERGE_CHUNKS="${package}-${VERSION}.zip"
+  PKG_DESCRIBE_SHOT="${package}-${VERSION}.zip"
   pushd "$SOURCE_DIR/main/highlight/${lambda}"
   npm install
   npm run build
-  npm run zip -- "$PKG_MERGE_CHUNKS" .
-  cp -v "./dist/$PKG_MERGE_CHUNKS" "$BUILD_DIST_DIR"
+  npm run zip -- "$PKG_DESCRIBE_SHOT" .
+  cp -v "./dist/$PKG_DESCRIBE_SHOT" "$BUILD_DIST_DIR"
   popd
 }
 
-function build_detect_highlights_package() {
+function build_rank_shots_package() {
   echo "------------------------------------------------------------------------------"
-  echo "[Highlight] Building detect-highlights lambda package"
+  echo "[Highlight] Building rank-shots lambda package"
   echo "------------------------------------------------------------------------------"
   local workflow="highlight"
-  local lambda="detect-highlights"
+  local lambda="rank-shots"
   local package="${workflow}-${lambda}"
-  PKG_DETECT_HIGHLIGHTS="${package}-${VERSION}.zip"
+  PKG_RANK_SHOTS="${package}-${VERSION}.zip"
   pushd "$SOURCE_DIR/main/highlight/${lambda}"
   npm install
   npm run build
-  npm run zip -- "$PKG_DETECT_HIGHLIGHTS" .
-  cp -v "./dist/$PKG_DETECT_HIGHLIGHTS" "$BUILD_DIST_DIR"
+  npm run zip -- "$PKG_RANK_SHOTS" .
+  cp -v "./dist/$PKG_RANK_SHOTS" "$BUILD_DIST_DIR"
   popd
 }
 
@@ -1530,6 +1557,9 @@ function build_cloudformation_templates() {
 
   echo "Updating %%LAYER_TOKENIZER%% param in cloudformation templates..."
   sed -i'.bak' -e "s|%%LAYER_TOKENIZER%%|${LAYER_TOKENIZER}|g" *.yaml || exit 1
+
+  echo "Updating %%LAYER_SCENEDETECT%% param in cloudformation templates..."
+  sed -i'.bak' -e "s|%%LAYER_SCENEDETECT%%|${LAYER_SCENEDETECT}|g" *.yaml || exit 1
 
   # Docker image packages for CodeBuild
   # Faiss
@@ -1678,17 +1708,17 @@ function build_cloudformation_templates() {
   sed -i'.bak' -e "s|%%PKG_SHOPPABLE_API%%|${PKG_SHOPPABLE_API}|g" *.yaml || exit 1
 
   ## Highlight Workflow
-  echo "Updating %%PKG_DETECT_HIGHLIGHTS%% param in cloudformation templates..."
-  sed -i'.bak' -e "s|%%PKG_DETECT_HIGHLIGHTS%%|${PKG_DETECT_HIGHLIGHTS}|g" *.yaml || exit 1
+  echo "Updating %%PKG_START_PIPELINE%% param in cloudformation templates..."
+  sed -i'.bak' -e "s|%%PKG_START_PIPELINE%%|${PKG_START_PIPELINE}|g" *.yaml || exit 1
 
-  echo "Updating %%PKG_PLAN_CHUNKS%% param in cloudformation templates..."
-  sed -i'.bak' -e "s|%%PKG_PLAN_CHUNKS%%|${PKG_PLAN_CHUNKS}|g" *.yaml || exit 1
+  echo "Updating %%PKG_DETECT_SHOTS%% param in cloudformation templates..."
+  sed -i'.bak' -e "s|%%PKG_DETECT_SHOTS%%|${PKG_DETECT_SHOTS}|g" *.yaml || exit 1
 
-  echo "Updating %%PKG_DETECT_HIGHLIGHT_CHUNK%% param in cloudformation templates..."
-  sed -i'.bak' -e "s|%%PKG_DETECT_HIGHLIGHT_CHUNK%%|${PKG_DETECT_HIGHLIGHT_CHUNK}|g" *.yaml || exit 1
+  echo "Updating %%PKG_DESCRIBE_SHOT%% param in cloudformation templates..."
+  sed -i'.bak' -e "s|%%PKG_DESCRIBE_SHOT%%|${PKG_DESCRIBE_SHOT}|g" *.yaml || exit 1
 
-  echo "Updating %%PKG_MERGE_CHUNKS%% param in cloudformation templates..."
-  sed -i'.bak' -e "s|%%PKG_MERGE_CHUNKS%%|${PKG_MERGE_CHUNKS}|g" *.yaml || exit 1
+  echo "Updating %%PKG_RANK_SHOTS%% param in cloudformation templates..."
+  sed -i'.bak' -e "s|%%PKG_RANK_SHOTS%%|${PKG_RANK_SHOTS}|g" *.yaml || exit 1
 
   echo "Updating %%PKG_COMPOSE_EDL%% param in cloudformation templates..."
   sed -i'.bak' -e "s|%%PKG_COMPOSE_EDL%%|${PKG_COMPOSE_EDL}|g" *.yaml || exit 1
@@ -1735,6 +1765,7 @@ function on_complete() {
   echo "** LAYER_PDF_LIB=${LAYER_PDF_LIB} **"
   echo "** LAYER_BACKLOG=${LAYER_BACKLOG} **"
   echo "** LAYER_TOKENIZER=${LAYER_TOKENIZER} **"
+  echo "** LAYER_SCENEDETECT=${LAYER_SCENEDETECT} **"
   ## Docker image packages
   echo "** FAISS_PKG=${FAISS_PKG} [${FAISS_REPO}:${FAISS_VER}] **"
   echo "** SHOPPABLE_PKG=${SHOPPABLE_PKG}  [${SHOPPABLE_REPO}:${SHOPPABLE_VER}]**"
@@ -1778,10 +1809,10 @@ function on_complete() {
   echo "** PKG_ANALYSIS_SHOPPABLE=${PKG_ANALYSIS_SHOPPABLE} **"
   echo "** PKG_SHOPPABLE_API=${PKG_SHOPPABLE_API} **"
   ## Highlight Workflow ##
-  echo "** PKG_DETECT_HIGHLIGHTS=${PKG_DETECT_HIGHLIGHTS} **"
-  echo "** PKG_PLAN_CHUNKS=${PKG_PLAN_CHUNKS} **"
-  echo "** PKG_DETECT_HIGHLIGHT_CHUNK=${PKG_DETECT_HIGHLIGHT_CHUNK} **"
-  echo "** PKG_MERGE_CHUNKS=${PKG_MERGE_CHUNKS} **"
+  echo "** PKG_START_PIPELINE=${PKG_START_PIPELINE} **"
+  echo "** PKG_DETECT_SHOTS=${PKG_DETECT_SHOTS} **"
+  echo "** PKG_DESCRIBE_SHOT=${PKG_DESCRIBE_SHOT} **"
+  echo "** PKG_RANK_SHOTS=${PKG_RANK_SHOTS} **"
   echo "** PKG_COMPOSE_EDL=${PKG_COMPOSE_EDL} **"
   echo "** PKG_START_RENDER=${PKG_START_RENDER} **"
   echo "** PKG_RENDER_STATUS=${PKG_RENDER_STATUS} **"

@@ -29,16 +29,6 @@ const BUILTIN_TEMPLATES = [
 ];
 const LOGO_SIZES = ['48', '64', '96', '128', '192'];
 const ALLOWED_LOGO_EXT = ['png', 'jpg', 'jpeg'];
-const STRATEGIES = [
-  { value: 'multimodal', label: 'Multimodal VLM (sees video + audio)' },
-  { value: 'transcript-llm', label: 'Transcript LLM (text-only)' },
-];
-// multimodal sends the video to a video-capable Bedrock model (Pegasus);
-// transcript-llm uses any TEXT model.
-const STRATEGY_CAPABILITY = {
-  'transcript-llm': 'text',
-  multimodal: 'video',
-};
 const MODES = [
   {
     value: 'full',
@@ -64,11 +54,10 @@ export default class OutputTab extends mxAlert(BaseAnalysisTab) {
       editProjectId: null,
       activeRenderId: null,
       detect: {
-        strategy: 'multimodal',
         modelId: '',
+        rankModelId: '',
         prompt: '',
         maxSegments: 30,
-        minConfidence: 0.7,
       },
     };
     this.$iotReceiverName = `output-tab-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
@@ -295,53 +284,39 @@ export default class OutputTab extends mxAlert(BaseAnalysisTab) {
 
     wrap.append($('<p/>').addClass('lead-s mb-1').html('Run detection'));
     wrap.append($('<p/>').addClass('lead-xs text-muted mb-2').html(
-      'Pick a strategy and Bedrock model, optionally tune the prompt. '
-      + 'Min confidence (0–1) is the primary quality filter — only segments scoring at or above it survive. '
-      + 'Max segments is a runaway ceiling. '
+      'Pick a video describer and a rank model, optionally tune the prompt. '
+      + 'The pipeline detects shot boundaries, describes each shot with the video model, '
+      + 'then asks the rank model to score every shot against your prompt. '
+      + 'You always get the top N matches by score; "Highlights to keep" sets N. '
       + 'Results land as a new highlight set in the dropdown above.'
     ));
 
     const grid = $('<div/>').addClass('d-flex flex-wrap');
     wrap.append(grid);
 
-    const strategyGroup = this.makeFormGroup('Strategy');
-    const strategySelect = $('<select/>').addClass('custom-select custom-select-sm')
-      .attr('data-role', 'detect-strategy');
-    STRATEGIES.forEach((s) => {
-      strategySelect.append($('<option/>').attr('value', s.value).text(s.label));
-    });
-    strategySelect.val(this.$state.detect.strategy);
-    strategySelect.on('change', () => {
-      this.$state.detect.strategy = strategySelect.val();
-      this.reloadDetectModelOptions();
-    });
-    strategyGroup.append(strategySelect);
-    grid.append(strategyGroup);
-
-    const modelGroup = this.makeFormGroup('Model');
+    const modelGroup = this.makeFormGroup('Video describer');
     const modelSelect = $('<select/>').addClass('custom-select custom-select-sm')
       .attr('data-role', 'detect-model');
-    modelSelect.append($('<option/>').attr('value', '').text('(default)'));
+    modelSelect.append($('<option/>').attr('value', '').text('— Select a model —'));
     modelSelect.on('change', () => {
       this.$state.detect.modelId = modelSelect.val();
+      this.applyDetectSubmitEnable();
     });
     modelGroup.append(modelSelect);
     grid.append(modelGroup);
 
-    const confGroup = this.makeFormGroup('Min confidence');
-    const confInput = $('<input/>').addClass('form-control form-control-sm')
-      .attr('type', 'number').attr('min', '0').attr('max', '1').attr('step', '0.05')
-      .attr('data-role', 'detect-min-confidence')
-      .val(this.$state.detect.minConfidence);
-    confInput.on('input', () => {
-      const v = Number(confInput.val());
-      const safe = Number.isFinite(v) ? v : 0.7;
-      this.$state.detect.minConfidence = Math.max(0, Math.min(1, safe));
+    const rankGroup = this.makeFormGroup('Rank model');
+    const rankSelect = $('<select/>').addClass('custom-select custom-select-sm')
+      .attr('data-role', 'detect-rank-model');
+    rankSelect.append($('<option/>').attr('value', '').text('— Select a model —'));
+    rankSelect.on('change', () => {
+      this.$state.detect.rankModelId = rankSelect.val();
+      this.applyDetectSubmitEnable();
     });
-    confGroup.append(confInput);
-    grid.append(confGroup);
+    rankGroup.append(rankSelect);
+    grid.append(rankGroup);
 
-    const maxGroup = this.makeFormGroup('Max segments (ceiling)');
+    const maxGroup = this.makeFormGroup('Highlights to keep');
     const maxInput = $('<input/>').addClass('form-control form-control-sm')
       .attr('type', 'number').attr('min', '1').attr('max', '100')
       .attr('data-role', 'detect-max')
@@ -370,12 +345,23 @@ export default class OutputTab extends mxAlert(BaseAnalysisTab) {
     const submitBtn = $('<button/>').attr('type', 'button')
       .addClass('btn btn-sm btn-primary mr-2')
       .attr('data-role', 'detect-submit')
+      .attr('disabled', 'disabled')
       .html('Detect highlights');
     submitBtn.on('click', () => this.runHighlightDetection());
     submitRow.append(submitBtn);
     wrap.append(submitRow);
 
     return wrap;
+  }
+
+  applyDetectSubmitEnable() {
+    const submitBtn = this.$root().find('[data-role="detect-submit"]');
+    const ready = !!(this.$state.detect.modelId && this.$state.detect.rankModelId);
+    if (ready) {
+      submitBtn.removeAttr('disabled');
+    } else {
+      submitBtn.attr('disabled', 'disabled');
+    }
   }
 
   makeFormGroup(label) {
@@ -385,12 +371,20 @@ export default class OutputTab extends mxAlert(BaseAnalysisTab) {
   }
 
   async reloadDetectModelOptions() {
-    const select = this.$root().find('[data-role="detect-model"]');
+    await Promise.all([
+      this._populateModelDropdown('detect-model', 'video', 'modelId'),
+      this._populateModelDropdown('detect-rank-model', 'text', 'rankModelId'),
+    ]);
+    this.applyDetectSubmitEnable();
+  }
+
+  // Populate one model dropdown. The user must explicitly pick — there is
+  // no implicit default and no auto-select.
+  async _populateModelDropdown(role, capability, stateKey) {
+    const select = this.$root().find(`[data-role="${role}"]`);
     if (select.length === 0) return;
-    const capability = STRATEGY_CAPABILITY[this.$state.detect.strategy] || 'text';
-    const previous = this.$state.detect.modelId;
     select.empty();
-    select.append($('<option/>').attr('value', '').text('(default)'));
+    select.append($('<option/>').attr('value', '').text('— Select a model —'));
     try {
       const res = await ApiHelper.getModels(capability);
       const providers = (res && res.providers) || {};
@@ -404,12 +398,8 @@ export default class OutputTab extends mxAlert(BaseAnalysisTab) {
     } catch (e) {
       console.error('getModels failed:', e);
     }
-    if (previous && select.find(`option[value="${previous}"]`).length > 0) {
-      select.val(previous);
-    } else {
-      this.$state.detect.modelId = '';
-      select.val('');
-    }
+    select.val('');
+    this.$state.detect[stateKey] = '';
   }
 
   async refreshHighlightSets(preferredId) {
@@ -435,14 +425,15 @@ export default class OutputTab extends mxAlert(BaseAnalysisTab) {
         const promptTail = promptStr.length > 0
           ? ` · "${promptStr.length > 60 ? `${promptStr.slice(0, 60)}…` : promptStr}"`
           : '';
+        const modelTag = (s.modelId || '').split('.').pop() || '-';
         let label;
         if (st === 'PROCESSING') {
-          label = `⚙ ${ts} · ${s.strategy || '-'} · running${promptTail}`;
+          label = `⚙ ${ts} · ${modelTag} · running${promptTail}`;
         } else if (st === 'FAILED') {
           const err = (s.error || 'failed').slice(0, 60);
-          label = `✗ ${ts} · ${s.strategy || '-'} · ${err}${promptTail}`;
+          label = `✗ ${ts} · ${modelTag} · ${err}${promptTail}`;
         } else {
-          label = `${ts} · ${s.strategy || '-'} · ${cnt} seg${promptTail}`;
+          label = `${ts} · ${modelTag} · ${cnt} seg${promptTail}`;
         }
         select.append($('<option/>')
           .attr('value', s.highlightSetId)
@@ -488,8 +479,9 @@ export default class OutputTab extends mxAlert(BaseAnalysisTab) {
     const ts = row.createdAt ? new Date(row.createdAt).toLocaleString() : '';
     const phase = row.phase ? ` · phase ${e(row.phase)}` : '';
     const pct = (typeof row.percent === 'number') ? ` · ${row.percent}%` : '';
+    const modelTag = (row.modelId || '').split('.').pop() || '-';
     banner.html(
-      `<strong>⚙ Detecting highlights…</strong> ${e(row.strategy || '-')}`
+      `<strong>⚙ Detecting highlights…</strong> ${e(modelTag)}`
       + `${pct} · started ${e(ts)}${phase}<br>`
       + '<span class="text-muted">Status will update automatically. '
       + 'You can leave this page — the run continues server-side.</span>'
@@ -534,13 +526,15 @@ export default class OutputTab extends mxAlert(BaseAnalysisTab) {
   async runHighlightDetection() {
     const status = this.$root().find('[data-role="highlights-status"]');
     const submitBtn = this.$root().find('[data-role="detect-submit"]');
-    const conf = Number(this.$state.detect.minConfidence);
+    if (!this.$state.detect.modelId || !this.$state.detect.rankModelId) {
+      status.text('Pick a video describer and a rank model.');
+      return;
+    }
     const body = {
-      strategy: this.$state.detect.strategy,
+      modelId: this.$state.detect.modelId,
+      rankModelId: this.$state.detect.rankModelId,
       maxSegments: Number(this.$state.detect.maxSegments) || 30,
-      minConfidence: Number.isFinite(conf) ? Math.max(0, Math.min(1, conf)) : 0.7,
     };
-    if (this.$state.detect.modelId) body.modelId = this.$state.detect.modelId;
     const trimmed = (this.$state.detect.prompt || '').trim();
     if (trimmed.length > 0) body.prompt = trimmed;
     try {

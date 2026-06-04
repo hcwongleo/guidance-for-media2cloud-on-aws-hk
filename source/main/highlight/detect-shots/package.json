@@ -1,0 +1,13 @@
+{
+  "name": "m2c-highlight-detect-shots",
+  "version": "1.0.0",
+  "description": "OpenCV scene detection (Python) — produces shot boundaries for per-shot Pegasus describe",
+  "private": true,
+  "scripts": {
+    "build:clean": "rm -rf dist && mkdir -p dist",
+    "build:copy": "cp -v index.py dist/",
+    "build": "npm-run-all -s build:clean build:copy",
+    "zip": "cd dist && zip -rq"
+  },
+  "author": "aws-mediaent-solutions"
+}

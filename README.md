@@ -53,7 +53,7 @@ A side-by-side "AI editor" on the Transcribe tab that lets a producer rewrite, t
 
 **Notes**
 - The VTT lives in S3 as the source of truth — the editor PUTs back to S3 on save, so the next webapp load reflects the edit. SRT export is a pure client-side conversion.
-- The same VTT is used downstream by the Highlight Reel "transcript-llm" strategy and by Publish-to-VOD as an optional sidecar / burn-in caption track.
+- The same VTT is used downstream by the Highlight Reel rank step (per-shot dialogue is attached as evidence so the ranker can match against actual spoken words) and by Publish-to-VOD as an optional sidecar / burn-in caption track.
 
 ### Publish-to-Short-Form pipeline (landscape + portrait)
 Lets the user pick a finished asset, choose 16:9 or 9:16, and submit a MediaConvert job that emits HLS + MP4 proxies into the Proxy bucket. The Publish tab shows job progress, finished outputs, signed download links, and a **Delete files** button that wipes the S3 prefix.
@@ -77,39 +77,56 @@ Lets the user pick a finished asset, choose 16:9 or 9:16, and submit a MediaConv
 - For SMART_CROP to work the IAM service role must include both `mediaconvert:*` **and** `elemental-inference:*`. Watch for error 1432 if the inference action is missing.
 
 ### Highlight clipping + video editor (short-form video)
-Auto-detects highlight moments in a long-form video and lets the user assemble a short-form cut with a timeline editor. Uses **TwelveLabs Pegasus 1.2** on Bedrock for native-multimodal scoring, with chunking for inputs >30 minutes.
+Auto-detects highlight moments in a video and lets the user assemble a short-form cut with a timeline editor. The pipeline pairs a video model that *describes* shots with a text model that *ranks* them against the user's prompt — separating temporal grounding (where) from intent matching (which moments matter).
 
 ![Highlight Reel](./deployment/tutorials/diagrams/highlight-reel.png)
 > Architecture diagram source: [`highlight-reel.drawio.xml`](./deployment/tutorials/diagrams/highlight-reel.drawio.xml)
 
+**Pipeline shape (linear, single path)**
+```
+start-pipeline → detect-shots (OpenCV) → Map(describe-shot, video LLM) → rank-shots (text LLM)
+```
+
 **AWS services in play**
-- [Amazon Bedrock Runtime — TwelveLabs Pegasus 1.2](https://docs.aws.amazon.com/bedrock/latest/userguide/model-providers-twelvelabs.html) — sync `InvokeModel` with `mediaSource.s3Location.bucketOwner` required; tops out around 60 min per call so we cap chunks at 25 min for timestamp accuracy.
-- [AWS Elemental MediaConvert](https://docs.aws.amazon.com/mediaconvert/latest/ug/cutting-inputs.html) — for inputs >30 min, `InputClippings` + `Codec=PASSTHROUGH` stream-copy splits the proxy into 25-minute chunks without re-encoding.
-- [AWS Step Functions Map state](https://docs.aws.amazon.com/step-functions/latest/dg/amazon-states-language-map-state.html) — runs Pegasus calls in parallel across chunks; `Catch` handler persists FAILED rows so jobs survive refresh.
-- [Amazon DynamoDB](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/) — 4 new tables (`HighlightSets`, `EditProjects`, `Renders`, `HighlightSettings`).
-- [AWS IoT Core](https://docs.aws.amazon.com/iot/latest/developerguide/) — pushes `started` / `progress` / `completed` events to the webapp via the existing M2C MQTT topic.
+- [PySceneDetect](https://www.scenedetect.com/) on Lambda (Python 3.12) — `ContentDetector` produces frame-grounded shot boundaries directly from the proxy MP4 bytes, with a fixed-30s fallback for talking-head content (low cut density).
+- [Amazon Bedrock Runtime — TwelveLabs Pegasus 1.2](https://docs.aws.amazon.com/bedrock/latest/userguide/model-providers-twelvelabs.html) — sync `InvokeModel` per shot with `mediaSource.s3Location.bucketOwner`. Pegasus *describes* each shot only; it does not rank.
+- [Amazon Bedrock Runtime — Converse API](https://docs.aws.amazon.com/bedrock/latest/userguide/conversation-inference.html) — Nova / Claude / Qwen / DeepSeek (user-picked, no defaults) score every shot 0.0–1.0 against the user prompt with the per-shot transcript slice attached as evidence.
+- [AWS Elemental MediaConvert](https://docs.aws.amazon.com/mediaconvert/latest/ug/cutting-inputs.html) — `InputClippings` + `Codec=PASSTHROUGH` stream-copy clips each shot into a small MP4 (no re-encode).
+- [AWS Step Functions Map state](https://docs.aws.amazon.com/step-functions/latest/dg/amazon-states-language-map-state.html) — describes shots in parallel (concurrency=4); a per-shot `Catch` lets one bad clip skip without killing the job.
+- [Amazon DynamoDB](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/) — 4 tables (`HighlightSets`, `EditProjects`, `Renders`, `HighlightSettings`).
+- [AWS IoT Core](https://docs.aws.amazon.com/iot/latest/developerguide/) — pushes `started` / `completed` / `error` events to the webapp via the existing M2C MQTT topic.
 
 **Backend (`source/main/highlight/`)**
-- `plan-chunks/` — chooses single-call vs chunked path (>30 min triggers chunking), persists the PROCESSING row, and emits Step Functions Map inputs.
-- `detect-highlights/` — single-call multimodal Pegasus invocation when the video fits in 30 minutes.
-- `detect-highlight-chunk/` — per-chunk Lambda: submits the MediaConvert split job, waits for chunk-NN.mp4, then calls Pegasus.
-- `merge-chunks/` — offsets per-chunk timestamps back to the global timeline, deduplicates near-duplicate segments, deletes `_pegasus-chunks/<setId>/` from S3, and writes the COMPLETED (or FAILED) row.
+- `start-pipeline/` — allocates `highlightSetId`, persists the PROCESSING row, publishes the IoT `started` event. Requires both `modelId` (video describer) and `rankModelId` (text ranker) — no defaults, no silent fallbacks.
+- `detect-shots/` — Python 3.12 + `scenedetect` + `opencv-python-headless`. Adaptive: vision-detected boundaries when cut density is high enough, fixed 30s clips otherwise. Merges sub-5s shots (Pegasus rejects clips <4s) and splits >60s shots.
+- `describe-shot/` — Map state worker. MediaConvert clips one shot, HEAD-probes S3 to absorb the eventual-consistency lag, calls the chosen video model. Returns `{title, description}` only — no scoring.
+- `rank-shots/` — final stage. Loads the Transcribe JSON (if any), slices spoken words per shot, sends one Bedrock Converse call to the chosen text model with all shot descriptions + their dialogue, then takes the top-K by score. Output segments are prefixed with `#1 ·`, `#2 ·`… in the title so every UI surface (editor, dropdowns, render history) shows the rank automatically.
 - `compose-edl/` — converts the user-edited segment list into a MediaConvert clip-and-stitch job spec (HLS 1080p/720p/480p + MP4 proxy), 25 fps, CBR.
 - `start-render/`, `render-status/`, `publish-to-library/` — render-stage Lambdas.
 
 **API (`source/api/lib/operations/`)**
-- `highlightOp.js` — `POST/GET/DELETE /highlight/{uuid}` and `/highlight/{uuid}/{highlightSetId}`. The `GET` list endpoint server-side merges saved edits from `EditProjects` so the UI shows the user's current segments, not the original auto-detected ones.
-- `highlightSettingsOp.js` — editable per-asset detection config (model, prompt, max segments).
+- `highlightOp.js` — `POST/GET/DELETE /highlight/{uuid}` and `/highlight/{uuid}/{highlightSetId}`. POST requires `modelId` + `rankModelId`; missing either returns a clear 400. The `GET` list endpoint server-side merges saved edits from `EditProjects` so the UI shows the user's current segments, not the original auto-detected ones.
+- `modelsOp.js` — `GET /models?capability={text|video|vision}`. The `text` filter excludes TwelveLabs (Pegasus declares TEXT input but actually requires a video — leaving it in would let users pick an unusable model for transcript-only callers like Transcribe AI Edit).
+- `highlightSettingsOp.js` — editable per-asset detection config (default models, prompt template, max segments).
 - `editsOp.js` — CRUD on `EditProjects` (segments, publish-to-library flag, aspect ratio, burn-captions flag).
 - `rendersOp.js` — submit / list / get / delete renders. `DELETE` paginates the S3 prefix and removes every output object before deleting the DDB row.
 
 **Frontend (`source/webapp/src/lib/js/app/.../analysis/highlight/`)**
 - `highlightTab.js` — list/edit/delete highlight sets, render history.
 - `highlightEditorModal.js` + `editorTracks.js` — drag-to-trim segment timeline with frame-accurate scrubbing.
+- `outputTab.js` — detection form. Two model dropdowns (Video describer / Rank model), both with empty placeholders; submit stays disabled until both are picked.
+
+**Why this shape**
+- **Frame-grounded timestamps.** Shot boundaries come from OpenCV frame-difference math, not from a model "guessing" where to cut. No more drift accumulation, no more LLM-style regular-grid hallucinations (0/10/20/30 s patterns we saw when Pegasus was asked to pick its own timestamps).
+- **Pegasus does what it's good at.** Describing one short clip is its core skill. Asking it to *rank* against an arbitrary user task is asking a video-grounding model to do instruction-following — which it does worse than even a small text LLM.
+- **The text LLM does what it's good at.** Comparing N descriptions against a user prompt and producing scored ranking — exactly what instruction-tuned LLMs do well. Transcript dialogue is attached per shot, so for talking-head content the ranker reads the actual words spoken in each shot.
+- **Two knobs are independent.** `maxSegments` is a post-filter cap (top-K by score, applied *after* the LLM scores everything). It does not appear in the rank prompt. Different rank models calibrate score scales differently, so we no longer expose `minConfidence` — users get the count they ask for instead of a portability-broken absolute threshold.
+- **Cost is bounded by video duration, not chunk count.** Pegasus charges per second of video input, so 1 long call and N short calls covering the same total seconds cost the same. Splitting into many shots is free except for the per-call HTTP overhead.
 
 **Notes**
-- Chunking uses MediaConvert *stream-copy* (`Codec: PASSTHROUGH`), not re-encode. Audio is re-encoded to AAC 96 kbps because the underlying encoder rejects ADTS-in-MP4 stream copy. Chunks are scoped to `s3://<proxy>/<uuid>/_pegasus-chunks/` and IAM-restricted to that prefix only — highlight detection cannot reach raw or proxy media.
-- Pegasus timestamp precision degrades on long inputs; the 25-minute chunk target is the sweet spot we found between extra Bedrock calls and tight timestamps.
+- Shot MP4s are scoped to `s3://<proxy>/<uuid>/_pegasus-shots/<setId>/` and IAM-restricted to that prefix only — highlight detection cannot reach raw or proxy media.
+- `rank-shots` deletes the shot prefix on COMPLETED *and* on FAILED, so failed runs don't leak storage.
+- The Python `detect-shots` is the only Python Lambda in m2c — it exists because PySceneDetect and OpenCV have no equivalent JS ecosystem. Everything else stays Node and shares `core-lib`.
 
 ### Cantonese (zh-HK) localization
 
@@ -588,18 +605,20 @@ Storage isn't in this table — it lives in C.
 
 #### Detect highlights
 
-Auto-picked by speech density (≥0.6 wps → transcript-llm; < 0.6 → multimodal). User can override.
+User picks a video describer (Pegasus is the only one in the dropdown today since it's the only TwelveLabs model on Bedrock; future TwelveLabs releases get added automatically) and a rank model (any text-capable Bedrock model — Nova / Claude / Qwen / DeepSeek). Cost is dominated by Pegasus's per-source-second meter; everything else is rounding error.
 
-| Source | transcript-llm (Nova Pro default) | multimodal (Pegasus 1.2 default) |
-|---|---|---|
-| 5 min | ~$0.005 | ~$0.45 |
-| 30 min | ~$0.014 | ~$2.70 |
-| 60 min | ~$0.024 | ~$5.85 (auto-chunked: 3× Pegasus + 1 split job) |
-| 2 h | ~$0.042 | ~$11.70 (5× Pegasus + 1 split job) |
+| Source duration | Pegasus describe (per-second meter) | Rank LLM (Nova Lite) | Rank LLM (Claude Haiku 4.5) | MediaConvert clips (PASSTHROUGH) |
+|---|---|---|---|---|
+| 5 min | ~$0.45 | ~$0.0001 | ~$0.001 | ~$0.05 |
+| 30 min | ~$2.70 | ~$0.0003 | ~$0.005 | ~$0.10 |
+| 60 min | ~$5.40 | ~$0.0006 | ~$0.010 | ~$0.20 |
+| 2 h | ~$10.80 | ~$0.0012 | ~$0.020 | ~$0.40 |
 
-> Multimodal is **~200× more expensive** than transcript-llm — only worth it for sparse-speech footage (b-roll, action, sports). The auto-picker handles this; manual override comes from the highlight Settings UI ([Features and Customizations](#features-and-customizations)).
+**Total per highlight job ≈ Pegasus column + rank-model column + MC clips column**, e.g. a 30-min job with Claude Haiku ranker is ~$2.81 (≈ same as the old chunked-Pegasus path; rank LLM cost is < 1%).
 
-Pegasus 1.2 lists at **$0.0015/source-second** ($0.09/min). Chunking uses MediaConvert PASSTHROUGH so split-job overhead is small (~$0.45 for 60 min) relative to the Pegasus calls themselves.
+Pegasus 1.2 lists at **$0.0015/source-second** ($0.09/min). The bill is bounded by the source video's duration regardless of how many shots OpenCV produced — N short Pegasus calls covering the same total seconds cost the same as 1 long call (per-call HTTP overhead is negligible).
+
+Rank model is your choice — Nova Lite for cheapest, Claude Haiku 4.5 for noticeably better instruction-following on compositional prompts ("highlight scene changes, AWS service announcements, openings, closings"). Rank step gets the user prompt + every shot description + the per-shot transcript slice in one Bedrock Converse call.
 
 #### Render (compose-edl → MediaConvert HLS 1080p/720p/480p + MP4)
 
@@ -627,28 +646,29 @@ Lifecycle to Glacier Instant Retrieval ($0.004/GB-mo) for ~80% savings on cold a
 
 ### End-to-end example
 
-Single 30-min Cantonese source on the **Dev/Test stack**: analyze + 1 transcript-llm highlight detection + 1 render of a 90-second short + 1 publish in 9:16 portrait.
+Single 30-min Cantonese source on the **Dev/Test stack**: analyze + 1 highlight detection (Pegasus describe + Claude Haiku rank) + 1 render of a 90-second short + 1 publish in 9:16 portrait.
 
 | When | Line | Cost |
 |---|---|---|
 | Month 1 | A — Always-on (Dev/Test) | $115.00 |
 | Month 1 | B — Analyze | $12.50 |
-| Month 1 | B — Detect highlights (transcript-llm) | $0.01 |
+| Month 1 | B — Detect highlights (Pegasus + Claude Haiku rank) | ~$2.81 |
 | Month 1 | B — Render 90 s | $0.05 |
 | Month 1 | B — Publish 90 s portrait | $0.27 |
 | Month 1 | C — Storage (1 mo) | $0.10 |
-| | **Month 1 total** | **~$128** |
+| | **Month 1 total** | **~$130.73** |
 | Month 2+ | A + C only (no new activity) | **~$115/mo** |
-| Each extra 30-min video | B-only marginal | **~$12.83 + ~$0.10/mo storage** |
+| Each extra 30-min video | B-only marginal | **~$15.63 + ~$0.10/mo storage** |
 
-Switching that detection from transcript-llm to **multimodal Pegasus 1.2** raises the per-video marginal to ~$15.50.
+Highlight detection is dominated by the Pegasus per-source-second meter (~$0.09/min). The rank step adds <1%.
 
 **Top cost levers** (biggest first):
 1. **Dev/Test OpenSearch instead of Production** — $540/mo gap, biggest lever by far.
 2. **Disable Rekognition Celebs + Faces** if you don't need them — saves ~$0.20/min (~$6 per 30-min video).
 3. **Use Haiku 4.5 over Sonnet 4.6** for scene description — Sonnet is ~5× the Bedrock line.
-4. **Let highlight detection auto-pick** — only force multimodal for sparse-speech footage (200× cost gap).
-5. **Lifecycle cold assets to Glacier IR** — 80% off the storage tail; **Delete files** button for render/publish outputs that have been exported elsewhere.
+4. **Pick Nova Lite as rank model** instead of Claude Haiku — saves a fraction of a cent per highlight job (negligible at low volume; meaningful only at very high volume).
+5. **Skip highlight detection on assets you won't clip** — the Pegasus per-second meter is the largest highlight cost; running it speculatively on every ingested video costs ~$2.70 per 30-min source.
+6. **Lifecycle cold assets to Glacier IR** — 80% off the storage tail; **Delete files** button for render/publish outputs that have been exported elsewhere.
 
 __
 

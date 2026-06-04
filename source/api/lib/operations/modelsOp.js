@@ -95,8 +95,11 @@ function _filter(models, capability) {
   if (capability === 'text') {
     // Multimodal models like Nova still accept text-only prompts, so include
     // anything with TEXT input — vision/video capability doesn't disqualify.
+    // EXCEPT TwelveLabs Pegasus: declares TEXT input but the call REQUIRES
+    // a mediaSource video, so it's unusable for text-only callers.
     return _group(models.filter((m) =>
-      (m.inputModalities || []).includes('TEXT')));
+      (m.inputModalities || []).includes('TEXT') &&
+      m.providerName !== 'TwelveLabs'));
   }
   return _group(models);
 }

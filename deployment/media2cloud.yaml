@@ -1254,7 +1254,7 @@ Resources:
                         Resource:
                             - !Sub arn:aws:states:${AWS::Region}:${AWS::AccountId}:execution:${HighlightStack.Outputs.HighlightDetectionStateMachineName}:*
                             - !Sub arn:aws:states:${AWS::Region}:${AWS::AccountId}:execution:${HighlightStack.Outputs.RenderPublishStateMachineName}:*
-                    # DynamoDB - HighlightSets: API reads + deletes; writes still happen in detect-highlights Lambda
+                    # DynamoDB - HighlightSets: API reads + deletes; writes happen in start-pipeline (PROCESSING) and rank-shots (COMPLETED/FAILED)
                     -
                         Effect: Allow
                         Action:
@@ -1775,6 +1775,7 @@ Resources:
                     - CustomUserAgent
                 AwsSdkLayer: !GetAtt CoreStack.Outputs.AwsSdkLayer
                 CoreLibLayer: !GetAtt CoreStack.Outputs.CoreLibLayer
+                SceneDetectLayer: !GetAtt CoreStack.Outputs.SceneDetectLayer
                 ProxyBucket: !GetAtt CoreStack.Outputs.ProxyBucket
                 IngestTable: !GetAtt BackendStack.Outputs.IngestTable
                 MediaConvertEndpoint: !GetAtt CoreStack.Outputs.MediaConvertEndpoint

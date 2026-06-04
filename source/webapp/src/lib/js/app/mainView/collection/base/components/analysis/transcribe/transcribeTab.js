@@ -649,14 +649,14 @@ export default class TranscribeTab extends mxAlert(BaseAnalysisTab) {
       aiToggleBtn.html(isHidden ? 'AI Edit ▴' : 'AI Edit ▾');
 
       if (isHidden && modelSelect.children().length === 0) {
+        modelSelect.append($('<option/>').attr('value', '').text('— Select a model —'));
         try {
           const models = await ApiHelper.getModels();
           const providers = (models || {}).providers || {};
           Object.keys(providers).sort().forEach((provider) => {
             const group = $('<optgroup/>').attr('label', provider);
             providers[provider].forEach((m) => {
-              const opt = $('<option/>').attr('value', m.id).text(m.name);
-              group.append(opt);
+              group.append($('<option/>').attr('value', m.id).text(m.name));
             });
             modelSelect.append(group);
           });

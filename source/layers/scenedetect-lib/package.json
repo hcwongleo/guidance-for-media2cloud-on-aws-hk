@@ -1,0 +1,7 @@
+{
+  "name": "scenedetect-lib-layer",
+  "version": "1.0.0",
+  "description": "Lambda layer providing PySceneDetect + opencv-python-headless + numpy for Python 3.12 — used by detect-shots.",
+  "private": true,
+  "author": "aws-mediaent-solutions"
+}

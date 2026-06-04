@@ -1,7 +1,7 @@
 {
-  "name": "m2c-highlight-detect-chunk",
+  "name": "m2c-highlight-describe-shot",
   "version": "1.0.0",
-  "description": "Cut one chunk via MediaConvert, run Pegasus on it, return offset segments",
+  "description": "Clip one OpenCV-detected shot via MediaConvert, run Pegasus on it, return a single scored segment",
   "main": "index.js",
   "private": true,
   "scripts": {

@@ -1,0 +1,4 @@
+scenedetect==0.6.7.1
+opencv-python-headless==4.12.0.88
+numpy==2.2.6
+boto3>=1.35.0

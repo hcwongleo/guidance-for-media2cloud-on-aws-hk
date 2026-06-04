@@ -1,7 +1,7 @@
 {
-  "name": "m2c-detect-highlights",
+  "name": "m2c-highlight-start-pipeline",
   "version": "1.0.0",
-  "description": "Detect highlight segments in an ingested video using Bedrock LLM/VLM",
+  "description": "Allocate highlightSetId, write PROCESSING row, IoT 'started' event, hand off to strategy-specific path",
   "main": "index.js",
   "private": true,
   "scripts": {

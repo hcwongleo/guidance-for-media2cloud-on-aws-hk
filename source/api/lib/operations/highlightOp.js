@@ -78,17 +78,16 @@ class HighlightOp extends BaseOp {
     }
 
     const body = this.request.body || {};
-    const strategy = body.strategy || 'multimodal';
-    if (strategy !== 'multimodal' && strategy !== 'transcript-llm') {
-      throw new M2CException(`unsupported strategy: ${strategy}`);
-    }
     const modelId = body.modelId || null;
+    const rankModelId = body.rankModelId || null;
+    if (!modelId) {
+      throw new M2CException('modelId is required (video model used to describe each shot)');
+    }
+    if (!rankModelId) {
+      throw new M2CException('rankModelId is required (text model used to rank shots against the prompt)');
+    }
     const prompt = body.prompt || null;
     const maxSegments = Number(body.maxSegments) || 30;
-    const rawConfidence = Number(body.minConfidence);
-    const minConfidence = Number.isFinite(rawConfidence)
-      ? Math.max(0, Math.min(1, rawConfidence))
-      : 0.7;
     const owner = body.owner || this.request.cognitoIdentityId || 'anonymous';
 
     // Resolve transcriptKey + proxy MP4 + durationSec from existing M2C state.
@@ -115,11 +114,8 @@ class HighlightOp extends BaseOp {
       || proxies.find((p) => p.mime === 'video/mp4');
     const proxyKey = body.proxyKey || (videoProxy && videoProxy.key);
 
-    if (strategy === 'multimodal' && !proxyKey) {
-      throw new M2CException('multimodal requires a video proxy; ensure ingest produced a video/mp4 proxy');
-    }
-    if (strategy === 'transcript-llm' && !transcriptKey) {
-      throw new M2CException('transcript-llm requires a transcript; none found for this asset');
+    if (!proxyKey) {
+      throw new M2CException('a video/mp4 proxy is required; ensure ingest produced one');
     }
 
     const ingestDurationSec = (ingestRow && ingestRow.duration)
@@ -130,11 +126,10 @@ class HighlightOp extends BaseOp {
       uuid,
       transcriptKey,
       proxyKey,
-      strategy,
       modelId,
+      rankModelId,
       prompt,
       maxSegments,
-      minConfidence,
       durationSec: ingestDurationSec,
       owner,
       accountId: this.request.accountId,

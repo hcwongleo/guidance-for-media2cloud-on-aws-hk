@@ -5,7 +5,7 @@
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
 
-        <mxCell id="title" value="Highlight Reel — multimodal pipeline (TwelveLabs Pegasus)" style="text;html=1;align=center;fontSize=18;fontStyle=1;" vertex="1" parent="1">
+        <mxCell id="title" value="Highlight Reel — shot-based pipeline (OpenCV → video LLM describes → text LLM ranks)" style="text;html=1;align=center;fontSize=18;fontStyle=1;" vertex="1" parent="1">
           <mxGeometry x="40" y="20" width="1320" height="30" as="geometry" />
         </mxCell>
 
@@ -29,124 +29,130 @@
           <mxGeometry x="500" y="125" width="50" height="50" as="geometry" />
         </mxCell>
 
-        <mxCell id="planChunks" value="plan-chunks Lambda&#xa;splitNeeded? &amp; persist&#xa;PROCESSING row" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4CE;strokeColor=#D79B00;fontSize=11;" vertex="1" parent="1">
-          <mxGeometry x="620" y="120" width="180" height="60" as="geometry" />
+        <mxCell id="startPipeline" value="start-pipeline Lambda&#xa;allocate highlightSetId,&#xa;persist PROCESSING row,&#xa;IoT 'started'" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4CE;strokeColor=#D79B00;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="620" y="115" width="200" height="70" as="geometry" />
         </mxCell>
 
         <mxCell id="ddb" value="DynamoDB&#xa;HighlightSets" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#3334B9;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=12;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.dynamodb;" vertex="1" parent="1">
-          <mxGeometry x="850" y="125" width="50" height="50" as="geometry" />
+          <mxGeometry x="870" y="125" width="50" height="50" as="geometry" />
         </mxCell>
 
         <mxCell id="iot" value="IoT Core&#xa;detect-highlight topic" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#8C4FFF;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=12;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.iot_core;" vertex="1" parent="1">
-          <mxGeometry x="950" y="125" width="50" height="50" as="geometry" />
+          <mxGeometry x="970" y="125" width="50" height="50" as="geometry" />
         </mxCell>
 
-        <mxCell id="choiceLabel" value="Choice: durationSec &gt; 30 min &amp;&amp; strategy = multimodal ?" style="text;html=1;align=center;fontSize=12;fontStyle=2;" vertex="1" parent="1">
-          <mxGeometry x="200" y="220" width="1000" height="20" as="geometry" />
+        <mxCell id="phaseLabel" value="Linear pipeline — works for any video duration" style="text;html=1;align=center;fontSize=12;fontStyle=2;" vertex="1" parent="1">
+          <mxGeometry x="60" y="220" width="1280" height="20" as="geometry" />
         </mxCell>
 
-        <mxCell id="singleBox" value="SINGLE-CALL PATH (≤ 30 min)" style="rounded=0;whiteSpace=wrap;html=1;dashed=1;fillColor=none;strokeColor=#0066CC;fontSize=12;fontStyle=1;verticalAlign=top;align=left;" vertex="1" parent="1">
-          <mxGeometry x="60" y="260" width="600" height="200" as="geometry" />
+        <mxCell id="phase1Box" value="1. SHOT DETECTION (frame-grounded boundaries)" style="rounded=0;whiteSpace=wrap;html=1;dashed=1;fillColor=none;strokeColor=#0066CC;fontSize=12;fontStyle=1;verticalAlign=top;align=left;" vertex="1" parent="1">
+          <mxGeometry x="60" y="260" width="380" height="220" as="geometry" />
         </mxCell>
 
-        <mxCell id="detect" value="detect-highlights Lambda&#xa;builds Pegasus prompt + S3 ref" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#ED7100;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.lambda;" vertex="1" parent="1">
-          <mxGeometry x="100" y="310" width="50" height="50" as="geometry" />
+        <mxCell id="detectShots" value="detect-shots Lambda&#xa;(Python 3.12)" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#ED7100;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.lambda;" vertex="1" parent="1">
+          <mxGeometry x="100" y="320" width="50" height="50" as="geometry" />
         </mxCell>
 
-        <mxCell id="bedrock1" value="Bedrock Runtime&#xa;InvokeModel sync&#xa;us.twelvelabs.pegasus-1-2-v1:0" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#01A88D;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.bedrock;" vertex="1" parent="1">
-          <mxGeometry x="280" y="310" width="50" height="50" as="geometry" />
+        <mxCell id="sceneLayer" value="scenedetect-lib layer&#xa;(opencv-python-headless,&#xa;PySceneDetect)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E1D5E7;strokeColor=#9673A6;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="80" y="395" width="190" height="60" as="geometry" />
         </mxCell>
 
-        <mxCell id="proxy1" value="S3 proxy.mp4&#xa;(M2C ingested H.264 720p)" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#7AA116;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.s3;" vertex="1" parent="1">
-          <mxGeometry x="460" y="310" width="50" height="50" as="geometry" />
+        <mxCell id="proxyS3" value="S3 proxy.mp4" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#7AA116;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.s3;" vertex="1" parent="1">
+          <mxGeometry x="320" y="320" width="50" height="50" as="geometry" />
         </mxCell>
 
-        <mxCell id="multiBox" value="CHUNKED PATH (&gt; 30 min) — Step Functions Map state, parallel" style="rounded=0;whiteSpace=wrap;html=1;dashed=1;fillColor=none;strokeColor=#CC0066;fontSize=12;fontStyle=1;verticalAlign=top;align=left;" vertex="1" parent="1">
-          <mxGeometry x="700" y="260" width="640" height="370" as="geometry" />
+        <mxCell id="phase2Box" value="2. DESCRIBE EACH SHOT (Step Functions Map state, parallel) — video LLM" style="rounded=0;whiteSpace=wrap;html=1;dashed=1;fillColor=none;strokeColor=#CC0066;fontSize=12;fontStyle=1;verticalAlign=top;align=left;" vertex="1" parent="1">
+          <mxGeometry x="460" y="260" width="500" height="220" as="geometry" />
         </mxCell>
 
-        <mxCell id="mapState" value="Map state&#xa;(per 25-min chunk)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F5DEFF;strokeColor=#9673A6;fontSize=11;" vertex="1" parent="1">
-          <mxGeometry x="720" y="300" width="140" height="40" as="geometry" />
+        <mxCell id="mapState" value="Map state&#xa;concurrency=4&#xa;per-shot Catch (skip)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F5DEFF;strokeColor=#9673A6;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="480" y="295" width="160" height="60" as="geometry" />
         </mxCell>
 
-        <mxCell id="detectChunk" value="detect-highlight-chunk&#xa;Lambda" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#ED7100;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.lambda;" vertex="1" parent="1">
-          <mxGeometry x="900" y="290" width="50" height="50" as="geometry" />
+        <mxCell id="describeShot" value="describe-shot Lambda" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#ED7100;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.lambda;" vertex="1" parent="1">
+          <mxGeometry x="690" y="305" width="50" height="50" as="geometry" />
         </mxCell>
 
-        <mxCell id="mc1" value="MediaConvert&#xa;split job&#xa;(InputClippings,&#xa;Codec=PASSTHROUGH)" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#D45B07;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.elemental_mediaconvert;" vertex="1" parent="1">
-          <mxGeometry x="1010" y="290" width="50" height="50" as="geometry" />
+        <mxCell id="mc" value="MediaConvert&#xa;stream-copy clip&#xa;Codec=PASSTHROUGH" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#D45B07;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.elemental_mediaconvert;" vertex="1" parent="1">
+          <mxGeometry x="800" y="305" width="50" height="50" as="geometry" />
         </mxCell>
 
-        <mxCell id="chunkS3" value="S3 _pegasus-chunks/&#xa;&lt;uuid&gt;/&lt;setId&gt;/chunk-NN.mp4" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#7AA116;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.s3;" vertex="1" parent="1">
-          <mxGeometry x="1130" y="290" width="50" height="50" as="geometry" />
+        <mxCell id="shotS3" value="S3 _pegasus-shots/&#xa;&lt;uuid&gt;/&lt;setId&gt;/shot-NNN.mp4" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#7AA116;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.s3;" vertex="1" parent="1">
+          <mxGeometry x="690" y="395" width="50" height="50" as="geometry" />
         </mxCell>
 
-        <mxCell id="bedrock2" value="Bedrock Pegasus&#xa;(per chunk)" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#01A88D;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.bedrock;" vertex="1" parent="1">
-          <mxGeometry x="1240" y="290" width="50" height="50" as="geometry" />
+        <mxCell id="bedrockVideo" value="Bedrock Pegasus 1.2&#xa;InvokeModel sync&#xa;(per shot)" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#01A88D;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.bedrock;" vertex="1" parent="1">
+          <mxGeometry x="870" y="395" width="50" height="50" as="geometry" />
         </mxCell>
 
-        <mxCell id="merge" value="merge-chunks Lambda&#xa;offset+merge segments,&#xa;delete chunk-NN.mp4 from S3,&#xa;write COMPLETED row" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4CE;strokeColor=#D79B00;fontSize=11;" vertex="1" parent="1">
-          <mxGeometry x="900" y="430" width="220" height="80" as="geometry" />
+        <mxCell id="phase3Box" value="3. RANK + WRITE (text LLM scores all shots vs user prompt + transcript)" style="rounded=0;whiteSpace=wrap;html=1;dashed=1;fillColor=none;strokeColor=#388E3C;fontSize=12;fontStyle=1;verticalAlign=top;align=left;" vertex="1" parent="1">
+          <mxGeometry x="980" y="260" width="380" height="220" as="geometry" />
         </mxCell>
 
-        <mxCell id="catch" value="Catch handler&#xa;persist FAILED row,&#xa;cleanup chunks" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F8CECC;strokeColor=#B85450;fontSize=11;" vertex="1" parent="1">
-          <mxGeometry x="900" y="540" width="220" height="60" as="geometry" />
+        <mxCell id="rankShots" value="rank-shots Lambda&#xa;load transcript,&#xa;slice per shot,&#xa;LLM rank,&#xa;top-K, write COMPLETED,&#xa;cleanup S3, IoT 'completed'" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4CE;strokeColor=#D79B00;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="1000" y="290" width="200" height="100" as="geometry" />
+        </mxCell>
+
+        <mxCell id="bedrockRank" value="Bedrock Converse&#xa;Nova / Claude / Qwen&#xa;(user-picked)" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#01A88D;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.bedrock;" vertex="1" parent="1">
+          <mxGeometry x="1230" y="305" width="50" height="50" as="geometry" />
+        </mxCell>
+
+        <mxCell id="transcriptS3" value="S3 transcribe.json&#xa;(if available)" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#7AA116;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.s3;" vertex="1" parent="1">
+          <mxGeometry x="1050" y="410" width="50" height="50" as="geometry" />
+        </mxCell>
+
+        <mxCell id="catch" value="Per-task Catch &amp;&amp; per-shot Catch&#xa;Failures route to rank-shots in FAILED mode → DDB FAILED row + S3 cleanup" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F8CECC;strokeColor=#B85450;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="60" y="510" width="1300" height="40" as="geometry" />
         </mxCell>
 
         <mxCell id="composeBox" value="RENDER (optional, user-triggered)" style="rounded=0;whiteSpace=wrap;html=1;dashed=1;fillColor=none;strokeColor=#666666;fontSize=12;fontStyle=1;verticalAlign=top;align=left;" vertex="1" parent="1">
-          <mxGeometry x="60" y="660" width="1280" height="200" as="geometry" />
+          <mxGeometry x="60" y="580" width="1300" height="200" as="geometry" />
         </mxCell>
 
         <mxCell id="composeFn" value="compose-edl Lambda&#xa;build MediaConvert EDL&#xa;from approved segments" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#ED7100;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.lambda;" vertex="1" parent="1">
-          <mxGeometry x="160" y="720" width="50" height="50" as="geometry" />
+          <mxGeometry x="180" y="640" width="50" height="50" as="geometry" />
         </mxCell>
 
         <mxCell id="mc2" value="MediaConvert&#xa;multi-input concat job" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#D45B07;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.elemental_mediaconvert;" vertex="1" parent="1">
-          <mxGeometry x="350" y="720" width="50" height="50" as="geometry" />
+          <mxGeometry x="380" y="640" width="50" height="50" as="geometry" />
         </mxCell>
 
-        <mxCell id="reelS3" value="S3 highlight-reel.mp4" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#7AA116;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.s3;" vertex="1" parent="1">
-          <mxGeometry x="540" y="720" width="50" height="50" as="geometry" />
+        <mxCell id="reelS3" value="S3 highlight-reel.mp4&#xa;+ HLS 1080p/720p/480p" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#7AA116;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.s3;" vertex="1" parent="1">
+          <mxGeometry x="580" y="640" width="50" height="50" as="geometry" />
         </mxCell>
 
         <mxCell id="iot2" value="IoT Core push&#xa;reel-ready" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#8C4FFF;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.iot_core;" vertex="1" parent="1">
-          <mxGeometry x="720" y="720" width="50" height="50" as="geometry" />
+          <mxGeometry x="780" y="640" width="50" height="50" as="geometry" />
         </mxCell>
 
         <mxCell id="user2" value="User downloads&#xa;or publishes" style="shape=mxgraph.aws4.user;sketch=0;fillColor=#232F3E;strokeColor=#232F3E;" vertex="1" parent="1">
-          <mxGeometry x="900" y="720" width="60" height="60" as="geometry" />
+          <mxGeometry x="940" y="640" width="60" height="60" as="geometry" />
         </mxCell>
 
         <mxCell id="e1" style="endArrow=classic;html=1;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="user" target="cf"><mxGeometry relative="1" as="geometry" /></mxCell>
         <mxCell id="e2" style="endArrow=classic;html=1;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="cf" target="apigw"><mxGeometry relative="1" as="geometry" /></mxCell>
         <mxCell id="e3" style="endArrow=classic;html=1;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="apigw" target="apifn"><mxGeometry relative="1" as="geometry" /></mxCell>
         <mxCell id="e4" style="endArrow=classic;html=1;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="apifn" target="sfn"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <mxCell id="e5" style="endArrow=classic;html=1;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="sfn" target="planChunks"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <mxCell id="e6" style="endArrow=classic;html=1;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="planChunks" target="ddb"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e5" style="endArrow=classic;html=1;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="sfn" target="startPipeline"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e6" style="endArrow=classic;html=1;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="startPipeline" target="ddb"><mxGeometry relative="1" as="geometry" /></mxCell>
         <mxCell id="e7" style="endArrow=classic;html=1;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="ddb" target="iot"><mxGeometry relative="1" as="geometry" /></mxCell>
 
-        <mxCell id="e8" value="if ≤ 30 min" style="endArrow=classic;html=1;exitX=0.25;exitY=1;entryX=0.5;entryY=0;dashed=1;fontSize=10;" edge="1" parent="1" source="planChunks" target="detect"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <mxCell id="e9" style="endArrow=classic;html=1;" edge="1" parent="1" source="detect" target="bedrock1"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <mxCell id="e10" style="endArrow=classic;html=1;dashed=1;" edge="1" parent="1" source="bedrock1" target="proxy1"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e8" style="endArrow=classic;html=1;dashed=1;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="startPipeline" target="detectShots"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e9" style="endArrow=classic;html=1;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="detectShots" target="proxyS3"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e10" style="endArrow=classic;html=1;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="proxyS3" target="mapState"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e11" style="endArrow=classic;html=1;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="mapState" target="describeShot"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e12" style="endArrow=classic;html=1;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="describeShot" target="mc"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e13" style="endArrow=classic;html=1;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="describeShot" target="shotS3"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e14" style="endArrow=classic;html=1;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="shotS3" target="bedrockVideo"><mxGeometry relative="1" as="geometry" /></mxCell>
 
-        <mxCell id="e11" value="if &gt; 30 min" style="endArrow=classic;html=1;exitX=0.75;exitY=1;entryX=0.2;entryY=0;dashed=1;fontSize=10;" edge="1" parent="1" source="planChunks" target="mapState"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <mxCell id="e12" style="endArrow=classic;html=1;" edge="1" parent="1" source="mapState" target="detectChunk"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <mxCell id="e13" style="endArrow=classic;html=1;" edge="1" parent="1" source="detectChunk" target="mc1"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <mxCell id="e14" style="endArrow=classic;html=1;" edge="1" parent="1" source="mc1" target="chunkS3"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <mxCell id="e15" style="endArrow=classic;html=1;" edge="1" parent="1" source="chunkS3" target="bedrock2"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e15" style="endArrow=classic;html=1;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="describeShot" target="rankShots"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e16" style="endArrow=classic;html=1;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="rankShots" target="bedrockRank"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e17" style="endArrow=classic;html=1;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="rankShots" target="transcriptS3"><mxGeometry relative="1" as="geometry" /></mxCell>
 
-        <mxCell id="e16" style="endArrow=classic;html=1;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="detectChunk" target="merge"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <mxCell id="e17" style="endArrow=classic;html=1;dashed=1;" edge="1" parent="1" source="merge" target="catch"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <mxCell id="e18" style="endArrow=classic;html=1;exitX=1;exitY=0;entryX=0;entryY=0.5;" edge="1" parent="1" source="merge" target="ddb"><mxGeometry relative="1" as="geometry" /></mxCell>
-
-        <mxCell id="e19" style="endArrow=classic;html=1;" edge="1" parent="1" source="composeFn" target="mc2"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <mxCell id="e20" style="endArrow=classic;html=1;" edge="1" parent="1" source="mc2" target="reelS3"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <mxCell id="e21" style="endArrow=classic;html=1;" edge="1" parent="1" source="reelS3" target="iot2"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <mxCell id="e22" style="endArrow=classic;html=1;" edge="1" parent="1" source="iot2" target="user2"><mxGeometry relative="1" as="geometry" /></mxCell>
-
-        <mxCell id="legend" value="Legend: solid arrow = synchronous flow • dashed arrow = S3 read or alternate path • boxes group SFN choice branches" style="text;html=1;align=center;fontSize=11;fontStyle=2;fontColor=#666666;" vertex="1" parent="1">
-          <mxGeometry x="40" y="870" width="1320" height="20" as="geometry" />
-        </mxCell>
+        <mxCell id="e20" style="endArrow=classic;html=1;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="composeFn" target="mc2"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e21" style="endArrow=classic;html=1;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="mc2" target="reelS3"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e22" style="endArrow=classic;html=1;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="reelS3" target="iot2"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e23" style="endArrow=classic;html=1;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="iot2" target="user2"><mxGeometry relative="1" as="geometry" /></mxCell>
       </root>
     </mxGraphModel>
   </diagram>

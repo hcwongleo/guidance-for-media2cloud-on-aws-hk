@@ -1,7 +1,7 @@
 {
-  "name": "m2c-highlight-merge-chunks",
+  "name": "m2c-highlight-rank-shots",
   "version": "1.0.0",
-  "description": "Merge per-chunk Pegasus segments into the final HighlightSets row",
+  "description": "Final stage: read transcript, rank shot descriptions against user prompt via Bedrock LLM, take top-K, write COMPLETED/FAILED row + IoT event",
   "main": "index.js",
   "private": true,
   "scripts": {

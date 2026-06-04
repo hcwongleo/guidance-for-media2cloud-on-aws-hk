@@ -425,15 +425,17 @@ export default class OutputTab extends mxAlert(BaseAnalysisTab) {
         const promptTail = promptStr.length > 0
           ? ` · "${promptStr.length > 60 ? `${promptStr.slice(0, 60)}…` : promptStr}"`
           : '';
-        const modelTag = (s.modelId || '').split('.').pop() || '-';
+        // Model IDs are stable per-stack — they don't help users tell runs
+        // apart. Keep the dropdown label focused on what varies (timestamp,
+        // count, prompt) and surface model details in the editor modal.
         let label;
         if (st === 'PROCESSING') {
-          label = `⚙ ${ts} · ${modelTag} · running${promptTail}`;
+          label = `⚙ ${ts} · running${promptTail}`;
         } else if (st === 'FAILED') {
           const err = (s.error || 'failed').slice(0, 60);
-          label = `✗ ${ts} · ${modelTag} · ${err}${promptTail}`;
+          label = `✗ ${ts} · ${err}${promptTail}`;
         } else {
-          label = `${ts} · ${modelTag} · ${cnt} seg${promptTail}`;
+          label = `${ts} · ${cnt} seg${promptTail}`;
         }
         select.append($('<option/>')
           .attr('value', s.highlightSetId)
@@ -479,9 +481,8 @@ export default class OutputTab extends mxAlert(BaseAnalysisTab) {
     const ts = row.createdAt ? new Date(row.createdAt).toLocaleString() : '';
     const phase = row.phase ? ` · phase ${e(row.phase)}` : '';
     const pct = (typeof row.percent === 'number') ? ` · ${row.percent}%` : '';
-    const modelTag = (row.modelId || '').split('.').pop() || '-';
     banner.html(
-      `<strong>⚙ Detecting highlights…</strong> ${e(modelTag)}`
+      `<strong>⚙ Detecting highlights…</strong>`
       + `${pct} · started ${e(ts)}${phase}<br>`
       + '<span class="text-muted">Status will update automatically. '
       + 'You can leave this page — the run continues server-side.</span>'

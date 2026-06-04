@@ -171,9 +171,16 @@ export default class HighlightEditorModal {
     const promptTail = promptStr.length > 0
       ? ` · "${promptStr.length > 60 ? `${promptStr.slice(0, 60)}…` : promptStr}"`
       : '';
+    // Model IDs are surfaced here (not in the dropdown label) so users can
+    // see which video describer + ranker produced this set without making
+    // the picker labels too long. Full IDs land in the tooltip.
+    const modelTail = this._modelTail();
+    const tooltipParts = [promptStr || '(default prompt)'];
+    if (this.highlightSet.modelId) tooltipParts.push(`Video: ${this.highlightSet.modelId}`);
+    if (this.highlightSet.rankModelId) tooltipParts.push(`Rank: ${this.highlightSet.rankModelId}`);
     modal.find('.modal-title')
-      .text(`${MSG_TITLE} — ${ep.name}${promptTail}`)
-      .attr('title', promptStr || '(default prompt)');
+      .text(`${MSG_TITLE} — ${ep.name}${modelTail}${promptTail}`)
+      .attr('title', tooltipParts.join(' | '));
 
     const player = modal.find('video[data-role="player"]')[0];
     if (player && this.state.proxyUrl) {
@@ -194,6 +201,18 @@ export default class HighlightEditorModal {
       state: this.state,
     });
     this.$tracks.render();
+  }
+
+  // Compact "video › rank" suffix for the modal title. Keeps just the
+  // last dot-separated segment of each model id, which is the human-
+  // readable name (e.g. pegasus-1-2-v1:0, claude-haiku-4-5).
+  _modelTail() {
+    const tag = (id) => (id || '').split('.').pop() || '';
+    const v = tag(this.highlightSet.modelId);
+    const r = tag(this.highlightSet.rankModelId);
+    if (!v && !r) return '';
+    if (v && r) return ` · ${v} › ${r}`;
+    return ` · ${v || r}`;
   }
 
   async _onSave() {

@@ -802,7 +802,13 @@ Resources:
                 - Runtime
                 - Version
             MemorySize: 256
-            Timeout: 120
+            # 15-min ceiling: rank LLM generation scales with shot count.
+            # A 200-shot, ~16K-token output takes ~160s on Nova Lite alone;
+            # the previous 120s ceiling killed it mid-emit. 900s covers up
+            # to ~30K-token outputs at the slowest realistic generation
+            # rates. Lambda runtime is cheap relative to Bedrock token
+            # spend, so this only matters if a job actually takes that long.
+            Timeout: 900
             Handler: index.handler
             Role: !GetAtt RankShotsRole.Arn
             Code:

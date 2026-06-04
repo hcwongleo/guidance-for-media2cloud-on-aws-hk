@@ -133,12 +133,13 @@ async function callRanker({ region, modelId, prompt }) {
       role: 'user',
       content: [{ text: prompt }],
     }],
-    // Each shot ranking serializes to ~80 output tokens. A 1-hour video
-    // can produce 150+ shots → 12K+ tokens. 4K truncated mid-array on a
-    // 42-min basketball clip with 125 shots. 16K covers ~3 hours; well
-    // within Nova/Claude/Qwen/DeepSeek's 32K output ceiling. Bedrock only
-    // bills emitted tokens, so bumping the cap is free on shorter videos.
-    inferenceConfig: { maxTokens: 16384, temperature: 0.2 },
+    // Each shot ranking serializes to ~80 output tokens. Real-world shot
+    // density on action sports is much higher than I first estimated:
+    // a 42-min basketball clip produced 200 shots → ~16K output, hitting
+    // 16K mid-emit. 24K leaves headroom for ~300 shots. Bedrock charges
+    // per token emitted, not per cap, so the bump is free on shorter
+    // videos. Still well under Nova/Claude/Qwen/DeepSeek's 32K ceiling.
+    inferenceConfig: { maxTokens: 24576, temperature: 0.2 },
   });
   const response = await client.send(command);
   const blocks = (response.output && response.output.message && response.output.message.content) || [];

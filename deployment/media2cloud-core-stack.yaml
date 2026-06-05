@@ -384,7 +384,14 @@ Resources:
                         Sid: AllowPublishCloudFrontReadOutputPrefix
                         Effect: Allow
                         Action: s3:GetObject
-                        Resource: !Sub ${ProxyBucket.Arn}/*/output/*
+                        Resource:
+                            - !Sub ${ProxyBucket.Arn}/*/output/*
+                            # Workspace-shared logo library (added in v4.0.40).
+                            # MediaConvert's SMART_CROP + ImageInserter requires
+                            # HTTP(S) URLs for logo overlays; compose-edl rewrites
+                            # the s3:// URI to the Publish CloudFront domain, so
+                            # CloudFront needs read access to this prefix too.
+                            - !Sub ${ProxyBucket.Arn}/_shared/logos/*
                         Principal:
                             Service: cloudfront.amazonaws.com
                         Condition:

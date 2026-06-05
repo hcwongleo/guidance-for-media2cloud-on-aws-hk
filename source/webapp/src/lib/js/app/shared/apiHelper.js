@@ -46,6 +46,7 @@ const ENDPOINTS = {
   Renders: `${ApiEndpoint}/${ApiOps.Renders}`,
   McTemplates: `${ApiEndpoint}/mc-templates`,
   SubtitlePrompts: `${ApiEndpoint}/subtitle-prompts`,
+  Logos: `${ApiEndpoint}/logos`,
 };
 
 let GRAPH_ENDPOINT;
@@ -745,6 +746,32 @@ export default class ApiHelper {
     return _authHttpRequest.send(
       'DELETE',
       `${ENDPOINTS.McTemplates}/${encodeURIComponent(name)}`
+    );
+  }
+
+  // Workspace-shared logo library (added in v4.0.40). Settings tab does
+  // CRUD; OutputTab presents the picker. Storage is keyed by name only,
+  // not per-asset — uploads land at s3://<proxy>/_shared/logos/<name>.<ext>.
+  static async listLogos() {
+    return _authHttpRequest.send(
+      'GET',
+      ENDPOINTS.Logos
+    );
+  }
+
+  static async presignSharedLogoUpload(name, payload) {
+    return _authHttpRequest.send(
+      'POST',
+      `${ENDPOINTS.Logos}/${encodeURIComponent(name)}`,
+      undefined,
+      payload || {}
+    );
+  }
+
+  static async deleteSharedLogo(name) {
+    return _authHttpRequest.send(
+      'DELETE',
+      `${ENDPOINTS.Logos}/${encodeURIComponent(name)}`
     );
   }
 }

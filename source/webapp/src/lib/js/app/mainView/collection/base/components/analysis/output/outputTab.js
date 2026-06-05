@@ -27,8 +27,6 @@ const BUILTIN_TEMPLATES = [
   { value: 'mp4_landscape', label: 'Landscape MP4 (built-in)' },
   { value: 'mp4_portrait', label: 'Portrait MP4 (built-in)' },
 ];
-const LOGO_SIZES = ['48', '64', '96', '128', '192'];
-const ALLOWED_LOGO_EXT = ['png', 'jpg', 'jpeg'];
 const MODES = [
   {
     value: 'full',
@@ -50,8 +48,10 @@ export default class OutputTab extends mxAlert(BaseAnalysisTab) {
       mode: 'full',
       template: DEFAULT_TEMPLATE,
       burnSubtitles: false,
-      logos: {},
-      logoLayout: { xPct: 80, yPct: 5, opacity: 100 },
+      // logoUri: null = no overlay; otherwise the s3:// URI of the chosen
+      // entry from the workspace logo library (Settings tab manages it).
+      logoUri: null,
+      logoLayout: { xPct: 80, yPct: 5, widthPct: 8, opacity: 100 },
       subtitleLayout: { heightPct: 3.5, bottomPct: 8, sideMarginPct: 5, maxLines: 2 },
       editProjectId: null,
       activeRenderId: null,
@@ -627,24 +627,75 @@ export default class OutputTab extends mxAlert(BaseAnalysisTab) {
     // Subtitle layout knobs — only meaningful when burn-in is on.
     section.append(this.createSubtitleKnobs());
 
-    // Logo overlays
-    section.append($('<p/>').addClass('lead-s mt-3 mb-1').html('Logo overlays'));
+    // Logo overlay — picker sourced from the workspace logo library
+    // (Settings tab uploads + manages it). One logo per render; native
+    // pixel size; X/Y/Opacity below position it.
+    section.append($('<p/>').addClass('lead-s mt-3 mb-1').html('Logo overlay'));
     section.append($('<p/>').addClass('lead-xs text-muted mb-2').html(
-      'Upload one PNG/JPG per output resolution. The render picks the largest uploaded '
-      + 'size and rescales it per output. PNG with transparency is recommended.'
+      'Pick a logo from the workspace library. Uploads are managed under '
+      + 'Settings &rarr; Logo overlay library.'
     ));
+    section.append(this.createLogoPicker());
 
-    const grid = $('<div/>').addClass('row no-gutters');
-    LOGO_SIZES.forEach((size) => {
-      grid.append(this.createLogoCell(size));
-    });
-    section.append(grid);
-
-    // Logo layout knobs — corner / width / inset / opacity, shared
-    // across all logo sizes.
+    // Logo position knobs — X / Y / Opacity, applied per render.
     section.append(this.createLogoKnobs());
 
     return section;
+  }
+
+  createLogoPicker() {
+    const row = $('<div/>').addClass('form-inline d-flex flex-wrap align-items-center mb-2');
+
+    const select = $('<select/>')
+      .addClass('custom-select custom-select-sm w-auto mr-2 mb-1')
+      .attr('data-role', 'logo-picker');
+    select.append($('<option/>').attr('value', '').text('(no overlay)'));
+    row.append(select);
+
+    const refreshBtn = $('<button/>').attr('type', 'button')
+      .addClass('btn btn-sm btn-link mb-1')
+      .html('Refresh');
+    refreshBtn.on('click', () => this.refreshLogoLibrary().catch(() => {}));
+    row.append(refreshBtn);
+
+    const status = $('<span/>')
+      .addClass('lead-xs text-muted ml-2 mb-1')
+      .attr('data-role', 'logo-picker-status');
+    row.append(status);
+
+    select.on('change', () => {
+      this.$state.logoUri = select.val() || null;
+    });
+
+    return row;
+  }
+
+  async refreshLogoLibrary() {
+    const select = this.$root().find('[data-role="logo-picker"]');
+    const status = this.$root().find('[data-role="logo-picker-status"]');
+    if (select.length === 0) return;
+    const previous = this.$state.logoUri;
+    try {
+      status.text('Loading…').removeClass('text-danger text-success').addClass('text-muted');
+      const res = await ApiHelper.listLogos();
+      const logos = (res && res.logos) || [];
+      select.empty();
+      select.append($('<option/>').attr('value', '').text('(no overlay)'));
+      logos.forEach((logo) => {
+        select.append($('<option/>').attr('value', logo.s3uri).text(logo.name));
+      });
+      // Restore prior selection if it's still in the library.
+      if (previous && logos.find((l) => l.s3uri === previous)) {
+        select.val(previous);
+      } else {
+        select.val('');
+        this.$state.logoUri = null;
+      }
+      status.text(`${logos.length} logo(s) available.`).removeClass('text-danger').addClass('text-muted');
+    } catch (e) {
+      console.error(e);
+      status.text(`Error: ${e.message}`).removeClass('text-success text-muted').addClass('text-danger');
+    }
   }
 
   createSubtitleKnobs() {
@@ -699,8 +750,9 @@ export default class OutputTab extends mxAlert(BaseAnalysisTab) {
   createLogoKnobs() {
     const wrap = $('<div/>').addClass('mt-3 mb-1');
     wrap.append($('<p/>').addClass('lead-xs text-muted mb-1').html(
-      'Logo position. X / Y are the % offset of the logo\'s top-left corner from the frame\'s top-left. '
-      + 'X 0% = far left, 100% = far right; Y 0% = top, 100% = bottom. The logo keeps its native pixel size.'
+      'Logo position + size. X / Y are the % offset of the logo\'s top-left from the frame\'s '
+      + 'top-left. Width is the logo\'s width as a % of frame width — same visual size across '
+      + 'all output rungs (480p, 720p, 1080p, MP4). Aspect ratio is preserved.'
     ));
     const row = $('<div/>').addClass('d-flex flex-wrap');
 
@@ -724,90 +776,13 @@ export default class OutputTab extends mxAlert(BaseAnalysisTab) {
 
     row.append(slider('X', 'xPct', 0, 100, 0.5, '%'));
     row.append(slider('Y', 'yPct', 0, 100, 0.5, '%'));
+    row.append(slider('Width', 'widthPct', 1, 40, 0.5, '%'));
     row.append(slider('Opacity', 'opacity', 0, 100, 5, '%'));
 
     wrap.append(row);
     return wrap;
   }
 
-  createLogoCell(size) {
-    const col = $('<div/>').addClass('col-12 col-md-6 col-lg-4 px-0 pr-3 mb-2');
-    const wrap = $('<div/>').addClass('d-flex flex-wrap align-items-center');
-    wrap.append($('<span/>').addClass('lead-xs mr-2').css('width', '6em').text(`${size}px tall`));
-
-    const fileId = `output-logo-${size}-${Math.floor(Math.random() * 1e6)}`;
-    const fileInput = $('<input/>').attr('type', 'file').attr('id', fileId).attr('accept', 'image/png,image/jpeg').css('display', 'none');
-    const pickBtn = $('<button/>').attr('type', 'button')
-      .addClass('btn btn-sm btn-outline-primary mr-2 mb-1')
-      .text('Upload')
-      .attr('data-role', `logo-pick-${size}`);
-    pickBtn.on('click', () => fileInput.trigger('click'));
-    const delBtn = $('<button/>').attr('type', 'button')
-      .addClass('btn btn-sm btn-outline-danger mr-2 mb-1')
-      .text('Remove')
-      .attr('data-role', `logo-del-${size}`)
-      .css('display', 'none');
-    delBtn.on('click', () => this.deleteLogo(size));
-    const status = $('<span/>').addClass('lead-xs text-muted mb-1')
-      .attr('data-role', `logo-status-${size}`);
-
-    fileInput.on('change', async (ev) => {
-      const file = ev.target.files && ev.target.files[0];
-      if (!file) return;
-      await this.uploadLogo(size, file);
-      ev.target.value = '';
-    });
-
-    wrap.append(fileInput).append(pickBtn).append(delBtn).append(status);
-    col.append(wrap);
-    return col;
-  }
-
-  async uploadLogo(size, file) {
-    const status = this.$root().find(`[data-role="logo-status-${size}"]`);
-    const lower = (file.name || '').toLowerCase();
-    let ext = lower.split('.').pop();
-    if (ext === 'jpg') ext = 'jpg';
-    if (!ALLOWED_LOGO_EXT.includes(ext)) {
-      status.text('Unsupported file type — use PNG or JPG.').removeClass('text-success').addClass('text-danger');
-      return;
-    }
-    try {
-      status.text('Requesting upload URL…').removeClass('text-danger text-success').addClass('text-muted');
-      const presign = await ApiHelper.presignLogoUpload(this.media.uuid, { size, ext });
-      status.text('Uploading…');
-      const put = await fetch(presign.url, {
-        method: 'PUT',
-        headers: { 'Content-Type': presign.contentType },
-        body: file,
-      });
-      if (!put.ok) {
-        throw new Error(`upload failed (${put.status})`);
-      }
-      this.$state.logos = { ...(this.$state.logos || {}), [size]: presign.s3uri };
-      this.$root().find(`[data-role="logo-del-${size}"]`).css('display', '');
-      status.text(`Uploaded · ${file.name}`).removeClass('text-muted text-danger').addClass('text-success');
-    } catch (e) {
-      console.error(e);
-      status.text(`Upload failed: ${e.message}`).removeClass('text-muted text-success').addClass('text-danger');
-    }
-  }
-
-  async deleteLogo(size) {
-    const status = this.$root().find(`[data-role="logo-status-${size}"]`);
-    try {
-      status.text('Deleting…').removeClass('text-success text-danger').addClass('text-muted');
-      await ApiHelper.deleteLogo(this.media.uuid, size);
-      const next = { ...(this.$state.logos || {}) };
-      delete next[size];
-      this.$state.logos = next;
-      this.$root().find(`[data-role="logo-del-${size}"]`).css('display', 'none');
-      status.text('Removed.');
-    } catch (e) {
-      console.error(e);
-      status.text(`Delete failed: ${e.message}`).removeClass('text-muted text-success').addClass('text-danger');
-    }
-  }
 
   createControls() {
     const wrap = $('<div/>').addClass('form-group px-0 mt-3 mb-3 d-flex flex-wrap align-items-center');
@@ -867,6 +842,9 @@ export default class OutputTab extends mxAlert(BaseAnalysisTab) {
     // flips to highlights mode.
     this.refreshHighlightSets().catch(() => {});
     this.reloadDetectModelOptions().catch(() => {});
+    // Workspace-shared logo library — populates the picker with whatever
+    // Settings has uploaded.
+    this.refreshLogoLibrary().catch(() => {});
 
     // Pull render history scoped to the asset uuid.
     this.refreshHistory().catch(() => {});
@@ -879,12 +857,17 @@ export default class OutputTab extends mxAlert(BaseAnalysisTab) {
   async startRender() {
     try {
       const mode = this.$state.mode;
+      // Wire format note: we still send `logos` as a {sizeKey: s3uri}
+      // map for backwards compat with compose-edl. Workspace library
+      // gives us a single URI; pack it under the legacy '0' size so
+      // compose-edl's chosen-logo logic picks it.
+      const logos = this.$state.logoUri ? { 0: this.$state.logoUri } : {};
       const renderArgs = {
         uuid: this.media.uuid,
         mode,
         template: this.$state.template || DEFAULT_TEMPLATE,
         burnSubtitles: !!this.$state.burnSubtitles,
-        logos: this.$state.logos || {},
+        logos,
         logoLayout: { ...this.$state.logoLayout },
         subtitleLayout: { ...this.$state.subtitleLayout },
       };

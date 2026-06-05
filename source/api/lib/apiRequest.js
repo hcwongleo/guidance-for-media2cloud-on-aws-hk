@@ -27,6 +27,7 @@ const HighlightSettingsOp = require('./operations/highlightSettingsOp');
 const RendersOp = require('./operations/rendersOp');
 const McTemplatesOp = require('./operations/mcTemplatesOp');
 const SubtitlePromptsOp = require('./operations/subtitlePromptsOp');
+const LogosOp = require('./operations/logosOp');
 
 const OP_REKOGNITION = 'rekognition';
 const OP_TRANSCRIBE = 'transcribe';
@@ -170,6 +171,9 @@ class ApiRequest {
     }
     if (op === 'subtitle-prompts' || op === ApiOps.SubtitlePrompts) {
       return new SubtitlePromptsOp(this);
+    }
+    if (op === 'logos') {
+      return new LogosOp(this);
     }
     throw new M2CException(`operation '${(this.pathParameters || {}).operation}' not supported`);
   }

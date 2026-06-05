@@ -34,6 +34,14 @@ const MSG_SUBTITLE_PROMPTS_DESC = 'Manage the shared library of named prompts us
   + 'is auto-seeded if the library is empty (delete it to reset to the factory '
   + 'prompt). Names must be A-Z, a-z, 0-9, _, - (max 64 chars).';
 
+const MSG_LOGOS = 'Logo overlay library';
+const MSG_LOGOS_DESC = 'Workspace-shared logo files used by the Video Edit '
+  + 'tab&rsquo;s logo overlay. Upload PNG (transparent recommended) or JPG; '
+  + 'each upload becomes a named entry visible to all users. The Video Edit '
+  + 'tab presents the library as a dropdown — pick a logo at Export time and '
+  + 'set its X / Y position there. Names must be A-Z, a-z, 0-9, _, - (max 64 chars).';
+const ALLOWED_LOGO_EXT = ['png', 'jpg', 'jpeg'];
+
 const HASHTAG = TITLE.replaceAll(' ', '');
 
 export default class SettingsTab extends mxAnalysisSettings(BaseTab) {
@@ -52,6 +60,7 @@ export default class SettingsTab extends mxAnalysisSettings(BaseTab) {
 
     const datastoreForm = this.createDatastoreForm();
     const mcTemplatesForm = this.createMcTemplatesForm();
+    const logosForm = this.createLogosForm();
     const subtitlePromptsForm = this.createSubtitlePromptsForm();
 
     const first = container.children()
@@ -61,6 +70,7 @@ export default class SettingsTab extends mxAnalysisSettings(BaseTab) {
       .addClass('col-9 p-0 mx-auto mt-4')
       .append(datastoreForm)
       .append(mcTemplatesForm)
+      .append(logosForm)
       .append(subtitlePromptsForm));
 
     // event handling
@@ -347,6 +357,215 @@ export default class SettingsTab extends mxAnalysisSettings(BaseTab) {
         }
       }
       upload(file, mode, newName).catch((e) => {
+        console.error(e);
+        setStatus(`Upload failed: ${e.message}`, 'err');
+      });
+    });
+
+    container.ready(() => {
+      refresh().catch(() => {});
+    });
+
+    return container;
+  }
+
+  createLogosForm() {
+    const container = $('<div/>')
+      .addClass('ai-group')
+      .addClass('overflow-auto my-auto align-content-start');
+
+    const itemContainer = $('<div/>')
+      .addClass('mt-4');
+    container.append(itemContainer);
+
+    const title = $('<span/>')
+      .addClass('d-block p-2 bg-light text-black lead')
+      .html(MSG_LOGOS);
+    itemContainer.append(title);
+
+    const desc = $('<p/>')
+      .addClass('lead-s mt-4')
+      .html(MSG_LOGOS_DESC);
+    itemContainer.append(desc);
+
+    // Upload control row.
+    const uploadRow = $('<div/>')
+      .addClass('form-inline d-flex flex-wrap align-items-center mb-3');
+    itemContainer.append(uploadRow);
+
+    const uploadBtn = $('<button/>')
+      .addClass('btn btn-sm btn-outline-primary mr-2 mb-1')
+      .attr('type', 'button')
+      .html('Upload logo');
+    const refreshBtn = $('<button/>')
+      .addClass('btn btn-sm btn-link mb-1')
+      .attr('type', 'button')
+      .html('Refresh list');
+    const hiddenFile = $('<input/>')
+      .attr('type', 'file')
+      .attr('accept', 'image/png,image/jpeg')
+      .css('display', 'none');
+    uploadRow.append(uploadBtn).append(refreshBtn).append(hiddenFile);
+
+    const status = $('<span/>')
+      .addClass('lead-xs text-muted ml-2 mb-1 w-100')
+      .attr('data-role', 'logos-status');
+    uploadRow.append(status);
+
+    // Grid of existing logos.
+    const grid = $('<div/>')
+      .addClass('row no-gutters')
+      .attr('data-role', 'logos-grid');
+    itemContainer.append(grid);
+
+    const setStatus = (text, kind) => {
+      status.removeClass('text-muted text-success text-danger');
+      if (kind === 'ok') status.addClass('text-success');
+      else if (kind === 'err') status.addClass('text-danger');
+      else status.addClass('text-muted');
+      status.html(text || '');
+    };
+
+    const cloudfrontUrlForS3Uri = (s3uri) => {
+      // Logos live on the proxy bucket; the same CloudFront distribution
+      // that serves /shared assets fronts the proxy bucket. Render the
+      // S3 URI as an HTTPS URL we can drop into <img>. We don't have a
+      // generic /proxy/ path, but the *.cloudfront.net page itself is
+      // served via the SAME CloudFront, so a same-origin signed URL on
+      // the proxy bucket is the safe fallback. For the Settings preview
+      // we use a presigned GET; otherwise the browser can't read PNG
+      // bytes from a private bucket.
+      // -- v4.0.40 short path: just show the file name and size; full
+      // preview thumbnails would need a separate presign endpoint or
+      // bucket-policy change. Keep it simple for the demo.
+      return null;
+    };
+
+    const renderGrid = (logos) => {
+      grid.empty();
+      if (!logos.length) {
+        grid.append($('<p/>').addClass('lead-xs text-muted').text('No logos uploaded yet.'));
+        return;
+      }
+      logos.forEach((logo) => {
+        const cell = $('<div/>')
+          .addClass('col-12 col-md-6 col-lg-4 px-0 pr-3 mb-2 d-flex align-items-center');
+
+        const previewUrl = cloudfrontUrlForS3Uri(logo.s3uri);
+        const swatch = $('<span/>')
+          .addClass('mr-2')
+          .css({
+            display: 'inline-block',
+            width: '32px',
+            height: '32px',
+            background: '#e9ecef',
+            border: '1px solid #ced4da',
+            borderRadius: '2px',
+            'text-align': 'center',
+            'line-height': '32px',
+            'font-size': '12px',
+            color: '#6c757d',
+            'flex-shrink': 0,
+          });
+        if (previewUrl) {
+          swatch.html(`<img src="${previewUrl}" alt="" style="max-width:32px;max-height:32px;object-fit:contain;display:block;margin:auto;">`);
+        } else {
+          swatch.text((logo.ext || '?').toUpperCase());
+        }
+
+        const meta = $('<div/>').addClass('flex-grow-1');
+        meta.append($('<span/>').addClass('lead-xs').text(logo.name));
+        const detail = $('<span/>').addClass('lead-xs text-muted ml-1');
+        const kb = logo.size ? `${Math.round(logo.size / 102.4) / 10} KB` : '';
+        detail.text(`(${[logo.ext, kb].filter(Boolean).join(', ')})`);
+        meta.append(detail);
+
+        const delBtn = $('<button/>')
+          .addClass('btn btn-sm btn-outline-danger ml-2')
+          .attr('type', 'button')
+          .html('✖')
+          .attr('title', `Delete ${logo.name}`);
+        delBtn.on('click', () => removeLogo(logo.name));
+
+        cell.append(swatch).append(meta).append(delBtn);
+        grid.append(cell);
+      });
+    };
+
+    const refresh = async () => {
+      try {
+        setStatus('Loading logos…');
+        const res = await ApiHelper.listLogos();
+        const logos = (res && res.logos) || [];
+        renderGrid(logos);
+        setStatus(`${logos.length} logo(s) in library.`, 'ok');
+      } catch (e) {
+        console.error(e);
+        setStatus(`Error loading logos: ${e.message}`, 'err');
+      }
+    };
+
+    const upload = async (file) => {
+      if (!file) return;
+      const lower = (file.name || '').toLowerCase();
+      let ext = lower.split('.').pop();
+      if (ext === 'jpeg') ext = 'jpg';
+      if (!ALLOWED_LOGO_EXT.includes(ext)) {
+        setStatus('Unsupported file type — use PNG or JPG.', 'err');
+        return;
+      }
+      // Default name = filename minus extension, sanitised.
+      let proposed = (file.name || '').replace(/\.[^.]+$/, '');
+      proposed = proposed.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 64);
+      if (!/^[A-Za-z0-9_-]{1,64}$/.test(proposed)) {
+        proposed = `logo_${Math.floor(Date.now() / 1000)}`;
+      }
+      const name = window.prompt(
+        'Logo name (A-Z, a-z, 0-9, _, -, max 64 chars). Existing names will be replaced.',
+        proposed
+      );
+      if (!name) return;
+      if (!/^[A-Za-z0-9_-]{1,64}$/.test(name)) {
+        setStatus('Invalid name — A-Z, a-z, 0-9, _, - (max 64 chars).', 'err');
+        return;
+      }
+      try {
+        setStatus(`Requesting upload URL for ${name}…`);
+        const presign = await ApiHelper.presignSharedLogoUpload(name, { ext });
+        setStatus(`Uploading ${file.name} as ${name}…`);
+        const put = await fetch(presign.url, {
+          method: 'PUT',
+          headers: { 'Content-Type': presign.contentType },
+          body: file,
+        });
+        if (!put.ok) throw new Error(`upload failed (${put.status})`);
+        setStatus(`Uploaded ${name}.`, 'ok');
+        await refresh();
+      } catch (e) {
+        console.error(e);
+        setStatus(`Upload failed: ${e.message}`, 'err');
+      }
+    };
+
+    const removeLogo = async (name) => {
+      if (!window.confirm(`Delete logo "${name}"? Renders submitted before this delete will still complete using the cached S3 object only if MediaConvert already pulled it.`)) return;
+      try {
+        setStatus(`Deleting ${name}…`);
+        const res = await ApiHelper.deleteSharedLogo(name);
+        setStatus(`Deleted ${name} (${(res && res.deleted) || 0} file(s)).`, 'ok');
+        await refresh();
+      } catch (e) {
+        console.error(e);
+        setStatus(`Delete failed: ${e.message}`, 'err');
+      }
+    };
+
+    uploadBtn.on('click', () => hiddenFile.trigger('click'));
+    refreshBtn.on('click', () => refresh());
+    hiddenFile.on('change', () => {
+      const file = hiddenFile[0].files[0];
+      hiddenFile.val('');
+      upload(file).catch((e) => {
         console.error(e);
         setStatus(`Upload failed: ${e.message}`, 'err');
       });

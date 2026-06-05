@@ -671,21 +671,24 @@ function toCloudFrontUrl(uri, proxyBucket) {
   return `https://${PUBLISH_CLOUDFRONT_DOMAIN}/${key}`;
 }
 
-// Compute logo position for a single output stream.
+// Compute logo position + size for a single output stream.
 //
-// Logo is rendered at its native pixel size — we DON'T set Width on
-// MediaConvert's InsertableImage, so MC uses the source PNG/JPG's own
-// dimensions. Caller supplies xPct/yPct (% of frame width/height for
-// the logo's top-left); we convert to pixel coords for THIS output's
-// frame size. Same logo will appear at the same proportional position
-// across 1080p / 720p / 480p outputs.
+// Caller supplies xPct/yPct (% of frame width/height for the logo's
+// top-left) and widthPct (logo width as % of frame width). We convert
+// to pixel coords for THIS output's frame size — so the same logo
+// appears at the same proportional position AND the same visual size
+// across the HLS ladder (480p / 720p / 1080p / MP4). Height is
+// intentionally omitted so MC scales the source preserving its native
+// aspect ratio.
 function computeLogoPlacement(frameW, frameH, layout) {
   if (!layout) return null;
   const xPct = Number.isFinite(layout.xPct) ? layout.xPct : 0;
   const yPct = Number.isFinite(layout.yPct) ? layout.yPct : 0;
+  const widthPct = Number.isFinite(layout.widthPct) ? layout.widthPct : 8;
   return {
     ImageX: Math.max(0, Math.round((frameW * xPct) / 100)),
     ImageY: Math.max(0, Math.round((frameH * yPct) / 100)),
+    Width: Math.max(1, Math.round((frameW * widthPct) / 100)),
     Layer: 0,
     Opacity: Math.round(Number.isFinite(layout.opacity) ? layout.opacity : 100),
   };
@@ -933,7 +936,7 @@ exports.handler = async (event) => {
   const logos = (event.logos && typeof event.logos === 'object') ? event.logos : {};
   const logoLayout = (event.logoLayout && typeof event.logoLayout === 'object')
     ? event.logoLayout
-    : { xPct: 80, yPct: 5, opacity: 100 };
+    : { xPct: 80, yPct: 5, widthPct: 8, opacity: 100 };
   const subtitleLayout = (event.subtitleLayout && typeof event.subtitleLayout === 'object')
     ? event.subtitleLayout
     : { heightPct: 3.5, bottomPct: 8, sideMarginPct: 5, maxLines: 2 };

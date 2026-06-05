@@ -17,6 +17,11 @@ const {
   QueryCommand,
 } = require('@aws-sdk/lib-dynamodb');
 const {
+  S3Client,
+  ListObjectsV2Command,
+  DeleteObjectsCommand,
+} = require('@aws-sdk/client-s3');
+const {
   Environment: {
     Solution: {
       Metrics: {
@@ -131,6 +136,7 @@ class RendersOp extends BaseOp {
     const logoLayout = {
       xPct: clamp(inputLogoLayout.xPct, 0, 100, 80),
       yPct: clamp(inputLogoLayout.yPct, 0, 100, 5),
+      widthPct: clamp(inputLogoLayout.widthPct, 1, 40, 8),
       opacity: clamp(inputLogoLayout.opacity, 0, 100, 100),
     };
     const inputSubtitleLayout = (body.subtitleLayout && typeof body.subtitleLayout === 'object') ? body.subtitleLayout : {};
@@ -304,34 +310,55 @@ class RendersOp extends BaseOp {
     }));
     const item = (existing && existing.Item) || undefined;
 
-    let objectsDeleted = 0;
-    if (item && item.uuid) {
-      const prefix = `${item.uuid}/output/${renderId}/`;
-      let token;
-      do {
-        const page = await CommonUtils.listObjects(ProxyBucket, prefix, {
-          ContinuationToken: token,
-        });
-        const contents = (page && page.Contents) || [];
-        for (const obj of contents) {
-          if (!obj || !obj.Key) continue;
-          try {
-            await CommonUtils.deleteObject(ProxyBucket, obj.Key);
-            objectsDeleted += 1;
-          } catch (e) {
-            console.error(`deleteObject ${obj.Key} failed:`, e.message);
-          }
-        }
-        token = (page && page.IsTruncated) ? page.NextContinuationToken : undefined;
-      } while (token);
-    }
-
+    // Drop the DDB row first so the UI sees the deletion immediately.
+    // S3 cleanup follows; if it gets cut off by the API GW timeout it
+    // can be re-run later via a Lambda or just left as orphaned objects
+    // (lifecycle rules can sweep them).
     await doc.send(new DeleteCommand({
       TableName: RendersTable,
       Key: {
         [RendersPartitionKey]: renderId,
       },
     }));
+
+    // S3 cleanup using batched DeleteObjects (up to 1000 keys per
+    // call) — the previous serial DeleteObject loop ran out the API
+    // Gateway 29s integration timeout for renders that emitted many
+    // HLS .ts segments across the resolution ladder.
+    let objectsDeleted = 0;
+    if (item && item.uuid) {
+      const prefix = `${item.uuid}/output/${renderId}/`;
+      const s3 = new S3Client({
+        customUserAgent: CustomUserAgent,
+        retryStrategy: retryStrategyHelper(),
+      });
+      const deadlineMs = Date.now() + 20000; // leave 9s slack before APIGW kills us
+      let token;
+      do {
+        const page = await s3.send(new ListObjectsV2Command({
+          Bucket: ProxyBucket,
+          Prefix: prefix,
+          ContinuationToken: token,
+        }));
+        const keys = ((page && page.Contents) || [])
+          .map((o) => (o && o.Key) ? { Key: o.Key } : null)
+          .filter(Boolean);
+        if (keys.length > 0) {
+          await s3.send(new DeleteObjectsCommand({
+            Bucket: ProxyBucket,
+            Delete: { Objects: keys, Quiet: true },
+          })).catch((e) => {
+            console.error(`DeleteObjects batch failed (${keys.length} keys):`, e && e.message);
+          });
+          objectsDeleted += keys.length;
+        }
+        token = (page && page.IsTruncated) ? page.NextContinuationToken : undefined;
+        if (Date.now() > deadlineMs) {
+          console.warn(`_deleteRender: S3 cleanup ran past 20s deadline; ${objectsDeleted} keys deleted, prefix may have leftovers (${prefix})`);
+          break;
+        }
+      } while (token);
+    }
 
     return {
       renderId,

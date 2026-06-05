@@ -613,6 +613,36 @@ Resources:
                                 httpMethod: POST
                                 contentHandling: CONVERT_TO_TEXT
                                 type: aws_proxy
+                        put:
+                            produces:
+                                - application/json
+                            parameters:
+                                -
+                                    name: uuid
+                                    in: path
+                                    required: true
+                                    type: string
+                                -
+                                    name: operation
+                                    in: path
+                                    required: true
+                                    type: string
+                            response:
+                                "200":
+                                    description: 200 response
+                                    schema:
+                                        $ref: "#/definitions/Empty"
+                            security:
+                                - sigv4: []
+                            x-amazon-apigateway-integration:
+                                uri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ApiLambda.Arn}/invocations
+                                responses:
+                                    default:
+                                        statusCode: "200"
+                                passthroughBehavior: when_no_match
+                                httpMethod: POST
+                                contentHandling: CONVERT_TO_TEXT
+                                type: aws_proxy
                         delete:
                             produces:
                                 - application/json
@@ -780,6 +810,11 @@ Resources:
                         LoggingLevel: ERROR
                     -
                         ResourcePath: /~1{operation}~1{uuid+}
+                        HttpMethod: PUT
+                        DataTraceEnabled: false
+                        LoggingLevel: ERROR
+                    -
+                        ResourcePath: /~1{operation}~1{uuid+}
                         HttpMethod: DELETE
                         DataTraceEnabled: false
                         LoggingLevel: ERROR
@@ -883,6 +918,23 @@ Resources:
             Principal: apigateway.amazonaws.com
             SourceArn: !Sub
                 - arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${RestApi}/${stageName}/POST/*/*
+                - stageName: !FindInMap
+                    - APIGW
+                    - Stage
+                    - Name
+
+    # PUT was added in v4.0.32 for /highlights/{uuid}/{setId} — used by the
+    # editor modal and OutputTab to merge segments + render add-ons onto a
+    # HighlightSets row (the EditProjects table that previously held this
+    # state was dropped in the same release).
+    PUTUuid:
+        Type: AWS::Lambda::Permission
+        Properties:
+            Action: lambda:InvokeFunction
+            FunctionName: !GetAtt ApiLambda.Arn
+            Principal: apigateway.amazonaws.com
+            SourceArn: !Sub
+                - arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${RestApi}/${stageName}/PUT/*/*
                 - stageName: !FindInMap
                     - APIGW
                     - Stage

@@ -73,6 +73,7 @@ exports.handler = async (event) => {
     rankModelId,
     prompt,
     maxSegments = 10,
+    minConfidence = 0.5,
     owner = 'unknown',
     durationSec = 0,
   } = event;
@@ -120,6 +121,7 @@ exports.handler = async (event) => {
     rankModelId,
     prompt: prompt || null,
     maxSegments,
+    minConfidence,
     owner,
     durationSec,
     transcriptKey: transcriptKey || null,

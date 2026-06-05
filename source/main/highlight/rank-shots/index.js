@@ -250,6 +250,7 @@ exports.handler = async (event) => {
     proxyKey,
     transcriptKey,
     maxSegments = 10,
+    minConfidence = 0.5,
     startedAt,
     shotResults,
     error: errorEnvelope,
@@ -344,18 +345,24 @@ exports.handler = async (event) => {
     };
   });
 
-  // Take top maxSegments by score and stamp a rank field (1 = best). Title
-  // stays clean — the editor renders "#<reelIdx> · <title>" client-side
-  // using the reel position; rank lives as its own field so the UI can
-  // surface "Rank #N by AI" without colliding with reel order.
+  // Filter by user-set minConfidence, then take top maxSegments by score.
+  // Why this matters: when the prompt is sparse-match (e.g. "find scored
+  // 3-pointers" on a 200-shot game), the rank model correctly scores most
+  // shots 0.0. If we just took top-K, sort stability would tie-break the
+  // 0.0s by source-time order, putting non-matches from the front of the
+  // video ahead of genuine matches deeper in. minConfidence is the user's
+  // lever to balance "only strong matches" vs "include weak matches".
   const cap = Number(maxSegments) || 10;
-  const segments = [...scored]
+  const conf = Number(minConfidence);
+  const threshold = Number.isFinite(conf) ? Math.max(0, Math.min(1, conf)) : 0.5;
+  const matched = scored.filter((s) => (Number(s.score) || 0) >= threshold);
+  const segments = [...matched]
     .sort((a, b) => b.score - a.score)
     .slice(0, cap)
     .map((s, i) => ({ ...s, rank: i + 1 }))
     .sort((a, b) => a.startSec - b.startSec);
 
-  console.log(`=== ranked ${scored.length} → ${segments.length} kept (maxSegments=${cap})`);
+  console.log(`=== ranked ${scored.length} → ${matched.length} ≥ ${threshold} → ${segments.length} kept (maxSegments=${cap})`);
 
   await ddbDoc().send(new PutCommand({
     TableName: tableName,

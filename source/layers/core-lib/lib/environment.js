@@ -102,16 +102,6 @@ module.exports = {
       PartitionKey: 'uuid',
       SortKey: 'highlightSetId',
     },
-    EditProjects: {
-      Table: `${ResourcePrefix}-edit-projects`,
-      PartitionKey: 'editProjectId',
-      GSI: {
-        Uuid: {
-          Name: 'gsi-uuid',
-          Key: 'uuid',
-        },
-      },
-    },
     Renders: {
       Table: `${ResourcePrefix}-renders`,
       PartitionKey: 'renderId',
@@ -119,6 +109,10 @@ module.exports = {
         EditProjectId: {
           Name: 'gsi-editprojectid',
           Key: 'editProjectId',
+        },
+        Uuid: {
+          Name: 'gsi-uuid',
+          Key: 'uuid',
         },
       },
     },

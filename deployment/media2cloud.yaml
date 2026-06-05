@@ -1254,15 +1254,9 @@ Resources:
                         Resource:
                             - !Sub arn:aws:states:${AWS::Region}:${AWS::AccountId}:execution:${HighlightStack.Outputs.HighlightDetectionStateMachineName}:*
                             - !Sub arn:aws:states:${AWS::Region}:${AWS::AccountId}:execution:${HighlightStack.Outputs.RenderPublishStateMachineName}:*
-                    # DynamoDB - HighlightSets: API reads + deletes; writes happen in start-pipeline (PROCESSING) and rank-shots (COMPLETED/FAILED)
-                    -
-                        Effect: Allow
-                        Action:
-                            - dynamodb:GetItem
-                            - dynamodb:Query
-                            - dynamodb:DeleteItem
-                        Resource: !GetAtt HighlightStack.Outputs.HighlightSetsTableArn
-                    # DynamoDB - EditProjects, Renders, HighlightSettings: full read/write from API
+                    # DynamoDB - HighlightSets, Renders, HighlightSettings: full read/write from API.
+                    # HighlightSets writes happen in start-pipeline (PROCESSING)/rank-shots (COMPLETED/FAILED)
+                    # AND from the editor PUT /highlights/{uuid}/{setId} (segments + render add-ons).
                     -
                         Effect: Allow
                         Action:
@@ -1274,16 +1268,15 @@ Resources:
                             - dynamodb:BatchGetItem
                             - dynamodb:BatchWriteItem
                         Resource:
-                            - !GetAtt HighlightStack.Outputs.EditProjectsTableArn
+                            - !GetAtt HighlightStack.Outputs.HighlightSetsTableArn
                             - !GetAtt HighlightStack.Outputs.RendersTableArn
                             - !GetAtt HighlightStack.Outputs.HighlightSettingsTableArn
-                    # DynamoDB - GSI reads on EditProjects + Renders
+                    # DynamoDB - GSI reads on Renders
                     -
                         Effect: Allow
                         Action:
                             - dynamodb:Query
                         Resource:
-                            - !Sub ${HighlightStack.Outputs.EditProjectsTableArn}/index/*
                             - !Sub ${HighlightStack.Outputs.RendersTableArn}/index/*
 
     ################################################################################

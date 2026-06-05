@@ -43,7 +43,6 @@ const ENDPOINTS = {
   Workflow: `${ApiEndpoint}/${ApiOps.Execution}`,
   Highlights: `${ApiEndpoint}/${ApiOps.Highlights}`,
   HighlightSettings: `${ApiEndpoint}/${ApiOps.HighlightSettings}`,
-  Edits: `${ApiEndpoint}/${ApiOps.Edits}`,
   Renders: `${ApiEndpoint}/${ApiOps.Renders}`,
   McTemplates: `${ApiEndpoint}/mc-templates`,
   SubtitlePrompts: `${ApiEndpoint}/subtitle-prompts`,
@@ -644,6 +643,18 @@ export default class ApiHelper {
     );
   }
 
+  // Update segments + render add-ons (mode/template/burnSubtitles/logos/
+  // aspectRatio/publishToLibrary). Server-side merge: only fields the
+  // body sets are written; everything else preserved.
+  static async updateHighlightSet(uuid, highlightSetId, payload) {
+    return _authHttpRequest.send(
+      'PUT',
+      `${ENDPOINTS.Highlights}/${uuid}/${highlightSetId}`,
+      undefined,
+      payload || {}
+    );
+  }
+
   // Highlight settings (per-owner defaults)
   static async getHighlightSettings(query) {
     return _authHttpRequest.send(
@@ -659,40 +670,6 @@ export default class ApiHelper {
       ENDPOINTS.HighlightSettings,
       undefined,
       payload || {}
-    );
-  }
-
-  // Edit projects
-  static async createEditProject(payload) {
-    return _authHttpRequest.send(
-      'POST',
-      ENDPOINTS.Edits,
-      undefined,
-      payload || {}
-    );
-  }
-
-  static async saveEditProject(editProjectId, payload) {
-    return _authHttpRequest.send(
-      'POST',
-      `${ENDPOINTS.Edits}/${editProjectId}`,
-      undefined,
-      payload || {}
-    );
-  }
-
-  static async getEditProject(editProjectId) {
-    return _authHttpRequest.send(
-      'GET',
-      `${ENDPOINTS.Edits}/${editProjectId}`
-    );
-  }
-
-  static async listEditProjects(uuid) {
-    return _authHttpRequest.send(
-      'GET',
-      ENDPOINTS.Edits,
-      { uuid }
     );
   }
 

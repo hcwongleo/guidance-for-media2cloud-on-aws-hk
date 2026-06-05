@@ -93,7 +93,7 @@ start-pipeline → detect-shots (OpenCV) → Map(describe-shot, video LLM) → r
 - [Amazon Bedrock Runtime — Converse API](https://docs.aws.amazon.com/bedrock/latest/userguide/conversation-inference.html) — Nova / Claude / Qwen / DeepSeek (user-picked, no defaults) score every shot 0.0–1.0 against the user prompt with the per-shot transcript slice attached as evidence.
 - [AWS Elemental MediaConvert](https://docs.aws.amazon.com/mediaconvert/latest/ug/cutting-inputs.html) — `InputClippings` + `Codec=PASSTHROUGH` stream-copy clips each shot into a small MP4 (no re-encode).
 - [AWS Step Functions Map state](https://docs.aws.amazon.com/step-functions/latest/dg/amazon-states-language-map-state.html) — describes shots in parallel (concurrency=4); a per-shot `Catch` lets one bad clip skip without killing the job.
-- [Amazon DynamoDB](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/) — 4 tables (`HighlightSets`, `EditProjects`, `Renders`, `HighlightSettings`).
+- [Amazon DynamoDB](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/) — 3 tables (`HighlightSets`, `Renders`, `HighlightSettings`). Detection results, user-edited segments, and render add-ons all live on the same `HighlightSets` row — collapsed from the previous 4-table layout in v4.0.32 to fix a bug where Export pre-modal would create an empty edit row.
 - [AWS IoT Core](https://docs.aws.amazon.com/iot/latest/developerguide/) — pushes `started` / `completed` / `error` events to the webapp via the existing M2C MQTT topic.
 
 **Backend (`source/main/highlight/`)**
@@ -105,11 +105,10 @@ start-pipeline → detect-shots (OpenCV) → Map(describe-shot, video LLM) → r
 - `start-render/`, `render-status/`, `publish-to-library/` — render-stage Lambdas.
 
 **API (`source/api/lib/operations/`)**
-- `highlightOp.js` — `POST/GET/DELETE /highlight/{uuid}` and `/highlight/{uuid}/{highlightSetId}`. POST requires `modelId` + `rankModelId`; missing either returns a clear 400. The `GET` list endpoint server-side merges saved edits from `EditProjects` so the UI shows the user's current segments, not the original auto-detected ones.
+- `highlightOp.js` — `POST/GET/PUT/DELETE /highlights/{uuid}` and `/highlights/{uuid}/{highlightSetId}`. POST requires `modelId` + `rankModelId`; missing either returns a clear 400. PUT merges segments + render add-ons (mode/template/burnSubtitles/logos/aspectRatio/publishToLibrary/fontScript/name) onto the same row — only the fields the body sets are written, everything else preserved.
 - `modelsOp.js` — `GET /models?capability={text|video|vision}`. The `text` filter excludes TwelveLabs (Pegasus declares TEXT input but actually requires a video — leaving it in would let users pick an unusable model for transcript-only callers like Transcribe AI Edit).
 - `highlightSettingsOp.js` — editable per-asset detection config (default models, prompt template, max segments).
-- `editsOp.js` — CRUD on `EditProjects` (segments, publish-to-library flag, aspect ratio, burn-captions flag).
-- `rendersOp.js` — submit / list / get / delete renders. `DELETE` paginates the S3 prefix and removes every output object before deleting the DDB row.
+- `rendersOp.js` — submit / list / get / delete renders. `POST` requires `editProjectId` (= highlight-set id) and `uuid`. `DELETE` paginates the S3 prefix and removes every output object before deleting the DDB row.
 
 **Frontend (`source/webapp/src/lib/js/app/.../analysis/highlight/`)**
 - `highlightTab.js` — list/edit/delete highlight sets, render history. Dropdown labels keep timestamp + segment count + prompt — the model IDs live in the editor modal title (so two runs differ by what *changed*, not by which models were always-the-same).

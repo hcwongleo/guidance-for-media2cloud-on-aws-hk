@@ -51,6 +51,8 @@ export default class OutputTab extends mxAlert(BaseAnalysisTab) {
       template: DEFAULT_TEMPLATE,
       burnSubtitles: false,
       logos: {},
+      logoLayout: { xPct: 80, yPct: 5, opacity: 100 },
+      subtitleLayout: { heightPct: 3.5, bottomPct: 8, sideMarginPct: 5, maxLines: 2 },
       editProjectId: null,
       activeRenderId: null,
       detect: {
@@ -58,6 +60,7 @@ export default class OutputTab extends mxAlert(BaseAnalysisTab) {
         rankModelId: '',
         prompt: '',
         maxSegments: 30,
+        minConfidence: 0.5,
       },
     };
     this.$iotReceiverName = `output-tab-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
@@ -288,7 +291,8 @@ export default class OutputTab extends mxAlert(BaseAnalysisTab) {
       'Pick a video describer and a rank model, optionally tune the prompt. '
       + 'The pipeline detects shot boundaries, describes each shot with the video model, '
       + 'then asks the rank model to score every shot against your prompt. '
-      + 'You always get the top N matches by score; "Highlights to keep" sets N. '
+      + '<em>Match strength</em> is the floor below which shots are dropped (raise it for stricter matches, lower for broader). '
+      + '<em>Highlights to keep</em> caps the kept count. '
       + 'Results land as a new highlight set in the dropdown above.'
     ));
 
@@ -316,6 +320,20 @@ export default class OutputTab extends mxAlert(BaseAnalysisTab) {
     });
     rankGroup.append(rankSelect);
     grid.append(rankGroup);
+
+    const confGroup = this.makeFormGroup('Match strength');
+    const confInput = $('<input/>').addClass('form-control form-control-sm')
+      .attr('type', 'number').attr('min', '0').attr('max', '1').attr('step', '0.05')
+      .attr('data-role', 'detect-min-confidence')
+      .attr('title', 'Drop shots scoring below this. Different rank models calibrate scores differently — try 0.3 for broader results, 0.7 for stricter. 0 disables the filter.')
+      .val(this.$state.detect.minConfidence);
+    confInput.on('input', () => {
+      const v = Number(confInput.val());
+      const safe = Number.isFinite(v) ? v : 0.5;
+      this.$state.detect.minConfidence = Math.max(0, Math.min(1, safe));
+    });
+    confGroup.append(confInput);
+    grid.append(confGroup);
 
     const maxGroup = this.makeFormGroup('Highlights to keep');
     const maxInput = $('<input/>').addClass('form-control form-control-sm')
@@ -532,10 +550,12 @@ export default class OutputTab extends mxAlert(BaseAnalysisTab) {
       status.text('Pick a video describer and a rank model.');
       return;
     }
+    const conf = Number(this.$state.detect.minConfidence);
     const body = {
       modelId: this.$state.detect.modelId,
       rankModelId: this.$state.detect.rankModelId,
       maxSegments: Number(this.$state.detect.maxSegments) || 30,
+      minConfidence: Number.isFinite(conf) ? Math.max(0, Math.min(1, conf)) : 0.5,
     };
     const trimmed = (this.$state.detect.prompt || '').trim();
     if (trimmed.length > 0) body.prompt = trimmed;
@@ -600,13 +620,18 @@ export default class OutputTab extends mxAlert(BaseAnalysisTab) {
     section.append(subWrap);
     subInput.on('change', () => {
       this.$state.burnSubtitles = subInput.is(':checked');
+      this.$root().find('[data-role="subtitle-knobs"]')
+        .css('display', this.$state.burnSubtitles ? '' : 'none');
     });
+
+    // Subtitle layout knobs — only meaningful when burn-in is on.
+    section.append(this.createSubtitleKnobs());
 
     // Logo overlays
     section.append($('<p/>').addClass('lead-s mt-3 mb-1').html('Logo overlays'));
     section.append($('<p/>').addClass('lead-xs text-muted mb-2').html(
-      'Upload one PNG/JPG per output resolution. The render picks the closest size '
-      + 'for each output. PNG with transparency is recommended.'
+      'Upload one PNG/JPG per output resolution. The render picks the largest uploaded '
+      + 'size and rescales it per output. PNG with transparency is recommended.'
     ));
 
     const grid = $('<div/>').addClass('row no-gutters');
@@ -615,7 +640,94 @@ export default class OutputTab extends mxAlert(BaseAnalysisTab) {
     });
     section.append(grid);
 
+    // Logo layout knobs — corner / width / inset / opacity, shared
+    // across all logo sizes.
+    section.append(this.createLogoKnobs());
+
     return section;
+  }
+
+  createSubtitleKnobs() {
+    const wrap = $('<div/>')
+      .addClass('mb-3')
+      .attr('data-role', 'subtitle-knobs')
+      .css('display', this.$state.burnSubtitles ? '' : 'none');
+    wrap.append($('<p/>').addClass('lead-xs text-muted mb-1').html(
+      'Subtitle layout. Sizes are % of output height/width so portrait + landscape behave the same. '
+      + 'If text overflows after wrapping, the render auto-shrinks the font to fit.'
+    ));
+    const row = $('<div/>').addClass('d-flex flex-wrap');
+
+    const slider = (label, key, min, max, step, suffix) => {
+      const cell = $('<div/>').addClass('mr-3 mb-1').css('min-width', '14em');
+      cell.append($('<label/>').addClass('lead-xs text-muted mb-0 d-block').text(label));
+      const input = $('<input/>').attr('type', 'range')
+        .attr('min', min).attr('max', max).attr('step', step)
+        .val(this.$state.subtitleLayout[key])
+        .css('width', '10em');
+      const out = $('<span/>').addClass('lead-xs ml-2')
+        .text(`${this.$state.subtitleLayout[key]}${suffix}`);
+      input.on('input', () => {
+        const v = Number(input.val());
+        this.$state.subtitleLayout[key] = v;
+        out.text(`${v}${suffix}`);
+      });
+      cell.append(input).append(out);
+      return cell;
+    };
+
+    row.append(slider('Font size', 'heightPct', 1.5, 8, 0.1, '%'));
+    row.append(slider('Bottom inset', 'bottomPct', 2, 40, 0.5, '%'));
+    row.append(slider('Side margin', 'sideMarginPct', 0, 20, 0.5, '%'));
+
+    // Max lines is discrete (1/2/3) — give it a small select.
+    const linesCell = $('<div/>').addClass('mr-3 mb-1').css('min-width', '8em');
+    linesCell.append($('<label/>').addClass('lead-xs text-muted mb-0 d-block').text('Max lines'));
+    const linesSel = $('<select/>').addClass('custom-select custom-select-sm').css('width', '6em');
+    [1, 2, 3].forEach((n) => linesSel.append($('<option/>').val(n).text(n)));
+    linesSel.val(this.$state.subtitleLayout.maxLines);
+    linesSel.on('change', () => {
+      this.$state.subtitleLayout.maxLines = Number(linesSel.val());
+    });
+    linesCell.append(linesSel);
+    row.append(linesCell);
+
+    wrap.append(row);
+    return wrap;
+  }
+
+  createLogoKnobs() {
+    const wrap = $('<div/>').addClass('mt-3 mb-1');
+    wrap.append($('<p/>').addClass('lead-xs text-muted mb-1').html(
+      'Logo position. X / Y are the % offset of the logo\'s top-left corner from the frame\'s top-left. '
+      + 'X 0% = far left, 100% = far right; Y 0% = top, 100% = bottom. The logo keeps its native pixel size.'
+    ));
+    const row = $('<div/>').addClass('d-flex flex-wrap');
+
+    const slider = (label, key, min, max, step, suffix) => {
+      const cell = $('<div/>').addClass('mr-3 mb-1').css('min-width', '14em');
+      cell.append($('<label/>').addClass('lead-xs text-muted mb-0 d-block').text(label));
+      const input = $('<input/>').attr('type', 'range')
+        .attr('min', min).attr('max', max).attr('step', step)
+        .val(this.$state.logoLayout[key])
+        .css('width', '10em');
+      const out = $('<span/>').addClass('lead-xs ml-2')
+        .text(`${this.$state.logoLayout[key]}${suffix}`);
+      input.on('input', () => {
+        const v = Number(input.val());
+        this.$state.logoLayout[key] = v;
+        out.text(`${v}${suffix}`);
+      });
+      cell.append(input).append(out);
+      return cell;
+    };
+
+    row.append(slider('X', 'xPct', 0, 100, 0.5, '%'));
+    row.append(slider('Y', 'yPct', 0, 100, 0.5, '%'));
+    row.append(slider('Opacity', 'opacity', 0, 100, 5, '%'));
+
+    wrap.append(row);
+    return wrap;
   }
 
   createLogoCell(size) {
@@ -699,10 +811,6 @@ export default class OutputTab extends mxAlert(BaseAnalysisTab) {
 
   createControls() {
     const wrap = $('<div/>').addClass('form-group px-0 mt-3 mb-3 d-flex flex-wrap align-items-center');
-    const saveBtn = $('<button/>').attr('type', 'button')
-      .addClass('btn btn-sm btn-outline-primary mr-2 mb-1')
-      .attr('data-role', 'save')
-      .html('Save settings');
     const renderBtn = $('<button/>').attr('type', 'button')
       .addClass('btn btn-sm btn-primary mr-2 mb-1')
       .attr('data-role', 'render')
@@ -713,9 +821,8 @@ export default class OutputTab extends mxAlert(BaseAnalysisTab) {
       .html('Refresh history');
     const status = $('<span/>').addClass('lead-xs text-muted ml-2 mb-1')
       .attr('data-role', 'controls-status');
-    wrap.append(saveBtn).append(renderBtn).append(refreshBtn).append(status);
+    wrap.append(renderBtn).append(refreshBtn).append(status);
 
-    saveBtn.on('click', () => this.saveSettings());
     renderBtn.on('click', () => this.startRender());
     refreshBtn.on('click', () => this.refreshHistory());
     return wrap;
@@ -747,8 +854,8 @@ export default class OutputTab extends mxAlert(BaseAnalysisTab) {
     const section = $('<div/>')
       .addClass('form-group px-0 mt-3 mb-3 border rounded p-3')
       .attr('data-role', 'history-section');
-    section.append($('<p/>').addClass('lead-s mb-2').html('Recent renders'));
-    section.append($('<div/>').addClass('lead-xs').attr('data-role', 'history-body').text('No renders yet.'));
+    section.append($('<p/>').addClass('lead-s mb-2').html('Recent output'));
+    section.append($('<div/>').addClass('lead-xs').attr('data-role', 'history-body').text('No output yet.'));
     return section;
   }
 
@@ -756,126 +863,46 @@ export default class OutputTab extends mxAlert(BaseAnalysisTab) {
     // Load templates first so the picker doesn't show only built-ins.
     await this.refreshTemplateList().catch(() => {});
 
-    // Try to find an existing edit project for this asset; if none, leave
-    // editProjectId null and create one on save/render.
-    try {
-      const res = await ApiHelper.listEditProjects(this.media.uuid);
-      const projects = ((res && res.editProjects) || []).slice()
-        .sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
-      const existing = projects[0];
-      if (existing) {
-        this.applyEditProject(existing);
-      }
-    } catch (e) {
-      console.error('listEditProjects failed:', e);
-    }
-
-    // Pre-load highlight set list so the dropdown isn't empty when user flips
-    // to highlights mode.
+    // Pre-load highlight set list so the dropdown isn't empty when user
+    // flips to highlights mode.
     this.refreshHighlightSets().catch(() => {});
     this.reloadDetectModelOptions().catch(() => {});
 
-    // Pull render history scoped to the asset uuid — works whether or not
-    // an edit project has been created yet.
+    // Pull render history scoped to the asset uuid.
     this.refreshHistory().catch(() => {});
   }
 
-  applyEditProject(ep) {
-    this.$state.editProjectId = ep.editProjectId || null;
-    if (ep.mode && MODES.find((m) => m.value === ep.mode)) {
-      this.$state.mode = ep.mode;
-      this.$root().find(`input[name="output-mode"][value="${ep.mode}"]`)
-        .prop('checked', true).trigger('change');
-    }
-    if (typeof ep.template === 'string' && ep.template.length > 0) {
-      this.$state.template = ep.template;
-      const select = this.$root().find('[data-role="template"]');
-      if (select.find(`option[value="${ep.template}"]`).length > 0) {
-        select.val(ep.template);
-      }
-    }
-    if (typeof ep.burnSubtitles === 'boolean') {
-      this.$state.burnSubtitles = ep.burnSubtitles;
-      this.$root().find('[data-role="burn-subtitles"]').prop('checked', ep.burnSubtitles);
-    }
-    if (ep.logos && typeof ep.logos === 'object') {
-      this.$state.logos = { ...ep.logos };
-      LOGO_SIZES.forEach((size) => {
-        if (ep.logos[size]) {
-          this.$root().find(`[data-role="logo-del-${size}"]`).css('display', '');
-          this.$root().find(`[data-role="logo-status-${size}"]`)
-            .text('Uploaded earlier.').removeClass('text-muted text-danger')
-            .addClass('text-success');
-        }
-      });
-    }
-  }
-
-  buildPayload() {
-    // Segments are managed by HighlightEditorModal and live on the same
-    // edit-project row (editProjectId === highlightSetId). The api merges
-    // by editProjectId, so omitting segments here preserves whatever the
-    // modal saved. Compose-edl ignores segments in full mode, so we never
-    // need to overwrite them from this tab.
-    const payload = {
-      uuid: this.media.uuid,
-      mode: this.$state.mode,
-      template: this.$state.template || DEFAULT_TEMPLATE,
-      burnSubtitles: !!this.$state.burnSubtitles,
-      logos: this.$state.logos || {},
-    };
-    if (this.$state.editProjectId) {
-      payload.editProjectId = this.$state.editProjectId;
-    }
-    return payload;
-  }
-
-  async saveSettings() {
-    try {
-      this.setControlsStatus('Saving…');
-      const payload = this.buildPayload();
-      const saved = await this.persistEditProject(payload);
-      this.$state.editProjectId = saved.editProjectId || this.$state.editProjectId;
-      this.setControlsStatus('Settings saved.', 'ok');
-    } catch (e) {
-      console.error(e);
-      this.setControlsStatus(`Save failed: ${e.message}`, 'err');
-    }
-  }
-
-  async persistEditProject(payload) {
-    if (this.$state.editProjectId) {
-      return ApiHelper.saveEditProject(this.$state.editProjectId, payload);
-    }
-    return ApiHelper.createEditProject(payload);
-  }
-
+  // Per-render settings (v4.0.33+). Render add-ons are properties of a
+  // particular Export, not a property of the highlight set — exporting
+  // the same set as 16:9 + 9:16 should produce two Renders rows with
+  // their own configs, not overwrite each other on the set row.
   async startRender() {
     try {
-      const payload = this.buildPayload();
+      const mode = this.$state.mode;
+      const renderArgs = {
+        uuid: this.media.uuid,
+        mode,
+        template: this.$state.template || DEFAULT_TEMPLATE,
+        burnSubtitles: !!this.$state.burnSubtitles,
+        logos: this.$state.logos || {},
+        logoLayout: { ...this.$state.logoLayout },
+        subtitleLayout: { ...this.$state.subtitleLayout },
+      };
 
-      if (this.$state.mode === 'highlights') {
+      if (mode === 'highlights') {
         const select = this.$root().find('[data-role="highlight-set-select"]');
-        const highlightSetId = select.val();
-        if (!highlightSetId) {
+        const setId = select.val();
+        if (!setId) {
           this.setControlsStatus('Pick a highlight set or run detection.', 'err');
           return;
         }
-        // Highlight cuts use the highlight set id as the edit project id.
-        // The HighlightEditorModal seeds segments there; if the user hasn't
-        // opened it, the row exists from saveEditProject below using whatever
-        // segments are currently on /edits/{highlightSetId}.
-        payload.editProjectId = highlightSetId;
-        this.$state.editProjectId = highlightSetId;
+        // editProjectId is kept as a stable wire-protocol name; for
+        // highlights mode it equals the highlightSetId so compose-edl
+        // can fetch the segments from the HighlightSets row.
+        renderArgs.editProjectId = setId;
       }
 
-      this.setControlsStatus('Saving and submitting render…');
-      const saved = await this.persistEditProject(payload);
-      this.$state.editProjectId = saved.editProjectId || this.$state.editProjectId;
-
-      const renderArgs = { editProjectId: this.$state.editProjectId };
-      if (payload.template) renderArgs.template = payload.template;
-
+      this.setControlsStatus('Submitting render…');
       const res = await ApiHelper.startRender(renderArgs);
       this.$state.activeRenderId = (res && res.renderId) || null;
       this.setControlsStatus(`Submitted render ${this.$state.activeRenderId || ''}.`, 'ok');
@@ -892,7 +919,7 @@ export default class OutputTab extends mxAlert(BaseAnalysisTab) {
     // highlight-set id), so an editProjectId-scoped listing would hide the
     // other mode's renders.
     if (!this.media || !this.media.uuid) {
-      this.$root().find('[data-role="history-body"]').text('No renders yet.');
+      this.$root().find('[data-role="history-body"]').text('No output yet.');
       return;
     }
     try {
@@ -944,7 +971,7 @@ export default class OutputTab extends mxAlert(BaseAnalysisTab) {
     const body = this.$root().find('[data-role="history-body"]');
     body.empty();
     if (!rows || rows.length === 0) {
-      body.text('No renders yet.');
+      body.text('No output yet.');
       return;
     }
     rows.forEach((row) => body.append(this.buildHistoryRow(row)));
@@ -1031,7 +1058,10 @@ export default class OutputTab extends mxAlert(BaseAnalysisTab) {
   async _onIotMessage(msg) {
     if (!msg) return;
     if (msg.type === 'render') {
-      if (this.$state.activeRenderId && msg.renderId !== this.$state.activeRenderId) return;
+      // Refresh on every render event for this asset — the history list
+      // shows progress for all in-flight renders, not just the one this
+      // tab kicked off. We don't gate on activeRenderId here so other
+      // browsers/tabs see live updates too.
       this.refreshHistory().catch(() => {});
     } else if (msg.type === 'detect-highlight'
       && this.media && msg.uuid === this.media.uuid) {

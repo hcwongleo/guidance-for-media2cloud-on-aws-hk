@@ -415,6 +415,15 @@ class MediaManager {
   }
 
   async onIotMessage(payload) {
+    // The IoT topic is shared across feature areas. Anything that isn't a
+    // media-lifecycle event (e.g. render status, which carries renderId/
+    // editProjectId but not necessarily an asset uuid) is none of the
+    // mediaManager's business — bail out so we don't try to lazy-create
+    // a media row from a non-asset payload.
+    if (!payload || !payload.uuid || payload.type === 'render') {
+      return undefined;
+    }
+
     let media = this.findMediaByUuid(payload.uuid);
 
     if (!media) {

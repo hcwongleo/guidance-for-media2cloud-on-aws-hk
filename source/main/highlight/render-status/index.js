@@ -86,7 +86,7 @@ function deriveOutputs(job, destinationPrefix) {
 async function publishStatus(editProjectId, payload) {
   const message = {
     type: 'render',
-    editProjectId,
+    ...(editProjectId ? { editProjectId } : {}),
     ...payload,
   };
   try {

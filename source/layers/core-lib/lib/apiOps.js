@@ -147,19 +147,22 @@ module.exports = {
   Subtitle: 'subtitle',
 
   /**
-   * @description Output-tab assets that don't fit /edits or /renders.
+   * @description Output-tab logo upload helpers.
    * /output/{uuid}/logo            POST: presigned logo upload URL
    * /output/{uuid}/logo/{size}     DELETE: drop a logo at a given size
-   * Settings live on the EditProject row (template, fontScript, mode, logos,
-   * burnSubtitles). Render lifecycle lives on /renders.
+   * Settings (template, fontScript, mode, logos, burnSubtitles) live on the
+   * HighlightSets row via PUT /highlights/{uuid}/{setId}. Render lifecycle
+   * lives on /renders.
    */
   Output: 'output',
 
   /**
-   * @description manage highlight detection runs
-   * /highlights/{uuid}                         POST: kick off detection
-   * /highlights/{uuid}                         GET:  list highlight sets for a video
-   * /highlights/{uuid}/{highlightSetId}        GET:  full segments + metadata
+   * @description manage highlight detection runs and the editor state
+   * /highlights/{uuid}                         POST:   kick off detection
+   * /highlights/{uuid}                         GET:    list highlight sets
+   * /highlights/{uuid}/{highlightSetId}        GET:    full segments + metadata
+   * /highlights/{uuid}/{highlightSetId}        PUT:    update segments + render add-ons (mode/template/burnSubtitles/logos/aspectRatio/publishToLibrary)
+   * /highlights/{uuid}/{highlightSetId}        DELETE: remove a highlight set
    */
   Highlights: 'highlights',
 
@@ -168,14 +171,6 @@ module.exports = {
    * /highlight-settings                        GET, POST
    */
   HighlightSettings: 'highlight-settings',
-
-  /**
-   * @description manage edit projects (highlight + custom segment timelines)
-   * /edits                                     POST: create new edit project
-   * /edits/{editProjectId}                     GET:  load editor state
-   * /edits/{editProjectId}                     POST: update editor state
-   */
-  Edits: 'edits',
 
   /**
    * @description manage Render & Publish jobs

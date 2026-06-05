@@ -32,14 +32,9 @@ const {
             Name: RendersEditProjectGsiName,
             Key: RendersEditProjectGsiKey,
           },
-        },
-      },
-      EditProjects: {
-        Table: EditProjectsTable,
-        GSI: {
           Uuid: {
-            Name: EditProjectsUuidGsiName,
-            Key: EditProjectsUuidGsiKey,
+            Name: RendersUuidGsiName,
+            Key: RendersUuidGsiKey,
           },
         },
       },
@@ -92,9 +87,19 @@ class RendersOp extends BaseOp {
 
   async _startRender() {
     const body = this.request.body || {};
+    const uuid = body.uuid;
+    if (!uuid || !CommonUtils.validateUuid(uuid)) {
+      throw new M2CException('body.uuid (asset uuid) is required and must be a valid uuid');
+    }
+
+    // mode = 'full' | 'highlights'. Highlights mode requires an editProjectId
+    // (= highlightSetId) so compose-edl can fetch the segment list off the
+    // HighlightSets row. Full mode encodes the whole source and doesn't need
+    // any highlight set selected.
+    const mode = body.mode === 'highlights' ? 'highlights' : 'full';
     const editProjectId = body.editProjectId;
-    if (!editProjectId) {
-      throw new M2CException('body.editProjectId is required');
+    if (mode === 'highlights' && !editProjectId) {
+      throw new M2CException('body.editProjectId is required for mode=highlights');
     }
 
     const renderId = body.renderId || CRYPTO.randomUUID();
@@ -103,6 +108,39 @@ class RendersOp extends BaseOp {
       || 'anonymous';
     const publishToLibrary = !!body.publishToLibrary;
     const aspectRatio = body.aspectRatio ? String(body.aspectRatio) : '16:9';
+    const burnSubtitles = !!body.burnSubtitles;
+    const fontScript = typeof body.fontScript === 'string' && body.fontScript.length > 0
+      ? body.fontScript
+      : 'HANT';
+    const logos = (body.logos && typeof body.logos === 'object') ? body.logos : {};
+
+    // Per-render positional knobs. All optional — compose-edl falls back
+    // to the template's existing values when undefined.
+    //
+    // logoLayout: shared corner/size/inset for whichever logo size the
+    //   render picks (one logo per output stream, sized to match resolution).
+    // subtitleLayout: font height + bottom inset + max wrap lines, all
+    //   expressed as % of the output frame so portrait + landscape scale
+    //   the same way.
+    const clamp = (v, lo, hi, dflt) => {
+      const n = Number(v);
+      if (!Number.isFinite(n)) return dflt;
+      return Math.max(lo, Math.min(hi, n));
+    };
+    const inputLogoLayout = (body.logoLayout && typeof body.logoLayout === 'object') ? body.logoLayout : {};
+    const logoLayout = {
+      xPct: clamp(inputLogoLayout.xPct, 0, 100, 80),
+      yPct: clamp(inputLogoLayout.yPct, 0, 100, 5),
+      opacity: clamp(inputLogoLayout.opacity, 0, 100, 100),
+    };
+    const inputSubtitleLayout = (body.subtitleLayout && typeof body.subtitleLayout === 'object') ? body.subtitleLayout : {};
+    const subtitleLayout = {
+      heightPct: clamp(inputSubtitleLayout.heightPct, 1.5, 8, 3.5),
+      bottomPct: clamp(inputSubtitleLayout.bottomPct, 2, 40, 8),
+      sideMarginPct: clamp(inputSubtitleLayout.sideMarginPct, 0, 20, 5),
+      maxLines: Math.round(clamp(inputSubtitleLayout.maxLines, 1, 3, 2)),
+    };
+
     const submittedAt = new Date().toISOString();
 
     let template;
@@ -113,17 +151,27 @@ class RendersOp extends BaseOp {
       template = body.template;
     }
 
-    // Pre-create the Renders row so the webapp can poll/subscribe immediately.
-    // compose-edl will UpdateItem this same row to attach the MediaConvert job spec.
+    // Pre-create the Renders row so the webapp can poll/subscribe immediately
+    // and so the row carries its own settings (template/aspectRatio/etc.) for
+    // later replay or audit. As of v4.0.33, render add-ons live HERE on the
+    // Renders row — exporting the same set as 16:9 + 9:16 produces two rows
+    // with their own configs instead of clobbering each other on the set.
     const doc = ddbDocClient();
     await doc.send(new PutCommand({
       TableName: RendersTable,
       Item: {
         [RendersPartitionKey]: renderId,
-        editProjectId,
+        ...(editProjectId ? { editProjectId } : {}),
+        uuid,
+        mode,
         owner,
         publishToLibrary,
         aspectRatio,
+        burnSubtitles,
+        fontScript,
+        logos,
+        logoLayout,
+        subtitleLayout,
         ...(template ? { template } : {}),
         status: 'queued',
         percent: 0,
@@ -143,9 +191,16 @@ class RendersOp extends BaseOp {
 
     const sfnInput = {
       renderId,
-      editProjectId,
+      ...(editProjectId ? { editProjectId } : {}),
+      uuid,
+      mode,
       publishToLibrary,
       aspectRatio,
+      burnSubtitles,
+      fontScript,
+      logos,
+      logoLayout,
+      subtitleLayout,
       owner,
       ...(template ? { template } : {}),
     };
@@ -162,7 +217,9 @@ class RendersOp extends BaseOp {
 
     return {
       renderId,
-      editProjectId,
+      ...(editProjectId ? { editProjectId } : {}),
+      uuid,
+      mode,
       executionArn: response.executionArn,
       startDate: response.startDate,
       status: 'queued',
@@ -194,32 +251,22 @@ class RendersOp extends BaseOp {
       };
     }
 
-    // List all renders for an asset by fanning out across its edit projects.
-    // OutputTab + HighlightEditorModal create separate edit projects per
-    // highlight set, so listing by editProjectId would hide history from
-    // other modes; aggregate by asset uuid instead.
+    // List renders for an asset — single direct query against the
+    // gsi-uuid index. Pre-v4.0.34 this fanned out over HighlightSets
+    // (one query per set) which silently dropped full-mode renders
+    // since they have no editProjectId.
     if (!renderId && queryUuid) {
       if (!CommonUtils.validateUuid(queryUuid)) {
         throw new M2CException('invalid uuid');
       }
-      const eps = await doc.send(new QueryCommand({
-        TableName: EditProjectsTable,
-        IndexName: EditProjectsUuidGsiName,
+      const res = await doc.send(new QueryCommand({
+        TableName: RendersTable,
+        IndexName: RendersUuidGsiName,
         KeyConditionExpression: '#k = :v',
-        ExpressionAttributeNames: { '#k': EditProjectsUuidGsiKey },
+        ExpressionAttributeNames: { '#k': RendersUuidGsiKey },
         ExpressionAttributeValues: { ':v': queryUuid },
       }));
-      const editProjectIds = ((eps && eps.Items) || [])
-        .map((it) => it && it.editProjectId)
-        .filter((id) => typeof id === 'string' && id.length > 0);
-      const buckets = await Promise.all(editProjectIds.map((id) => doc.send(new QueryCommand({
-        TableName: RendersTable,
-        IndexName: RendersEditProjectGsiName,
-        KeyConditionExpression: '#k = :v',
-        ExpressionAttributeNames: { '#k': RendersEditProjectGsiKey },
-        ExpressionAttributeValues: { ':v': id },
-      })).then((r) => (r && r.Items) || []).catch(() => [])));
-      const renders = [].concat(...buckets);
+      const renders = (res && res.Items) || [];
       return {
         uuid: queryUuid,
         renders,

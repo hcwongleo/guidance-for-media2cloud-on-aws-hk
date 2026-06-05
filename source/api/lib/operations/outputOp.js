@@ -25,7 +25,7 @@ const ALLOWED_EXT = ['png', 'jpg', 'jpeg'];
 
 class OutputOp extends BaseOp {
   async onGET() {
-    throw new M2CException('output GET not supported; use /edits or /renders');
+    throw new M2CException('output GET not supported; use /highlights or /renders');
   }
 
   async onPOST() {

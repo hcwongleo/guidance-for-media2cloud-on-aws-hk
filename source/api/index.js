@@ -50,6 +50,9 @@ exports.handler = async (event, context) => {
       case 'POST':
         return processor.onPOST().catch(e =>
           processor.onError(e));
+      case 'PUT':
+        return processor.onPUT().catch(e =>
+          processor.onError(e));
       case 'DELETE':
         return processor.onDELETE().catch(e =>
           processor.onError(e));

@@ -24,7 +24,6 @@ const SubtitleOp = require('./operations/subtitleOp');
 const OutputOp = require('./operations/outputOp');
 const HighlightOp = require('./operations/highlightOp');
 const HighlightSettingsOp = require('./operations/highlightSettingsOp');
-const EditsOp = require('./operations/editsOp');
 const RendersOp = require('./operations/rendersOp');
 const McTemplatesOp = require('./operations/mcTemplatesOp');
 const SubtitlePromptsOp = require('./operations/subtitlePromptsOp');
@@ -162,9 +161,6 @@ class ApiRequest {
     }
     if (op === ApiOps.HighlightSettings) {
       return new HighlightSettingsOp(this);
-    }
-    if (op === ApiOps.Edits) {
-      return new EditsOp(this);
     }
     if (op === ApiOps.Renders) {
       return new RendersOp(this);

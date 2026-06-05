@@ -10,6 +10,7 @@ class BaseOp {
     return {
       AllowMethods: [
         'POST',
+        'PUT',
         'GET',
         'DELETE',
         'OPTIONS',
@@ -64,6 +65,10 @@ class BaseOp {
   }
 
   async onPOST(response) {
+    return this.onSucceed(response);
+  }
+
+  async onPUT(response) {
     return this.onSucceed(response);
   }
 

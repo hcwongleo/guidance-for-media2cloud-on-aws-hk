@@ -93,33 +93,30 @@ export default class HighlightEditorModal {
     }
   }
 
+  // Build the editor's working state directly from the highlight set
+  // row. As of v4.0.32 there is no separate EditProjects table — the
+  // segments + render add-ons live on the same HighlightSets row, so
+  // this just normalizes that row into the shape the modal expects.
+  // The `editProjectId` field stays as a stable wire-protocol name for
+  // "the highlight set this editor is for"; its value is the
+  // highlightSetId.
   async _loadOrSeedEditProject() {
     const editProjectId = this.highlightSet.highlightSetId;
     const uuid = this.media.uuid;
-
-    let existing;
-    try {
-      existing = await ApiHelper.getEditProject(editProjectId);
-    } catch (e) {
-      existing = undefined;
-    }
-
-    if (existing && existing.editProjectId) {
-      return existing;
-    }
 
     // Older highlight sets (pre-v4.0.27) baked the rank into the title as
     // "#1 · Title". Strip that prefix so the editor's reel-order numbering
     // doesn't collide with the leftover rank prefix.
     const stripRankPrefix = (s) => (s || '').replace(/^#\d+\s*·\s*/, '').trim();
     const seedSegments = (this.highlightSet.segments || []).map((seg, i) => ({
-      kind: 'highlight',
+      kind: seg.kind || 'highlight',
       sourceSegmentIndex: i,
       startSec: Number(seg.startSec) || 0,
       endSec: Number(seg.endSec) || 0,
       title: stripRankPrefix(seg.title),
       reason: seg.reason || '',
-      rank: Number.isFinite(seg.rank) ? seg.rank : (i + 1),
+      ...(seg.description ? { description: seg.description } : {}),
+      ...(Number.isFinite(seg.rank) ? { rank: seg.rank } : { rank: i + 1 }),
       highlightSetId: editProjectId,
     }));
 
@@ -273,8 +270,6 @@ export default class HighlightEditorModal {
     }
 
     const payload = {
-      uuid: ep.uuid,
-      name: ep.name,
       segments: ep.segments.map((seg) => ({
         kind: seg.kind,
         startSec: Number(seg.startSec),
@@ -285,16 +280,17 @@ export default class HighlightEditorModal {
         ...(seg.sourceSegmentIndex !== undefined
           ? { sourceSegmentIndex: seg.sourceSegmentIndex }
           : {}),
-        ...(seg.highlightSetId
-          ? { highlightSetId: seg.highlightSetId }
-          : {}),
       })),
     };
 
     Spinner.loading(true);
     try {
-      const saved = await ApiHelper.saveEditProject(ep.editProjectId, payload);
-      this.$state.editProject = { ...ep, ...saved };
+      // PUT /highlights/{uuid}/{setId} — server merges only the fields we
+      // send (segments here), preserving render add-ons like template,
+      // mode, burnSubtitles, etc.
+      const saved = await ApiHelper.updateHighlightSet(ep.uuid, ep.editProjectId, payload);
+      const mergedSegments = (saved && saved.segments) || ep.segments;
+      this.$state.editProject = { ...ep, segments: mergedSegments };
       if (this.$onSaved) {
         try {
           this.$onSaved(this.$state.editProject);

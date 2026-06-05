@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: "2010-09-09"
 
-Description: Media2Cloud Highlight Stack - DynamoDB tables backing the highlight clipping + video editor feature (HighlightSets, EditProjects, Renders, HighlightSettings). Version %%VERSION%%
+Description: Media2Cloud Highlight Stack - DynamoDB tables backing the highlight clipping + video editor feature (HighlightSets, Renders, HighlightSettings). Version %%VERSION%%
 
 Mappings:
     Workflow:
@@ -40,24 +40,27 @@ Mappings:
     DynamoDB:
         # One row per highlight detection run.
         # PK: uuid (source video). SK: highlightSetId (ULID, multiple runs allowed).
+        # As of v4.0.32, segments + render add-ons (mode/template/
+        # burnSubtitles/logos/aspectRatio/publishToLibrary/fontScript)
+        # live on this same row — the EditProjects table that used to
+        # hold them was dropped.
         HighlightSets:
             Suffix: highlight-sets
             PartitionKey: uuid
             SortKey: highlightSetId
-        # One row per editor session.
-        # PK: editProjectId (ULID). GSI on uuid for "list edit projects for video".
-        EditProjects:
-            Suffix: edit-projects
-            PartitionKey: editProjectId
-            GSIUuidIndex: gsi-uuid
-            GSIUuidPartitionKey: uuid
         # One row per Render & Publish click.
-        # PK: renderId (ULID). GSI on editProjectId for "list renders for project".
+        # PK: renderId (ULID).
+        # GSI on editProjectId for "list renders for a highlight set".
+        # GSI on uuid for "list renders for an asset" — covers full-mode
+        # renders (which have no editProjectId) and is also a single
+        # query for the OutputTab history list.
         Renders:
             Suffix: renders
             PartitionKey: renderId
             GSIEditProjectIndex: gsi-editprojectid
             GSIEditProjectPartitionKey: editProjectId
+            GSIUuidIndex: gsi-uuid
+            GSIUuidPartitionKey: uuid
         # One row per owner. Stores model/strategy/prompt defaults.
         HighlightSettings:
             Suffix: highlight-settings
@@ -120,8 +123,7 @@ Resources:
     ################################################################################
     #
     # Amazon DynamoDB tables
-    # * HighlightSets:     detection runs (timecodes only, no media)
-    # * EditProjects:      editor session state (segments, publish flag)
+    # * HighlightSets:     detection runs + editor segments + render add-ons
     # * Renders:           Render & Publish job tracking
     # * HighlightSettings: per-owner model/strategy/prompt defaults
     #
@@ -176,65 +178,6 @@ Resources:
                 AttributeName: ttl
                 Enabled: true
 
-    EditProjectsTable:
-        Type: AWS::DynamoDB::Table
-        Metadata:
-            cfn_nag:
-                rules_to_suppress:
-                    -
-                        id: W28
-                        reason: Tables are explicitly assigned with predefined names
-        Properties:
-            TableName: !Sub
-                - ${ResourcePrefix}-${suffix}
-                - suffix: !FindInMap
-                    - DynamoDB
-                    - EditProjects
-                    - Suffix
-            BillingMode: PAY_PER_REQUEST
-            AttributeDefinitions:
-                -
-                    AttributeName: !FindInMap
-                        - DynamoDB
-                        - EditProjects
-                        - PartitionKey
-                    AttributeType: S
-                -
-                    AttributeName: !FindInMap
-                        - DynamoDB
-                        - EditProjects
-                        - GSIUuidPartitionKey
-                    AttributeType: S
-            KeySchema:
-                -
-                    AttributeName: !FindInMap
-                        - DynamoDB
-                        - EditProjects
-                        - PartitionKey
-                    KeyType: HASH
-            SSESpecification:
-                SSEEnabled: true
-            PointInTimeRecoverySpecification:
-                PointInTimeRecoveryEnabled: true
-            TimeToLiveSpecification:
-                AttributeName: ttl
-                Enabled: true
-            GlobalSecondaryIndexes:
-                -
-                    IndexName: !FindInMap
-                        - DynamoDB
-                        - EditProjects
-                        - GSIUuidIndex
-                    KeySchema:
-                        -
-                            AttributeName: !FindInMap
-                                - DynamoDB
-                                - EditProjects
-                                - GSIUuidPartitionKey
-                            KeyType: HASH
-                    Projection:
-                        ProjectionType: ALL
-
     RendersTable:
         Type: AWS::DynamoDB::Table
         Metadata:
@@ -264,6 +207,12 @@ Resources:
                         - Renders
                         - GSIEditProjectPartitionKey
                     AttributeType: S
+                -
+                    AttributeName: !FindInMap
+                        - DynamoDB
+                        - Renders
+                        - GSIUuidPartitionKey
+                    AttributeType: S
             KeySchema:
                 -
                     AttributeName: !FindInMap
@@ -290,6 +239,20 @@ Resources:
                                 - DynamoDB
                                 - Renders
                                 - GSIEditProjectPartitionKey
+                            KeyType: HASH
+                    Projection:
+                        ProjectionType: ALL
+                -
+                    IndexName: !FindInMap
+                        - DynamoDB
+                        - Renders
+                        - GSIUuidIndex
+                    KeySchema:
+                        -
+                            AttributeName: !FindInMap
+                                - DynamoDB
+                                - Renders
+                                - GSIUuidPartitionKey
                             KeyType: HASH
                     Projection:
                         ProjectionType: ALL
@@ -1071,6 +1034,7 @@ Resources:
                                     "proxyKey.$": "$.run.proxyKey",
                                     "transcriptKey.$": "$.run.transcriptKey",
                                     "maxSegments.$": "$.run.maxSegments",
+                                    "minConfidence.$": "$.run.minConfidence",
                                     "startedAt.$": "$.run.startedAt",
                                     "shotResults.$": "$.shotResults"
                                 },
@@ -1142,7 +1106,7 @@ Resources:
     ################################################################################
     #
     # compose-edl Lambda
-    # * Reads EditProjects + Ingest rows
+    # * Reads HighlightSets + Ingest rows
     # * Builds a self-contained MediaConvert job spec (clip-and-stitch)
     # * Creates the Renders DDB row with status='composing'
     #
@@ -1213,7 +1177,7 @@ Resources:
                                     - dynamodb:GetItem
                                 Resource:
                                     - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${IngestTable}
-                                    - !GetAtt EditProjectsTable.Arn
+                                    - !GetAtt HighlightSetsTable.Arn
                             -
                                 Effect: Allow
                                 Action:
@@ -1270,7 +1234,7 @@ Resources:
                     ENV_RESOURCE_PREFIX: !Ref ResourcePrefix
                     ENV_PROXY_BUCKET: !Ref ProxyBucket
                     ENV_INGEST_TABLE: !Ref IngestTable
-                    ENV_EDIT_PROJECTS_TABLE: !Ref EditProjectsTable
+                    ENV_HIGHLIGHT_SETS_TABLE: !Ref HighlightSetsTable
                     ENV_RENDERS_TABLE: !Ref RendersTable
                     ENV_DATA_ACCESS_ROLE: !Ref ServiceDataAccessRoleArn
                     ENV_PUBLISH_CLOUDFRONT_DOMAIN: !Ref PublishCloudFrontDistributionDomainName
@@ -1887,12 +1851,6 @@ Outputs:
     HighlightSetsTableArn:
         Value: !GetAtt HighlightSetsTable.Arn
         Description: HighlightSetsTableArn
-    EditProjectsTableName:
-        Value: !Ref EditProjectsTable
-        Description: EditProjectsTableName
-    EditProjectsTableArn:
-        Value: !GetAtt EditProjectsTable.Arn
-        Description: EditProjectsTableArn
     RendersTableName:
         Value: !Ref RendersTable
         Description: RendersTableName

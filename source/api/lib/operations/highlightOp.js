@@ -12,6 +12,7 @@ const {
   DynamoDBDocumentClient,
   QueryCommand,
   GetCommand,
+  PutCommand,
   DeleteCommand,
 } = require('@aws-sdk/lib-dynamodb');
 const {
@@ -38,16 +39,6 @@ const {
         PartitionKey: HighlightSetsPartitionKey,
         SortKey: HighlightSetsSortKey,
       },
-      EditProjects: {
-        Table: EditProjectsTable,
-        PartitionKey: EditProjectsPartitionKey,
-        GSI: {
-          Uuid: {
-            Name: EditProjectsUuidGsiName,
-            Key: EditProjectsUuidGsiKey,
-          },
-        },
-      },
     },
     StateMachines: {
       HighlightDetection,
@@ -62,6 +53,14 @@ const BaseOp = require('./baseOp');
 const REGION = process.env.AWS_REGION;
 const ANALYSIS_TYPE_AUDIO = 'audio';
 
+// Render add-on field whitelist — these live alongside `segments` on each
+// HighlightSets row. The OutputTab "save settings" / "Export" path writes
+// them; compose-edl reads them at render time.
+const VALID_KINDS = ['highlight', 'custom'];
+const VALID_MODES = ['full', 'highlights'];
+const TEMPLATE_NAME_RE = /^[A-Za-z0-9_-]{1,64}$/;
+const LOGO_SIZES = ['48', '64', '96', '128', '192'];
+
 function ddbDocClient() {
   const ddb = xraysdkHelper(new DynamoDBClient({
     customUserAgent: CustomUserAgent,
@@ -70,7 +69,50 @@ function ddbDocClient() {
   return DynamoDBDocumentClient.from(ddb);
 }
 
+function sanitizeLogos(logos) {
+  if (!logos || typeof logos !== 'object') return {};
+  const out = {};
+  for (const size of LOGO_SIZES) {
+    const v = logos[size];
+    if (typeof v === 'string' && v.length > 0) out[size] = v;
+  }
+  return out;
+}
+
+function sanitizeSegments(segments) {
+  if (!Array.isArray(segments)) {
+    throw new M2CException('segments must be an array');
+  }
+  return segments.map((seg, idx) => {
+    if (!seg || typeof seg !== 'object') {
+      throw new M2CException(`segment[${idx}] is invalid`);
+    }
+    const kind = seg.kind || 'custom';
+    if (!VALID_KINDS.includes(kind)) {
+      throw new M2CException(`segment[${idx}].kind must be one of ${VALID_KINDS.join(', ')}`);
+    }
+    const startSec = Number(seg.startSec);
+    const endSec = Number(seg.endSec);
+    if (!Number.isFinite(startSec) || !Number.isFinite(endSec) || endSec <= startSec) {
+      throw new M2CException(`segment[${idx}] must have valid startSec < endSec`);
+    }
+    const out = { kind, startSec, endSec };
+    if (seg.title) out.title = String(seg.title);
+    if (seg.reason) out.reason = String(seg.reason);
+    if (seg.description) out.description = String(seg.description);
+    if (seg.quote) out.quote = String(seg.quote);
+    if (seg.text) out.text = String(seg.text);
+    if (seg.startTimecode) out.startTimecode = String(seg.startTimecode);
+    if (seg.endTimecode) out.endTimecode = String(seg.endTimecode);
+    if (seg.anchorRatio !== undefined) out.anchorRatio = Number(seg.anchorRatio);
+    if (Number.isFinite(seg.rank)) out.rank = Number(seg.rank);
+    if (Number.isFinite(seg.score)) out.score = Number(seg.score);
+    return out;
+  });
+}
+
 class HighlightOp extends BaseOp {
+  // POST /highlights/{uuid} — kick off a highlight detection job.
   async onPOST() {
     const uuid = (this.request.pathParameters || {}).uuid;
     if (!uuid || !CommonUtils.validateUuid(uuid)) {
@@ -88,9 +130,12 @@ class HighlightOp extends BaseOp {
     }
     const prompt = body.prompt || null;
     const maxSegments = Number(body.maxSegments) || 30;
+    const rawConfidence = Number(body.minConfidence);
+    const minConfidence = Number.isFinite(rawConfidence)
+      ? Math.max(0, Math.min(1, rawConfidence))
+      : 0.5;
     const owner = body.owner || this.request.cognitoIdentityId || 'anonymous';
 
-    // Resolve transcriptKey + proxy MP4 + durationSec from existing M2C state.
     const ingestDb = new DB({
       Table: IngestTable,
       PartitionKey: IngestPartitionKey,
@@ -108,7 +153,6 @@ class HighlightOp extends BaseOp {
     const transcriptKey = body.transcriptKey
       || (audioRow && audioRow.transcribe && audioRow.transcribe.output);
 
-    // Pick the AIML video/mp4 proxy (preferred) or any video/mp4 proxy.
     const proxies = (ingestRow && ingestRow.proxies) || [];
     const videoProxy = proxies.find((p) => p.mime === 'video/mp4' && p.outputType === 'aiml')
       || proxies.find((p) => p.mime === 'video/mp4');
@@ -130,6 +174,7 @@ class HighlightOp extends BaseOp {
       rankModelId,
       prompt,
       maxSegments,
+      minConfidence,
       durationSec: ingestDurationSec,
       owner,
       accountId: this.request.accountId,
@@ -161,9 +206,9 @@ class HighlightOp extends BaseOp {
     });
   }
 
+  // GET /highlights/{uuid}            → list all highlight sets for this asset
+  // GET /highlights/{uuid}/{setId}    → get one highlight set
   async onGET() {
-    // pathParameters.uuid is the API GW {uuid+} greedy capture.
-    // It can be either "<uuid>" (list) or "<uuid>/<highlightSetId>" (single).
     const captured = (this.request.pathParameters || {}).uuid;
     if (!captured) {
       throw new M2CException('missing uuid');
@@ -193,52 +238,83 @@ class HighlightOp extends BaseOp {
       return super.onGET(res.Item);
     }
 
-    // List all highlight sets for this uuid.
     const res = await doc.send(new QueryCommand({
       TableName: HighlightSetsTable,
       KeyConditionExpression: '#pk = :pk',
-      ExpressionAttributeNames: {
-        '#pk': HighlightSetsPartitionKey,
-      },
-      ExpressionAttributeValues: {
-        ':pk': uuid,
-      },
+      ExpressionAttributeNames: { '#pk': HighlightSetsPartitionKey },
+      ExpressionAttributeValues: { ':pk': uuid },
     }));
-    const sets = res.Items || [];
-
-    // Overlay saved edits: when the user opens the editor and saves, we
-    // persist the modified segments to EditProjects keyed by editProjectId
-    // (= highlightSetId). Merge those back so the table shows the user's
-    // current segments rather than the original auto-detected ones.
-    const editsRes = await doc.send(new QueryCommand({
-      TableName: EditProjectsTable,
-      IndexName: EditProjectsUuidGsiName,
-      KeyConditionExpression: '#k = :v',
-      ExpressionAttributeNames: {
-        '#k': EditProjectsUuidGsiKey,
-      },
-      ExpressionAttributeValues: {
-        ':v': uuid,
-      },
-    })).catch((e) => {
-      console.error('listEditProjects(merge) failed:', e);
-      return undefined;
-    });
-    const editById = {};
-    ((editsRes && editsRes.Items) || []).forEach((ep) => {
-      if (ep && ep.editProjectId) editById[ep.editProjectId] = ep;
-    });
-
-    const merged = sets.map((it) => {
-      const ep = editById[it.highlightSetId];
-      if (!ep || !Array.isArray(ep.segments)) return it;
-      return { ...it, segments: ep.segments };
-    });
-
     return super.onGET({
       uuid,
-      highlightSets: merged,
+      highlightSets: res.Items || [],
     });
+  }
+
+  // PUT /highlights/{uuid}/{setId} — update editable fields on a highlight
+  // set: segments (after the editor modal trims/reorders), and the render
+  // add-ons compose-edl reads at render time (mode/template/burnSubtitles/
+  // logos/aspectRatio/publishToLibrary/fontScript/name).
+  //
+  // EditProjects had its own table for this; rolled into HighlightSets so
+  // there's one row per detection-and-its-edits. Server-side merge: only
+  // writes fields the body actually sets; everything else is preserved.
+  async onPUT() {
+    const captured = (this.request.pathParameters || {}).uuid;
+    if (!captured) throw new M2CException('missing uuid');
+    const parts = captured.split('/').filter(Boolean);
+    const uuid = parts[0];
+    const highlightSetId = parts[1];
+    if (!CommonUtils.validateUuid(uuid)) {
+      throw new M2CException('invalid uuid');
+    }
+    if (!highlightSetId) {
+      throw new M2CException('highlightSetId is required');
+    }
+
+    const doc = ddbDocClient();
+    const existing = await doc.send(new GetCommand({
+      TableName: HighlightSetsTable,
+      Key: {
+        [HighlightSetsPartitionKey]: uuid,
+        [HighlightSetsSortKey]: highlightSetId,
+      },
+    })).then((r) => (r && r.Item) || undefined);
+    if (!existing) {
+      throw new M2CException('highlight set not found');
+    }
+
+    const body = this.request.body || {};
+    const item = { ...existing, updatedAt: new Date().toISOString() };
+
+    if (body.segments !== undefined) {
+      item.segments = sanitizeSegments(body.segments);
+    }
+    if (body.name !== undefined) item.name = String(body.name);
+    if (body.mode !== undefined) {
+      const mode = String(body.mode);
+      if (!VALID_MODES.includes(mode)) {
+        throw new M2CException(`mode must be one of ${VALID_MODES.join(', ')}`);
+      }
+      item.mode = mode;
+    }
+    if (body.template !== undefined) {
+      const tmpl = String(body.template);
+      if (tmpl && !TEMPLATE_NAME_RE.test(tmpl)) {
+        throw new M2CException(`invalid template name: ${tmpl}`);
+      }
+      if (tmpl) item.template = tmpl;
+    }
+    if (body.fontScript !== undefined) item.fontScript = String(body.fontScript);
+    if (body.burnSubtitles !== undefined) item.burnSubtitles = !!body.burnSubtitles;
+    if (body.logos !== undefined) item.logos = sanitizeLogos(body.logos);
+    if (body.aspectRatio !== undefined) item.aspectRatio = String(body.aspectRatio);
+    if (body.publishToLibrary !== undefined) item.publishToLibrary = !!body.publishToLibrary;
+
+    await doc.send(new PutCommand({
+      TableName: HighlightSetsTable,
+      Item: item,
+    }));
+    return super.onPUT(item);
   }
 
   async onDELETE() {

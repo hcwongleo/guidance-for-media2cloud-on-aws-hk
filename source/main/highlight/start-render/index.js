@@ -59,9 +59,11 @@ function mediaConvert(host) {
 async function publishStatus(editProjectId, payload) {
   // Publish on the shared global status topic so the existing webapp
   // subscriber receives it. `type: 'render'` is the discriminator.
+  // editProjectId is omitted for full-video renders (no highlight set
+  // is involved) — webapp subscribers fall back to renderId.
   const message = {
     type: 'render',
-    editProjectId,
+    ...(editProjectId ? { editProjectId } : {}),
     ...payload,
   };
   try {
@@ -93,8 +95,8 @@ exports.handler = async (event) => {
     destinationPrefix,
   } = event;
 
-  if (!renderId || !editProjectId || !mediaConvertParams) {
-    throw new M2CException('renderId, editProjectId, and mediaConvertParams required');
+  if (!renderId || !mediaConvertParams) {
+    throw new M2CException('renderId and mediaConvertParams required');
   }
 
   const mc = mediaConvert(mcHost);
@@ -153,7 +155,7 @@ exports.handler = async (event) => {
 
   return {
     renderId,
-    editProjectId,
+    ...(editProjectId ? { editProjectId } : {}),
     uuid,
     mediaConvertJobId,
     publishToLibrary: !!publishToLibrary,
